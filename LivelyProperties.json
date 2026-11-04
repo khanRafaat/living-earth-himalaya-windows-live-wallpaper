@@ -1,0 +1,107 @@
+{
+  "label1": {
+    "type": "label",
+    "value": "Sky mood follows live weather at your location (Open-Meteo) and your PC clock."
+  },
+  "showPanel": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Show information panel"
+  },
+  "panelPosition": {
+    "type": "dropdown",
+    "value": 0,
+    "text": "Panel position",
+    "items": ["Right monitor · bottom", "Right monitor · top", "Left monitor · bottom", "Left monitor · top"]
+  },
+  "clock24h": {
+    "type": "checkbox",
+    "value": false,
+    "text": "24-hour clock"
+  },
+  "tempUnit": {
+    "type": "dropdown",
+    "value": 0,
+    "text": "Temperature unit",
+    "items": ["Celsius", "Fahrenheit"]
+  },
+  "fpsCap": {
+    "type": "dropdown",
+    "value": 1,
+    "text": "Frame rate limit",
+    "items": ["24 fps", "30 fps (recommended)", "45 fps", "60 fps"]
+  },
+  "smartFps": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Save power when the scene is calm (20 fps until birds, rain or lightning appear)"
+  },
+  "quality": {
+    "type": "dropdown",
+    "value": 0,
+    "text": "Quality",
+    "items": ["Auto (recommended)", "Eco", "Balanced", "High", "Ultra"]
+  },
+  "renderScale": {
+    "type": "dropdown",
+    "value": 0,
+    "text": "Render resolution",
+    "items": ["100%", "85%", "75%", "67%"]
+  },
+  "viewDirection": {
+    "type": "dropdown",
+    "value": 0,
+    "text": "Looking toward",
+    "items": ["North-east · sunrise behind the peaks", "South · the sun's daily path", "East", "West · sunset", "North · front-lit and moonlit peaks"]
+  },
+  "landscapeSeed": {
+    "type": "slider",
+    "value": 1,
+    "min": 1,
+    "max": 20,
+    "step": 1,
+    "text": "Landscape variation"
+  },
+  "cloudSpeed": {
+    "type": "slider",
+    "value": 1,
+    "min": 1,
+    "max": 10,
+    "step": 1,
+    "text": "Cloud and mist speed (1 = real wind, higher = time-lapse)"
+  },
+  "treeWind": {
+    "type": "slider",
+    "value": 1,
+    "min": 0,
+    "max": 3,
+    "step": 0.5,
+    "text": "Wind in the trees (0 = off, 1 = natural)"
+  },
+  "life": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Wildlife and village life (birds, smoke, lights, meteors)"
+  },
+  "weatherMode": {
+    "type": "dropdown",
+    "value": 0,
+    "text": "Weather",
+    "items": ["Live", "Preview: Clear", "Preview: Partly cloudy", "Preview: Overcast", "Preview: Rain", "Preview: Heavy rain", "Preview: Thunderstorm", "Preview: Fog", "Preview: Snow"]
+  },
+  "timelapse": {
+    "type": "checkbox",
+    "value": false,
+    "text": "Demo: play a 24-hour day in 2 minutes"
+  },
+  "useGeolocation": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Use Windows location (falls back to Dhaka)"
+  },
+  "refreshWeather": {
+    "type": "button",
+    "value": "Refresh",
+    "text": "Fetch weather now"
+  }
+}

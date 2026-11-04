@@ -1,0 +1,13 @@
+{
+  "name": "living-earth-3840",
+  "version": "2.0.0",
+  "description": "Real-time, weather- and time-synchronised Himalayan panorama wallpaper for Lively Wallpaper (dual 1920x1080 = 3840x1080).",
+  "private": true,
+  "scripts": {
+    "start": "npx --yes http-server -c-1 -p 8080 .",
+    "test": "node --test tests/logic.test.mjs",
+    "test:browser": "node tests/browser/scenes.mjs .test-output",
+    "zip": "powershell -NoProfile -Command \"Compress-Archive -Force -Path index.html,LivelyInfo.json,LivelyProperties.json,thumbnail.jpg,src -DestinationPath LivingEarth3840.zip\""
+  },
+  "license": "UNLICENSED"
+}
