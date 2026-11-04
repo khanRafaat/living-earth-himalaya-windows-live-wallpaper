@@ -1,0 +1,482 @@
+/*
+ * Living Earth 3840 — application entry.
+ * Wires services (clock, location, weather, astronomy) → environment → renderer,
+ * runs a frame-capped loop, and integrates with Lively Wallpaper.
+ */
+(function () {
+  'use strict';
+  const LE = window.LE;
+  const cfg = LE.config;
+
+  const canvas = document.getElementById('scene');
+  const veil = document.getElementById('veil');
+  const debugEl = document.getElementById('debug');
+
+  LE.clock.configure(cfg.overrides);
+
+  const env = new LE.Environment(cfg);
+  const weather = new LE.WeatherService(cfg.weather);
+  const overlay = new LE.Overlay(document.getElementById('panel'), cfg);
+  const life = new LE.Life();
+  let renderer = null;
+  let governor = null;
+  let location = { lat: cfg.location.lat, lon: cfg.location.lon, name: cfg.location.name, source: 'default' };
+  let revealed = false; // the first picture has been shown
+  let sceneReady = false;
+
+  // ---------------------------------------------------------------- weather → environment
+  function weatherRecord() {
+    const ov = cfg.overrides.weather;
+    if (ov && LE.weatherPresets[ov]) return { rec: LE.weatherPresets[ov], source: 'preview' };
+    const cur = weather.current(Date.now());
+    return cur ? { rec: cur, source: cur.source } : { rec: null, source: 'none' };
+  }
+  function pushWeather() {
+    const { rec, source } = weatherRecord();
+    env.setWeather(rec, source);
+    // Nothing is on screen yet, so start from this weather instead of easing into it. From here on the
+    // sky moves only when the data changes.
+    if (rec && !revealed) env.w = null;
+    if (rec) reveal();
+  }
+  weather.onUpdate(pushWeather);
+
+  // The start-up screen stays up until the current weather has arrived, so the first sky is the real one.
+  function reveal(force) {
+    if (revealed || !sceneReady || !(force || weatherRecord().rec)) return;
+    revealed = true;
+    showVeil(false);
+    window.__leReady = true;
+  }
+
+  function statusText() {
+    const { source } = weatherRecord();
+    const parts = [];
+    const mode = LE.clock.modeLabel();
+    if (mode) parts.push(mode);
+    if (source === 'preview') {
+      parts.push(`Weather preview: ${cfg.overrides.weather}`);
+    } else if (source === 'none') {
+      parts.push(weather.status === 'offline' ? 'Offline · no cached weather' : 'Waiting for weather…');
+    } else {
+      const mins = Math.round(weather.ageMs() / 60e3);
+      const age = mins < 1 ? 'just now' : mins < 60 ? `${mins} min ago` : `${Math.round(mins / 60)} h ago`;
+      if (source === 'forecast') parts.push(`Offline · using forecast (${age})`);
+      else if (weather.status === 'offline' || weather.status === 'error') parts.push(`Offline · last update ${age}`);
+      else parts.push(`Live · updated ${age}`);
+    }
+    parts.push(`Sky mood synced to ${location.name}`);
+    return parts.join(' · ');
+  }
+
+  // ---------------------------------------------------------------- sizing
+  function targetSize() {
+    const dpr = window.devicePixelRatio || 1;
+    const s = Math.min(1, Math.max(0.4, cfg.render.renderScale));
+    return [
+      Math.max(64, Math.round(window.innerWidth * dpr * s)),
+      Math.max(32, Math.round(window.innerHeight * dpr * s)),
+    ];
+  }
+  let resizeTimer = 0;
+  function onResize() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      layoutVeil();
+      if (!renderer) return;
+      const [w, h] = targetSize();
+      if (w !== renderer.w || h !== renderer.h) {
+        showVeil(true);
+        renderer.resize(w, h);
+      }
+    }, 350);
+  }
+  window.addEventListener('resize', onResize);
+
+  // ---------------------------------------------------------------- veil
+  function showVeil(on) {
+    veil.classList.toggle('hidden', !on);
+  }
+  // Lively "Span" puts one window across both monitors, so a single centred card would be cut
+  // in half by the bezel. When the window is that wide, show a copy of the card on each screen.
+  function layoutVeil() {
+    const span = window.innerWidth / Math.max(1, window.innerHeight) > 2.5;
+    veil.classList.toggle('span', span);
+    if (span && veil.querySelectorAll('.veil-inner').length < 2) {
+      const copy = veil.querySelector('.veil-inner').cloneNode(true);
+      copy.querySelectorAll('[id]').forEach((n) => n.removeAttribute('id'));
+      veil.appendChild(copy);
+    }
+  }
+  layoutVeil();
+  function setVeilText(text) {
+    veil.querySelectorAll('.veil-sub').forEach((n) => (n.textContent = text));
+  }
+  function onRendererStatus(status, progress) {
+    veil.querySelectorAll('.veil-bar i').forEach((n) => (n.style.width = `${Math.round(progress * 100)}%`));
+    if (status === 'compiling') {
+      setVeilText('Preparing the renderer…');
+      showVeil(true);
+    } else if (status === 'baking') {
+      setVeilText('Shaping the mountains…');
+      if (progress === 0) showVeil(true); // e.g. a new landscape variation was chosen
+    }
+    else if (status === 'shadow') setVeilText('Casting the first light…');
+    else if (status === 'running') {
+      sceneReady = true;
+      if (revealed) {
+        showVeil(false); // back from a resize or a graphics reset
+      } else {
+        setVeilText('Loading the current weather…');
+        reveal();
+        // Offline: don't hold the wallpaper back for ever. The panel says weather is missing.
+        setTimeout(() => reveal(true), cfg.weather.startWaitMs);
+      }
+    }
+  }
+  function fatal(err) {
+    console.error(err);
+    veil.classList.remove('hidden');
+    veil.classList.add('error');
+    setVeilText((err && err.message) || String(err));
+  }
+
+  // ---------------------------------------------------------------- loop
+  let paused = false;
+  let pausedByLively = false;
+  let pausedByVisibility = false;
+  let pausedPanelTimer = 0;
+  let rafId = 0;
+  let slowMs = 0; // slow mode: milliseconds between frames (0 = off)
+  let slowTimer = 0;
+  let fadeRaf = 0;
+  let fadeTimer = 0;
+  let sceneAt = 0; // when the slow-mode picture now fading in was drawn
+  const FADE_FPS = 10; // enough for a slow dissolve. Birds on screen raise it to calmFps
+  let lastFrame = 0;
+  let lastReal = performance.now();
+  let lastLife = performance.now();
+  let lastPanel = 0;
+  let simStart = performance.now();
+  let fpsCount = 0;
+  let fpsAt = performance.now();
+  let fps = 0;
+  let lifeSeeded = false;
+  let lastState = null;
+  let lastBusy = -1e9;
+  let targetFps = cfg.render.fpsCap;
+
+  /**
+   * Smart frame rate. Full speed while something fast is on screen (birds, rain, snow, lightning,
+   * meteors, satellites, the time-lapse demo). Otherwise clouds, mist and light only drift
+   * slowly, so calmFps looks the same and costs about a third less GPU. Back to calm after 3 s.
+   */
+  function pickFps(now) {
+    const cap = cfg.render.fpsCap;
+    if (!cfg.render.smartFps || !lastState || renderer.status !== 'running') return cap;
+    const w = lastState.weather;
+    const lifeOn = cfg.life !== false;
+    const busy =
+      w.rain > 0.003 || w.snow > 0.003 || w.flash > 0.01 || cfg.overrides.timelapse > 0 ||
+      (lifeOn && (life.raptors.length > 0 || !!life.flock || !!life.geese || life.meteors.length > 0 || life.sats.length > 0));
+    if (busy) lastBusy = now;
+    return now - lastBusy < 3000 ? cap : Math.min(cap, cfg.render.calmFps);
+  }
+
+  function stepLife(state, now) {
+    life.update(Math.min((now - lastLife) / 1000, 120), state, renderer.viewInfo());
+    lastLife = now;
+  }
+
+  // Slow mode between scene frames: only a fade between two finished pictures and the birds, which costs a
+  // small part of drawing the scene. Clouds drift and birds fly smoothly while the GPU stays free for other work.
+  function fadeFrame() {
+    stopFade();
+    if (!slowMs || paused || !lastState || renderer.status !== 'running') return;
+    const now = performance.now();
+    stepLife(lastState, now);
+    lastState.time = (now - simStart) / 1000;
+    if (!renderer.drawFade(Math.min((now - sceneAt) / slowMs, 1), lastState)) return;
+    const fps = life.movers > 0 || renderer.foregroundMoving() ? cfg.render.calmFps : FADE_FPS;
+    fadeTimer = setTimeout(() => {
+      fadeRaf = requestAnimationFrame(fadeFrame);
+    }, Math.max(1000 / fps - 4, 0));
+  }
+  function stopFade() {
+    cancelAnimationFrame(fadeRaf);
+    clearTimeout(fadeTimer);
+  }
+
+  // Start-up and context-loss work still run at full speed.
+  function scheduleFrame() {
+    if (slowMs && renderer && renderer.status === 'running') {
+      slowTimer = setTimeout(() => {
+        rafId = requestAnimationFrame(frame);
+      }, slowMs);
+    } else {
+      rafId = requestAnimationFrame(frame);
+    }
+  }
+
+  function frame(ts) {
+    scheduleFrame();
+    if (!renderer) return;
+    targetFps = pickFps(ts);
+    const interval = 1000 / Math.max(5, targetFps);
+    const baking = renderer.status !== 'running';
+    if (!baking && !slowMs && ts - lastFrame < interval - 1.5) return;
+    const measured = ts - lastFrame;
+    lastFrame = ts;
+
+    const nowReal = performance.now();
+    // Environment.update makes the weather jump after a gap over 30 s, so slow mode stays under that
+    const dt = Math.min((nowReal - lastReal) / 1000, slowMs ? 25 : 120);
+    lastReal = nowReal;
+    const timeSec = (nowReal - simStart) / 1000;
+    const now = LE.clock.now();
+    const state = env.update(now, dt, timeSec);
+    lastState = state;
+    if (renderer.status === 'running') {
+      const view = renderer.viewInfo();
+      if (!lifeSeeded) {
+        lifeSeeded = true;
+        life.setSmokeSources(renderer.smokeSources);
+        if (cfg.testMode && cfg.lifeTest) life.seedForTest(state, view);
+      }
+      life.enabled = cfg.life !== false;
+      stepLife(state, nowReal);
+    } else {
+      lastLife = nowReal;
+    }
+    if (slowMs) state.weather.flash = 0; // a lightning flash would stay on screen until the next frame
+    renderer.setSlowMode(!!slowMs);
+    const drew = renderer.render(state, dt);
+
+    if (drew && slowMs) {
+      sceneAt = nowReal;
+      fadeFrame();
+    }
+    if (drew) {
+      if (!slowMs) governor.sample(measured, interval, renderer.gpuFrameMs);
+      fpsCount++;
+    }
+    if (nowReal - fpsAt > 1000) {
+      fps = (fpsCount * 1000) / (nowReal - fpsAt);
+      fpsCount = 0;
+      fpsAt = nowReal;
+    }
+    if (nowReal - lastPanel > 1000) {
+      lastPanel = nowReal;
+      const { rec } = weatherRecord();
+      overlay.update(now, state, rec, { locationName: location.name, status: statusText() });
+      if (cfg.debug) {
+        debugEl.style.display = 'block';
+        const a = state.astro;
+        const r = rec || {};
+        const wind = (speed, dir) => (speed == null ? '—' : `${Math.round(speed)} km/h ${Math.round(dir ?? 0)}°`);
+        const fetched = weather.data ? `${Math.round(weather.ageMs() / 60e3)} min ago` : 'not yet';
+        debugEl.textContent =
+          `${fps.toFixed(1)} fps (target ${targetFps}${cfg.render.smartFps ? ', smart' : ''}) · ${governor.name()} · ${renderer.w}×${renderer.h} · vol ${renderer.vw}×${renderer.vh}\n` +
+          `sun ${a.sunAltDeg.toFixed(2)}° az ${a.sunAzDeg.toFixed(1)}° · moon ${a.moonAltDeg.toFixed(1)}° ${Math.round(a.moonFraction * 100)}%\n` +
+          `exposure ${state.exposure.toExponential(2)} · deck cover ${state.weather.coverage.toFixed(2)} rain ${state.weather.rain.toFixed(2)} mist ${state.weather.mist.toFixed(2)} fog ${state.weather.fog.toFixed(2)} haze ${state.weather.haze.toFixed(2)}\n` +
+          `weather fetched ${fetched} · wind 10 m ${wind(r.windSpeed, r.windDir)} · 850 hPa ${wind(r.wind850, r.dir850)} · 700 hPa ${wind(r.wind700, r.dir700)} · 300 hPa ${wind(r.wind300, r.dir300)}\n` +
+          `life: ${life.raptors.length} raptors · flock ${life.flock ? life.flock.birds.length : 0} · geese ${life.geese ? life.geese.birds.length : 0} · smoke ${life.smoke.length}/${life.smokeSources.length} · meteors ${life.meteors.length}${life.activeShower ? ' (' + life.activeShower + ')' : ''}\n` +
+          `${renderer.gpuInfo()}`;
+      }
+    }
+  }
+
+  // Lively and page visibility pause independently, and a resume needs both to agree: otherwise a
+  // visibility change could wake a wallpaper Lively has paused. While paused nothing is scheduled
+  // for the GPU; a light timer keeps the panel's clock and weather current over the frozen frame.
+  function updateIfPaused() {
+    if (!lastState || !cfg.ui.showPanel || document.hidden) return;
+    overlay.update(LE.clock.now(), lastState, weatherRecord().rec, { locationName: location.name, status: statusText() });
+  }
+  function applyPause() {
+    const p = pausedByLively || pausedByVisibility;
+    if (p === paused) return;
+    paused = p;
+    if (p) {
+      cancelAnimationFrame(rafId);
+      clearTimeout(slowTimer);
+      stopFade();
+      pausedPanelTimer = setInterval(updateIfPaused, 5000);
+    } else {
+      clearInterval(pausedPanelTimer);
+      lastReal = performance.now();
+      lastLife = lastReal;
+      lastFrame = 0;
+      rafId = requestAnimationFrame(frame);
+    }
+  }
+  document.addEventListener('visibilitychange', () => {
+    pausedByVisibility = document.hidden;
+    applyPause();
+  });
+
+  // Used by src/services/host.js: draw one frame every `ms` milliseconds, or at the normal rate with 0.
+  window.leSetSlowFrames = function (ms) {
+    if (ms === slowMs) return;
+    slowMs = ms;
+    stopFade();
+    if (paused) return;
+    cancelAnimationFrame(rafId);
+    clearTimeout(slowTimer);
+    rafId = requestAnimationFrame(frame);
+  };
+
+  // ---------------------------------------------------------------- Lively integration
+  // Lively calls these globals. Dropdowns send an index, sliders a number, checkboxes a bool.
+  const PANEL_POS = ['right-bottom', 'right-top', 'left-bottom', 'left-top'];
+  const FPS = [24, 30, 45, 60];
+  const QUALITY = ['auto', 'eco', 'balanced', 'high', 'ultra'];
+  const SCALE = [1, 0.85, 0.75, 0.67];
+  const HEADING = [50, 180, 90, 270, 0];
+  const WEATHER = [null, 'clear', 'partly', 'overcast', 'rain', 'heavyrain', 'storm', 'fog', 'snow'];
+
+  window.livelyPropertyListener = function (name, val) {
+    switch (name) {
+      case 'showPanel':
+        cfg.ui.showPanel = !!val;
+        overlay.apply();
+        break;
+      case 'panelPosition':
+        cfg.ui.panelPosition = PANEL_POS[val] || PANEL_POS[0];
+        overlay.apply();
+        break;
+      case 'clock24h':
+        cfg.ui.clock24h = !!val;
+        break;
+      case 'tempUnit':
+        cfg.ui.tempUnit = val === 1 ? 'F' : 'C';
+        break;
+      case 'fpsCap':
+        cfg.render.fpsCap = FPS[val] || 30;
+        break;
+      case 'smartFps':
+        cfg.render.smartFps = !!val;
+        break;
+      case 'quality':
+        cfg.render.quality = QUALITY[val] || 'auto';
+        if (governor) governor.setMode(cfg.render.quality);
+        break;
+      case 'renderScale':
+        cfg.render.renderScale = SCALE[val] || 1;
+        onResize();
+        break;
+      case 'viewDirection':
+        cfg.render.heading = HEADING[val] ?? 50;
+        break;
+      case 'landscapeSeed':
+        cfg.render.seed = Math.max(1, Math.round(val));
+        break;
+      case 'cloudSpeed':
+        cfg.atmosphere.cloudSpeed = Number(val) || 1;
+        break;
+      case 'treeWind':
+        cfg.atmosphere.treeWind = Number(val) || 0;
+        break;
+      case 'weatherMode':
+        cfg.overrides.weather = WEATHER[val] || null;
+        pushWeather();
+        break;
+      case 'timelapse':
+        cfg.overrides.timelapse = val ? 720 : 0;
+        LE.clock.configure(cfg.overrides);
+        break;
+      case 'useGeolocation':
+        if (cfg.location.useGeolocation !== !!val) {
+          cfg.location.useGeolocation = !!val;
+          resolveLocation();
+        }
+        break;
+      case 'life':
+        cfg.life = !!val;
+        break;
+      case 'refreshWeather':
+        weather.refreshNow();
+        break;
+      default:
+        break;
+    }
+  };
+
+  // Lively pauses wallpapers when apps are maximised/fullscreen (if enabled in Lively).
+  window.livelyWallpaperPlaybackChanged = function (data) {
+    try {
+      const obj = typeof data === 'string' ? JSON.parse(data) : data;
+      pausedByLively = !!(obj && (obj.IsPaused ?? obj.isPaused));
+      applyPause();
+    } catch (e) {
+      /* ignore malformed messages */
+    }
+  };
+
+  // ---------------------------------------------------------------- start
+  function startRenderer() {
+    renderer = new LE.Renderer(canvas, cfg);
+    renderer.onStatus = onRendererStatus;
+    renderer.onError = fatal; // shader errors surface once background compilation finishes
+    renderer.init();
+    renderer.life = life;
+    lifeSeeded = false;
+    governor = new LE.QualityGovernor(renderer, cfg.render.quality);
+    const [w, h] = targetSize();
+    renderer.resize(w, h);
+    window.__le = { renderer, env, weather, cfg, governor };
+  }
+
+  canvas.addEventListener('webglcontextlost', (e) => {
+    e.preventDefault();
+    if (renderer) renderer.status = 'lost';
+    setVeilText('Graphics device reset — recovering…');
+    showVeil(true);
+  });
+  canvas.addEventListener('webglcontextrestored', () => {
+    try {
+      startRenderer();
+    } catch (err) {
+      fatal(err);
+    }
+  });
+
+  try {
+    startRenderer();
+  } catch (err) {
+    fatal(err);
+    return;
+  }
+
+  // Weather starts immediately from cache; location (≤ 8 s) may then move it.
+  let locationRequest = 0;
+  function resolveLocation() {
+    const id = ++locationRequest;
+    return LE.location.resolve(cfg.location).then((loc) => {
+      if (id !== locationRequest) return; // a newer choice replaced this one while it was loading
+      const moved = LE.location.distanceKm(loc.lat, loc.lon, location.lat, location.lon) > 10;
+      location = loc;
+      env.setLocation(loc);
+      if (moved) weather.start(loc.lat, loc.lon);
+    });
+  }
+  // Used by src/services/host.js when the place is changed in the Windows app, or found automatically.
+  // Applies at once, without reloading the wallpaper.
+  window.leSetLocation = function (loc) {
+    if (!loc || !isFinite(loc.lat) || !isFinite(loc.lon) || Math.abs(loc.lat) > 90 || Math.abs(loc.lon) > 180) return;
+    const name = String(loc.name || 'Your area').slice(0, 60);
+    const km = LE.location.distanceKm(loc.lat, loc.lon, location.lat, location.lon);
+    if (km < 1 && name === location.name) return;
+    locationRequest++; // a geolocation answer still on its way must not undo this choice
+    cfg.location.useGeolocation = false;
+    location = { lat: loc.lat, lon: loc.lon, name, source: 'host' };
+    env.setLocation(location);
+    if (km > 10) weather.start(location.lat, location.lon);
+  };
+
+  pushWeather();
+  weather.start(location.lat, location.lon, true);
+  resolveLocation();
+
+  rafId = requestAnimationFrame(frame);
+})();

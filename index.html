@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Living Earth 3840</title>
+  <link rel="stylesheet" href="src/styles/main.css">
+</head>
+<body>
+  <canvas id="scene"></canvas>
+
+  <div id="veil">
+    <div class="veil-inner">
+      <div class="veil-title">Living Earth</div>
+      <div class="veil-sub" id="veilSub">Shaping the mountains…</div>
+      <div class="veil-bar"><i id="veilBar"></i></div>
+    </div>
+  </div>
+
+  <aside id="panel" class="panel pos-right-bottom">
+    <div class="p-time"><span class="p-clock" data-k="clock">--:--</span><span class="p-ampm" data-k="ampm"></span></div>
+    <div class="p-date" data-k="date"></div>
+    <div class="p-phase"><b data-k="phase"></b> · <span data-k="phaseDetail"></span></div>
+    <div class="p-rule"></div>
+    <div class="p-wx">
+      <svg class="p-icon" viewBox="0 0 24 24" data-k="icon"></svg>
+      <div class="p-temp" data-k="temp">—</div>
+      <div>
+        <div class="p-cond" data-k="cond">Loading weather…</div>
+        <div class="p-loc"><span data-k="loc">Dhaka</span> weather</div>
+      </div>
+    </div>
+    <div class="p-grid">
+      <div><label>Humidity</label><span data-k="hum">—</span></div>
+      <div><label>Wind</label><span data-k="wind">—</span></div>
+      <div><label>Clouds</label><span data-k="cloud">—</span></div>
+      <div><label>Visibility</label><span data-k="vis">—</span></div>
+      <div><label>Sunrise</label><span data-k="sunrise">—</span></div>
+      <div><label>Sunset</label><span data-k="sunset">—</span></div>
+      <div><label>Moonrise</label><span data-k="moonrise">—</span></div>
+      <div><label>Moonset</label><span data-k="moonset">—</span></div>
+    </div>
+    <div class="p-foot" data-k="status"></div>
+  </aside>
+
+  <div id="debug"></div>
+
+  <!-- classic scripts (no ES modules) so the wallpaper works straight from disk under file:// -->
+  <script src="src/config.js"></script>
+  <script src="src/services/storage.js"></script>
+  <script src="src/services/clock.js"></script>
+  <script src="src/services/location.js"></script>
+  <script src="src/services/astronomy.js"></script>
+  <script src="src/services/weather.js"></script>
+  <script src="src/engine/gl.js"></script>
+  <script src="src/engine/shaders/chunks.js"></script>
+  <script src="src/engine/shaders/ledge.js"></script>
+  <script src="src/engine/shaders/bake.js"></script>
+  <script src="src/engine/shaders/lighting.js"></script>
+  <script src="src/engine/shaders/volume.js"></script>
+  <script src="src/engine/shaders/composite.js"></script>
+  <script src="src/engine/shaders/sprites.js"></script>
+  <script src="src/engine/shaders/tree.js"></script>
+  <script src="src/engine/quality.js"></script>
+  <script src="src/engine/environment.js"></script>
+  <script src="src/engine/life.js"></script>
+  <script src="src/engine/foreground.js"></script>
+  <script src="src/engine/renderer.js"></script>
+  <script src="src/ui/overlay.js"></script>
+  <script src="src/main.js"></script>
+  <script src="src/services/host.js"></script>
+  <script src="src/services/devreload.js"></script>
+</body>
+</html>

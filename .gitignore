@@ -1,0 +1,23 @@
+# development only: the stamp an open browser tab watches to reload after a change (src/services/devreload.js)
+dev/stamp.js
+
+# test output and browser profiles
+.test-output/
+**/edge-profile-*/
+
+# the Windows app's build leftovers and its saved settings (LivingEarthHost.exe itself ships, so a download runs)
+host/bin/
+host/obj/
+host/state.js
+
+# editors and OS
+.vscode/
+.idea/
+*.log
+Thumbs.db
+Desktop.ini
+.DS_Store
+node_modules/
+
+# internal working notes, not documentation
+HANDOVER.md
