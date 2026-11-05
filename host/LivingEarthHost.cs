@@ -39,8 +39,8 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Living Earth Himalaya")]
 [assembly: AssemblyProduct("Living Earth Himalaya")]
 [assembly: AssemblyCopyright("Khan Rafaat Abtahe. MIT licence")]
-[assembly: AssemblyVersion("2.0.0.0")]
-[assembly: AssemblyFileVersion("2.0.0.0")]
+[assembly: AssemblyVersion("2.0.1.0")]
+[assembly: AssemblyFileVersion("2.0.1.0")]
 
 namespace LivingEarth
 {
@@ -411,6 +411,8 @@ namespace LivingEarth
         private const int BusySeconds = 3;         // ...for this long, so a short spike doesn't count
         private const int BusyHoldSeconds = 20;    // stay at the slow pace this long after the CPU calms down
         private const int AttachTimeoutSeconds = 60;
+        private const int QuickDeathSeconds = 30;  // Edge going away sooner than this counts as failing to start
+        private const int MaxQuickDeaths = 3;      // ...and this many in a row stops the trying, so the screen can't keep flashing
 
         // The pace the page understands: see src/services/host.js
         private const string Live = "live", Rest = "rest", Still = "still";
@@ -442,8 +444,8 @@ namespace LivingEarth
         private IntPtr job, edgeProcess, wallpaper, progman, iconView, workerW, focusBeforeLaunch;
         private DateTime startedAt, nextLaunch = DateTime.MinValue;
         private TimeSpan backoff = TimeSpan.FromSeconds(5);
-        private bool attached, locked, desktopInFront = true;
-        private int placeTick;
+        private bool attached, handedOver, locked, desktopInFront = true;
+        private int placeTick, quickDeaths;
 
         private long lastIdle, lastKernel, lastUser;
         private int busyFor;
@@ -507,7 +509,12 @@ namespace LivingEarth
             statePath = Path.Combine(hostDir, "state.js");
             settingsPath = Path.Combine(dataDir, "settings.ini");
             logPath = Path.Combine(dataDir, "host.log");
+            // Starting again is what people do after a failure: keep the log of the run that failed
+            try { if (File.Exists(logPath)) File.Copy(logPath, logPath + ".previous", true); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
             File.WriteAllText(logPath, "");
+            LogStart(args);
             settings = Settings.Load(settingsPath);
 
             bool silent = false;
@@ -799,18 +806,12 @@ namespace LivingEarth
         // ------------------------------------------------------------------ Edge
         private void KeepEdgeRunning(DateTime now)
         {
-            bool alive = edgeProcess != IntPtr.Zero && Native.WaitForSingleObject(edgeProcess, 0) != 0;
+            bool alive = edgeProcess != IntPtr.Zero && EdgeRunning();
             if (alive && attached && !Native.IsWindow(wallpaper)) alive = false; // Explorer restarted
 
             if (!alive)
             {
-                if (edgeProcess != IntPtr.Zero)
-                {
-                    Log("Edge or its window went away, restarting in " + backoff.TotalSeconds + " s");
-                    StopEdge();
-                    nextLaunch = now + backoff;
-                    backoff = TimeSpan.FromSeconds(Math.Min(backoff.TotalSeconds * 2, 300));
-                }
+                if (edgeProcess != IntPtr.Zero && EdgeFailed(now, "Edge or its window went away (" + DescribeEdgeExit() + ")")) return;
                 if (now >= nextLaunch) StartEdge(now);
                 return;
             }
@@ -820,22 +821,61 @@ namespace LivingEarth
                 if (TryAttach())
                 {
                     attached = true;
-                    Log("attached behind the desktop icons");
+                    Log("attached behind the desktop icons (window of process " + PidOf(wallpaper) + ")");
                     // Kiosk mode can take focus as it opens: give it back to what you were using
                     if (Native.IsWindow(focusBeforeLaunch)) Native.SetForegroundWindow(focusBeforeLaunch);
                 }
                 else if ((now - startedAt).TotalSeconds > AttachTimeoutSeconds)
                 {
-                    Log("could not attach within " + AttachTimeoutSeconds + " s, restarting in " + backoff.TotalSeconds + " s");
-                    StopEdge();
-                    nextLaunch = now + backoff;
-                    backoff = TimeSpan.FromSeconds(Math.Min(backoff.TotalSeconds * 2, 300));
+                    EdgeFailed(now, "could not attach within " + AttachTimeoutSeconds + " s");
                 }
                 return;
             }
 
             if (++placeTick % 5 == 0) Place(false);
             if ((now - startedAt).TotalMinutes > 5) backoff = TimeSpan.FromSeconds(5);
+        }
+
+        // The process this app starts isn't always the browser: it can hand over to a second msedge.exe moments after it
+        // starts, and then exit normally. Windows brings this on the first time it sees a new exe, and it would happen again
+        // on every start of that run. So what counts is the job, which holds whichever process is the browser.
+        private bool EdgeRunning()
+        {
+            if (Native.WaitForSingleObject(edgeProcess, 0) != 0) return true;
+            int started, active, overLimit;
+            if (!JobCounts(out started, out active, out overLimit) || active == 0) return false;
+            if (!handedOver)
+            {
+                handedOver = true;
+                Log("Edge handed over to a new process (" + DescribeEdgeExit() + ")");
+            }
+            return true;
+        }
+
+        // Returns true if this stopped the trying.
+        private bool EdgeFailed(DateTime now, string what)
+        {
+            // Lasting a while and then going away (Explorer restarted, say) isn't the same as being unable to start
+            quickDeaths = !attached || (now - startedAt).TotalSeconds < QuickDeathSeconds ? quickDeaths + 1 : 0;
+            bool giveUp = quickDeaths >= MaxQuickDeaths;
+            Log(what + (giveUp ? "" : ", restarting in " + backoff.TotalSeconds + " s"));
+            StopEdge();
+            nextLaunch = now + backoff;
+            backoff = TimeSpan.FromSeconds(Math.Min(backoff.TotalSeconds * 2, 300));
+            if (!giveUp) return false;
+
+            Log("stopped trying after " + quickDeaths + " failed starts in a row");
+            running = false;
+            timer.Stop();
+            quickDeaths = 0;
+            backoff = TimeSpan.FromSeconds(5);
+            nextLaunch = DateTime.MinValue;
+            MessageBox.Show(
+                "Microsoft Edge closed right after it opened, " + MaxQuickDeaths + " times in a row, so the wallpaper could not start.\n\n" +
+                "Click Set wallpaper to try again, or close the window to keep your normal wallpaper.\n\nDetails are in " + logPath,
+                "Living Earth Himalaya", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            if (!quitting) ShowSetup();
+            return true;
         }
 
         private void StartEdge(DateTime now)
@@ -870,6 +910,7 @@ namespace LivingEarth
             cmd.Append(" --disable-features=CalculateNativeWinOcclusion");
             cmd.Append(" --disable-renderer-backgrounding --disable-background-timer-throttling");
             cmd.Append(" --disable-backgrounding-occluded-windows");
+            // Never --enable-logging: started from an app without a console, as this is, Edge then opens a console window of its own.
             cmd.Append(extraEdgeArgs);
 
             CreateJob();
@@ -891,13 +932,87 @@ namespace LivingEarth
             Native.CloseHandle(pi.hThread);
             edgeProcess = pi.hProcess;
             startedAt = now;
+            handedOver = false;
             attached = false;
             wallpaper = IntPtr.Zero;
             written = null; // the new page needs the current state
             // If Explorer restarted, its tray forgot this icon
             tray.Visible = false;
             tray.Visible = true;
-            Log("started Edge: " + url);
+            Log("started Edge: " + url + " (in front: " + DescribeWindow(focusBeforeLaunch) + ")");
+        }
+
+        // ------------------------------------------------------------------ what the log needs after a failure
+        private void LogStart(string[] args)
+        {
+            bool inJob;
+            bool known = Native.IsProcessInJob(Native.GetCurrentProcess(), IntPtr.Zero, out inJob);
+            string layer = Environment.GetEnvironmentVariable("__COMPAT_LAYER");
+            Log("app started: " + Assembly.GetExecutingAssembly().GetName().Version + ", pid " + ownPid +
+                (known ? (inJob ? ", in a job" : ", not in a job") : "") + ", args [" + string.Join(" ", args) + "]" +
+                (string.IsNullOrEmpty(layer) ? "" : ", compatibility layer " + layer));
+        }
+
+        private bool JobCounts(out int started, out int active, out int overLimit)
+        {
+            started = active = overLimit = 0;
+            if (job == IntPtr.Zero) return false;
+            const int Size = 48; // JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+            IntPtr mem = Marshal.AllocHGlobal(Size);
+            try
+            {
+                uint got;
+                if (!Native.QueryInformationJobObject(job, Native.JobObjectBasicAccountingInformation, mem, Size, out got)) return false;
+                started = Marshal.ReadInt32(mem, 36);
+                active = Marshal.ReadInt32(mem, 40);
+                overLimit = Marshal.ReadInt32(mem, 44);
+                return true;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(mem);
+            }
+        }
+
+        private bool InEdgeJob(int pid)
+        {
+            IntPtr p = Native.OpenProcess(Native.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+            if (p == IntPtr.Zero) return false;
+            try
+            {
+                bool inJob;
+                return Native.IsProcessInJob(p, job, out inJob) && inJob;
+            }
+            finally
+            {
+                Native.CloseHandle(p);
+            }
+        }
+
+        private string DescribeWindow(IntPtr h)
+        {
+            if (h == IntPtr.Zero) return "nothing";
+            int pid = PidOf(h);
+            if (pid == ownPid) return "this app";
+            try { using (Process p = Process.GetProcessById(pid)) return p.ProcessName + "/" + ClassOf(h); }
+            catch (ArgumentException) { return ClassOf(h); }
+            catch (InvalidOperationException) { return ClassOf(h); }
+        }
+
+        // Exit code, how long it lived, and what is still alive in its job: what tells a crash, a kill and a relaunch apart.
+        private string DescribeEdgeExit()
+        {
+            var s = new StringBuilder();
+            uint code;
+            bool exited = Native.GetExitCodeProcess(edgeProcess, out code) && code != Native.STILL_ACTIVE;
+            s.Append(exited ? "exit code 0x" + code.ToString("X") : "main process still running");
+            long created, ended, kernel, user;
+            if (exited && Native.GetProcessTimes(edgeProcess, out created, out ended, out kernel, out user))
+                s.Append(", lived ").Append((ended - created) / 10000).Append(" ms");
+            int started, active, overLimit;
+            if (JobCounts(out started, out active, out overLimit))
+                s.Append(", job: ").Append(started).Append(" started, ").Append(active).Append(" alive, ").Append(overLimit).Append(" over a limit");
+            return s.ToString();
         }
 
         private void StopEdge()
@@ -1035,14 +1150,15 @@ namespace LivingEarth
 
         private IntPtr FindEdgeWindow()
         {
-            int pid = Native.GetProcessId(edgeProcess);
             IntPtr found = IntPtr.Zero;
             Native.EnumWindows(delegate(IntPtr h, IntPtr l)
             {
                 // Don't wait for the page title: the sooner this window goes behind the icons, the better.
-                if (PidOf(h) != pid || ClassOf(h) != "Chrome_WidgetWin_1" || !Native.IsWindowVisible(h)) return true;
+                if (ClassOf(h) != "Chrome_WidgetWin_1" || !Native.IsWindowVisible(h)) return true;
                 Native.RECT r;
                 if (!Native.GetWindowRect(h, out r) || r.Right - r.Left < 800) return true;
+                // Last, because other browsers' windows look just the same up to here
+                if (!InEdgeJob(PidOf(h))) return true;
                 found = h;
                 return false;
             }, IntPtr.Zero);
@@ -1589,10 +1705,18 @@ namespace LivingEarth
         [DllImport("kernel32.dll")] public static extern uint ResumeThread(IntPtr h);
         [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
         [DllImport("kernel32.dll")] public static extern uint WaitForSingleObject(IntPtr h, uint ms);
-        [DllImport("kernel32.dll")] public static extern int GetProcessId(IntPtr h);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr CreateJobObject(IntPtr attr, string name);
         [DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetInformationJobObject(IntPtr job, int cls, IntPtr info, uint size);
         [DllImport("kernel32.dll", SetLastError = true)] public static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
         [DllImport("kernel32.dll")] public static extern bool TerminateJobObject(IntPtr job, uint code);
+        [DllImport("kernel32.dll")] public static extern bool QueryInformationJobObject(IntPtr job, int cls, IntPtr info, uint size, out uint returned);
+        [DllImport("kernel32.dll")] public static extern bool GetExitCodeProcess(IntPtr h, out uint code);
+        [DllImport("kernel32.dll")] public static extern bool GetProcessTimes(IntPtr h, out long created, out long ended, out long kernel, out long user);
+        [DllImport("kernel32.dll")] public static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);
+        [DllImport("kernel32.dll")] public static extern IntPtr GetCurrentProcess();
+        public const uint STILL_ACTIVE = 259;
+        [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+        public const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+        public const int JobObjectBasicAccountingInformation = 1;
     }
 }

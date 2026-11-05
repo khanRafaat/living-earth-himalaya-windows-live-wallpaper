@@ -8,7 +8,7 @@
   const LE = (window.LE = window.LE || {});
 
   LE.config = {
-    version: '2.0.0',
+    version: '2.0.1',
 
     location: {
       name: 'Dhaka',

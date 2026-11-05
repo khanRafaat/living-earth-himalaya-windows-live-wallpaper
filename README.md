@@ -8,7 +8,7 @@ You do not need Lively, Wallpaper Engine, Steam, an installer, admin rights or a
 
 ## Download and set your wallpaper
 
-### **[Download LivingEarthHimalaya-2.0.0.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.0.0/LivingEarthHimalaya-2.0.0.exe)**
+### **[Download LivingEarthHimalaya-2.0.1.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.0.1/LivingEarthHimalaya-2.0.1.exe)**
 
 About 0.2 MB. For Windows 11 version 24H2 or later.
 
@@ -121,7 +121,7 @@ In Windows **Display settings**, choose **Extend these displays**, put the monit
 ## Frequently asked questions
 
 ### How do I get a live wallpaper on Windows 11?
-On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.0.0.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
+On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.0.1.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
 
 ### Do I need Lively or Wallpaper Engine?
 No. The exe sets the wallpaper by itself on Windows 11 version 24H2 or later, with nothing else to install. Lively is only for older versions of Windows.
@@ -159,6 +159,7 @@ The wallpaper needs a rough location for the sun, moon and weather. You can choo
 | "Windows protected your PC" | Click **More info**, then **Run anyway**. See [why Windows warns you](#download-and-set-your-wallpaper). |
 | The app says it needs Windows 11 version 24H2 | Your Windows is older. Update Windows, or use [Lively](#option-2-lively-wallpaper-for-windows-10-and-older-windows-11). |
 | "Microsoft Edge was not found" | The app draws through Edge. Install Microsoft Edge again, then restart the app. |
+| "Microsoft Edge closed right after it opened" | Click **Set wallpaper** to try again. If it keeps happening, [open an issue](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/issues) with the file `%LOCALAPPDATA%\LivingEarth\host.log` (it names the place you chose). |
 | The same picture on both screens | Choose **Extend these displays** in Windows Display settings. In Lively, also choose **Span**, not "Duplicate" or "Per screen". |
 | A strip is cut off or not aligned | Align the top edges of the monitors in Windows Display settings. |
 | Black screen with an error message | Update your graphics driver, then restart the wallpaper. |

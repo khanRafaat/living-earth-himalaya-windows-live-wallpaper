@@ -1374,3 +1374,22 @@ test('every place that names the version agrees, and the download links point at
     assert.ok(!text.includes('LivingEarthHimalaya.exe'), page + ' has no name without a version');
   }
 });
+
+test('the app follows Edge by its job, because the process it starts can hand over to another and exit', () => {
+  const host = readFileSync(new URL('../host/LivingEarthHost.cs', import.meta.url), 'utf8');
+  const method = (signature) => {
+    const at = host.indexOf(signature);
+    assert.ok(at >= 0, signature);
+    return host.slice(at, host.indexOf('\n        private ', at + signature.length));
+  };
+  // On the first run of a new exe the first msedge.exe lives about 30 ms. Watching only it, the app killed the real browser.
+  assert.ok(method('private void KeepEdgeRunning(').includes('EdgeRunning()'), 'going by the job');
+  assert.ok(method('private bool EdgeRunning(').includes('JobCounts('), 'a first process that exited is not the end while the job has others');
+  const find = method('private IntPtr FindEdgeWindow(');
+  assert.ok(find.includes('InEdgeJob('), 'the window can belong to the process Edge handed over to');
+  assert.ok(!/GetProcessId|edgeProcess/.test(find), 'so it is not looked for by the first process');
+  // Whatever the cause, the screen must not keep flashing
+  assert.ok(method('private bool EdgeFailed(').includes('MaxQuickDeaths'), 'it stops trying and says so');
+  // With this switch Edge opens a console window of its own when, as here, nothing it was started from has one
+  assert.ok(!method('private void StartEdge(').includes('cmd.Append(" --enable-logging'), 'no terminal window on the desktop');
+});
