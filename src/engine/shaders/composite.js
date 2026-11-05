@@ -52,8 +52,9 @@ float flakes(vec2 p, float cell, float speed, float size, float dens, float seed
 }
 
 vec3 precipitation(vec3 col, vec2 fc) {
+  if (uRain <= 0.003 && uSnow <= 0.003) return col; // most of the time: nothing to do for this pixel
   vec2 p = fc / uRes.y * 1080.0;
-  vec3 zen = skyLUT(vec3(0.0, 1.0, 0.0));
+  vec3 zen = textureLod(uSkyLUT, vec2(0.5, 1.0), 0.0).rgb; // the zenith, as skyLUT(vec3(0.0, 1.0, 0.0))
   vec3 skyA = vec3(dot(zen, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.9, 0.95, 1.0) * PI * 0.3;
   // Drops catch whatever light is around, so rain still shows on a moonless night
   skyA = max(skyA, vec3(0.036, 0.04, 0.046)) + uFlash * 0.05;
@@ -161,6 +162,8 @@ uniform float uLampE;
 uniform float uLampDark;
 uniform float uLocalHour;
 uniform vec2 uGustDir;
+uniform vec4 uGrassWind; // the grass: how far its gusts have travelled (x, y, m), its lean (pixels), how strong the wind is
+uniform int uGrassOnly; // 1 between scenes: draws nothing but the grass
 uniform vec2 uGustTravel;
 uniform float uWindAmt;
 uniform vec2 uTreeSway;
@@ -313,7 +316,7 @@ float treeShade(vec3 pm) {
       vec3 m = q + L * (t0 + t1) * 0.5 + vec3(uGustDir.x, 0.0, uGustDir.y) * uTreeSwayT;
       float n = noise2(m.xz * 2.3 + m.y * 0.7) * 0.6 + noise2(m.xz * 5.3 - m.y * 1.3 + 3.0) * 0.4;
       float gaps = smoothstep(0.1, 0.6, n) * (1.0 - smoothstep(1.0, 3.2, chord));
-      res *= mix(exp(-chord * 1.2), 1.0, gaps * 0.85);
+      res *= mix(max(exp(-chord * 1.2), 0.28), 1.0, gaps * 0.85);
     }
   }
   // the trunk: nearest distance between the light's ray and its axis
@@ -378,17 +381,23 @@ vec3 shadeTerrain(vec3 rd, float t, vec4 g0, ivec2 ic) {
   float meadow = canopy > 0.5 ? 0.0 : g3.a;
   float windMask = canopy * 0.8 + meadow;
   bool ledge = t < LEDGE_T_KM;
-  if (ledge && uWindAmt > 0.001 && g3.a > 0.02) {
-    // the grass at our feet: ripples a few metres apart run downwind through it. The gust travel wraps
-    // every 5 km, a whole number of noise tiles at these scales, so the wrap never shows.
-    vec3 pm = rd * t * 1000.0;
-    vec2 acrossM = vec2(-uGustDir.y, uGustDir.x);
-    vec2 wm = vec2(dot(pm.xz, uGustDir), dot(pm.xz, acrossM));
-    float g = textureLod(uNoise2D, (wm - vec2(uGustTravel.x * 1000.0, 0.0)) * vec2(0.08, 0.03), 1.0).r - 0.5;
-    float fine = textureLod(uNoise2D, (wm - vec2(uGustTravel.y * 1000.0, 0.0)) * vec2(0.3, 0.12) + 0.4, 0.0).g - 0.5;
-    float swingM = (g * 2.0 + fine * 0.8) * uWindAmt * g3.a;
-    N = normalize(N + vec3(uGustDir.x, 0.0, uGustDir.y) * swingM * 0.6);
-    alb *= 1.0 + swingM * 0.35; // bent blades show their paler sides
+  if (ledge && uGrassWind.w > 0.001 && g3.a > 0.02) {
+    // the grass at our feet: gusts run through it in the real wind direction, as soft waves of lighter and darker,
+    // because bent blades show their paler sides. Each blade leans a pixel or so with them, roots still. Measured across the picture and not on the ground: grass stands up, so
+    // the low view must not flatten this into stripes. The travel wraps every 50 m, a whole number of noise tiles at
+    // these scales, so the wrap never shows.
+    float gxA = atan(rd.x, rd.z);
+    float gyA = rd.y / length(rd.xz);
+    vec2 wm = vec2(gxA, gyA * 2.5) * length(uTreeSite.xz);
+    float g = textureLod(uNoise2D, (wm - uGrassWind.xy) * 0.08, 1.0).r - 0.5;
+    float fine = textureLod(uNoise2D, (wm - uGrassWind.xy * 1.25) * 0.16 + 0.4, 1.0).g - 0.5;
+    float swingM = (g * 2.0 + fine * 0.7) * uGrassWind.w;
+    float pa = pixelAngle();
+    float now = grassTone(grassBlades(gxA / pa, gyA / pa, swingM * 3.0 + uGrassWind.z));
+    float rest = grassTone(grassBlades(gxA / pa, gyA / pa, 0.0));
+    alb *= mix(1.0, clamp(now / rest, 0.35, 3.0), g3.a);
+    N = normalize(N + vec3(uGustDir.x, 0.0, uGustDir.y) * swingM * 0.2 * g3.a);
+    alb *= 1.0 + swingM * 0.35 * g3.a;
   }
   if (!ledge && uWindAmt > 0.001 && t < 14.0 && windMask > 0.02) {
     vec2 across = vec2(-uGustDir.y, uGustDir.x);
@@ -443,7 +452,9 @@ vec3 shadeTerrain(vec3 rd, float t, vec4 g0, ivec2 ic) {
                  + uMoonE * transmittance(uCloudBase, uMoonDir.y) * clamp(uMoonDir.y + 0.05, 0.0, 1.0) * 0.13
                  + skyLUT(vec3(0.0, 1.0, 0.0)) * 0.6) * PI * (0.55 + 0.45 * up);
   amb = mix(amb, cloudAmb * vec3(0.95, 0.97, 1.0), uOvercast);
-  vec3 bounce = vec3(0.10, 0.10, 0.085) * (sunL * max(uSunDir.y, 0.0) + amb * 0.25) * (1.0 - up);
+  // The rock we stand on hangs over a wide sunlit valley: light comes back up from it, even into the rock's own shade
+  vec3 bounceSun = ledge ? uSunE * transmittance(pos.y, uSunDir.y) * cs * 1.6 : sunL;
+  vec3 bounce = vec3(0.10, 0.10, 0.085) * (bounceSun * max(uSunDir.y, 0.0) + amb * 0.25) * (1.0 - up);
 
   vec3 diffuse = alb / PI * (sunL * ndlS + moonL * ndlM + (amb + bounce) * ao);
 
@@ -562,6 +573,7 @@ void main() {
   vec3 rd = cameraRay(fc);
   vec4 g0 = texelFetch(uG0, ic, 0);
   float t = g0.z;
+  if (uGrassOnly == 1 && (t < 0.0 || t >= LEDGE_T_KM || texelFetch(uG3, ic, 0).a <= 0.02)) discard;
   vec3 col;
   if (t < 0.0) {
     col = shadeSky(rd);

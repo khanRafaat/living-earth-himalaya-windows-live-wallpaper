@@ -1,5 +1,5 @@
 /*
- * Living Earth 3840 — application entry.
+ * Living Earth Himalaya — application entry.
  * Wires services (clock, location, weather, astronomy) → environment → renderer,
  * runs a frame-capped loop, and integrates with Lively Wallpaper.
  */
@@ -25,12 +25,35 @@
   let sceneReady = false;
 
   // ---------------------------------------------------------------- weather → environment
+  let windOverride = null; // the wind test's values (?windtest=1)
+  let testWeather; // what the test panel asks for (?debug=1). Undefined: nothing. Null: as if there were no data
   function weatherRecord() {
+    if (testWeather !== undefined) return { rec: testWeather, source: testWeather ? 'preview' : 'none' };
     const ov = cfg.overrides.weather;
-    if (ov && LE.weatherPresets[ov]) return { rec: LE.weatherPresets[ov], source: 'preview' };
+    if (ov && LE.weatherPresets[ov]) {
+      const rec = LE.weatherPresets[ov];
+      return { rec: windOverride ? { ...rec, ...windOverride } : rec, source: 'preview' };
+    }
     const cur = weather.current(Date.now());
+    if (windOverride) return { rec: { ...(cur || LE.weatherPresets.partly), ...windOverride }, source: 'preview' };
     return cur ? { rec: cur, source: cur.source } : { rec: null, source: 'none' };
   }
+  const windTest = cfg.windTest
+    ? new LE.WindTest(
+        () => {
+          const cur = weather.current(Date.now());
+          return cur && cur.windSpeed != null ? cur : null;
+        },
+        (v) => {
+          windOverride = v && { windSpeed: v.speed, gusts: v.gust, windDir: v.dir };
+          const { rec, source } = weatherRecord();
+          env.setWeather(rec, source);
+          // Straight to these values, not the slow change real weather makes
+          env.w = null;
+          env.treeAir = null;
+        }
+      )
+    : null;
   function pushWeather() {
     const { rec, source } = weatherRecord();
     env.setWeather(rec, source);
@@ -55,7 +78,7 @@
     const mode = LE.clock.modeLabel();
     if (mode) parts.push(mode);
     if (source === 'preview') {
-      parts.push(`Weather preview: ${cfg.overrides.weather}`);
+      parts.push(`Weather preview: ${cfg.overrides.weather || 'test values'}`);
     } else if (source === 'none') {
       parts.push(weather.status === 'offline' ? 'Offline · no cached weather' : 'Waiting for weather…');
     } else {
@@ -73,10 +96,10 @@
   function targetSize() {
     const dpr = window.devicePixelRatio || 1;
     const s = Math.min(1, Math.max(0.4, cfg.render.renderScale));
-    return [
-      Math.max(64, Math.round(window.innerWidth * dpr * s)),
-      Math.max(32, Math.round(window.innerHeight * dpr * s)),
-    ];
+    const w = window.innerWidth * dpr * s;
+    const h = window.innerHeight * dpr * s;
+    const fit = Math.min(1, Math.sqrt(cfg.render.maxPixels / Math.max(1, w * h)));
+    return [Math.max(64, Math.round(w * fit)), Math.max(32, Math.round(h * fit))];
   }
   let resizeTimer = 0;
   function onResize() {
@@ -113,15 +136,17 @@
     veil.querySelectorAll('.veil-sub').forEach((n) => (n.textContent = text));
   }
   function onRendererStatus(status, progress) {
-    veil.querySelectorAll('.veil-bar i').forEach((n) => (n.style.width = `${Math.round(progress * 100)}%`));
+    const pct = Math.round(progress * 100);
+    veil.querySelectorAll('.veil-bar i').forEach((n) => (n.style.width = `${pct}%`));
+    // A number that keeps moving tells a slow first start from a stuck one
     if (status === 'compiling') {
-      setVeilText('Preparing the renderer…');
+      setVeilText('Preparing the renderer… the first start can take a few minutes');
       showVeil(true);
     } else if (status === 'baking') {
-      setVeilText('Shaping the mountains…');
+      setVeilText(`Shaping the mountains… ${pct}%`);
       if (progress === 0) showVeil(true); // e.g. a new landscape variation was chosen
     }
-    else if (status === 'shadow') setVeilText('Casting the first light…');
+    else if (status === 'shadow') setVeilText(`Casting the first light… ${pct}%`);
     else if (status === 'running') {
       sceneReady = true;
       if (revealed) {
@@ -147,11 +172,12 @@
   let pausedByVisibility = false;
   let pausedPanelTimer = 0;
   let rafId = 0;
-  let slowMs = 0; // slow mode: milliseconds between frames (0 = off)
+  let slowMs = 0; // slow mode: milliseconds between scenes (0 = off)
+  let restMs = 0; // what the Windows app asked for, when the PC is busy with other work
   let slowTimer = 0;
   let fadeRaf = 0;
   let fadeTimer = 0;
-  let sceneAt = 0; // when the slow-mode picture now fading in was drawn
+  let nextFade = 0; // when slow mode may send its next frame
   const FADE_FPS = 10; // enough for a slow dissolve. Birds on screen raise it to calmFps
   let lastFrame = 0;
   let lastReal = performance.now();
@@ -164,6 +190,7 @@
   let lifeSeeded = false;
   let lastState = null;
   let lastBusy = -1e9;
+  let lastWet = -1e9;
   let targetFps = cfg.render.fpsCap;
 
   /**
@@ -183,24 +210,48 @@
     return now - lastBusy < 3000 ? cap : Math.min(cap, cfg.render.calmFps);
   }
 
+  /**
+   * With no rain or snow the land and sky change slowly, so a new scene every half a second, faded from one to the
+   * next, looks the same and takes far less of the GPU. The tree and the birds keep moving on top at the full rate.
+   */
+  function calmScene(now) {
+    if (!cfg.render.smartFps || !cfg.render.calmSceneMs || !lastState || renderer.status !== 'running') return 0;
+    const w = lastState.weather;
+    // At the full rate while the picture fades in and just after: the sky forms in those seconds
+    if (renderer._fade < 1 || w.rain > 0.003 || w.snow > 0.003 || w.flash > 0.01 || cfg.overrides.timelapse > 0) lastWet = now;
+    return now - lastWet < 3000 ? 0 : cfg.render.calmSceneMs;
+  }
+
   function stepLife(state, now) {
     life.update(Math.min((now - lastLife) / 1000, 120), state, renderer.viewInfo());
     lastLife = now;
   }
 
-  // Slow mode between scene frames: only a fade between two finished pictures and the birds, which costs a
-  // small part of drawing the scene. Clouds drift and birds fly smoothly while the GPU stays free for other work.
-  function fadeFrame() {
+  // Slow mode between scenes: a fade between two finished pictures, the birds and the tree, which costs a small
+  // part of drawing the scene. Clouds drift and the tree moves smoothly while the GPU stays free for other work.
+  function fadeFrame(afterScene) {
     stopFade();
     if (!slowMs || paused || !lastState || renderer.status !== 'running') return;
-    const now = performance.now();
-    stepLife(lastState, now);
-    lastState.time = (now - simStart) / 1000;
-    if (!renderer.drawFade(Math.min((now - sceneAt) / slowMs, 1), lastState)) return;
-    const fps = life.movers > 0 || renderer.foregroundMoving() ? cfg.render.calmFps : FADE_FPS;
+    // While a frame is on the GPU, look again at the next refresh: gpuBusyMs comes from when it is seen to have finished
+    let wait = 0;
+    if (afterScene === true || renderer.frameDone()) {
+      const now = performance.now();
+      // Right after a scene it can't wait: that frame has neither birds nor the tree until this one adds them
+      if (afterScene === true || now >= nextFade) {
+        stepLife(lastState, now);
+        lastState.time = (now - simStart) / 1000;
+        if (!renderer.drawFade(Math.min((now - renderer.pictureAt) / slowMs, 1), lastState)) return;
+        const moving = life.movers > 0 || renderer.foregroundMoving();
+        const rate = moving ? (restMs ? cfg.render.calmFps : cfg.render.fpsCap) : renderer.grassMoving() ? cfg.render.calmFps : FADE_FPS;
+        // A slow chip gets fewer frames, and never more than its share of the GPU
+        nextFade = now + Math.max(1000 / rate, renderer.gpuBusyMs / cfg.render.maxGpuShare);
+      } else {
+        wait = nextFade - now - 4;
+      }
+    }
     fadeTimer = setTimeout(() => {
       fadeRaf = requestAnimationFrame(fadeFrame);
-    }, Math.max(1000 / fps - 4, 0));
+    }, Math.max(wait, 0));
   }
   function stopFade() {
     cancelAnimationFrame(fadeRaf);
@@ -219,12 +270,33 @@
   }
 
   function frame(ts) {
+    // Slow mode has few scenes to draw, so it waits for the GPU rather than missing its turn
+    if (slowMs && renderer && renderer.status === 'running' && !renderer.frameDone()) {
+      rafId = requestAnimationFrame(frame);
+      return;
+    }
     scheduleFrame();
     if (!renderer) return;
+    // The last frame is still on the GPU: add nothing to the queue, however late this one runs (see frameDone)
+    if (!renderer.frameDone()) return;
     targetFps = pickFps(ts);
+    if (!restMs) {
+      const calm = calmScene(ts);
+      if (calm !== slowMs) {
+        setSlowFrames(calm);
+        return;
+      }
+    }
+    // Its last picture isn't finished: the fades draw it, so keep them going (a pause stops them)
+    if (slowMs && renderer.status === 'running' && renderer.pictureBusy()) {
+      fadeFrame();
+      return;
+    }
     const interval = 1000 / Math.max(5, targetFps);
     const baking = renderer.status !== 'running';
-    if (!baking && !slowMs && ts - lastFrame < interval - 1.5) return;
+    // A frame that takes longer than its slot slows the frame rate, instead of taking the whole GPU
+    const spaced = Math.max(interval, renderer.gpuBusyMs / cfg.render.maxGpuShare);
+    if (!baking && !slowMs && ts - lastFrame < spaced - 1.5) return;
     const measured = ts - lastFrame;
     lastFrame = ts;
 
@@ -248,16 +320,14 @@
     } else {
       lastLife = nowReal;
     }
-    if (slowMs) state.weather.flash = 0; // a lightning flash would stay on screen until the next frame
-    renderer.setSlowMode(!!slowMs);
+    if (restMs) state.weather.flash = 0; // a lightning flash would stay on screen until the next frame
+    renderer.setSlowMode(!!slowMs, !!restMs);
     const drew = renderer.render(state, dt);
 
-    if (drew && slowMs) {
-      sceneAt = nowReal;
-      fadeFrame();
-    }
+    if (drew && slowMs) fadeFrame(true);
     if (drew) {
       if (!slowMs) governor.sample(measured, interval, renderer.gpuFrameMs);
+      else if (!restMs) governor.sample(interval, interval, 0); // on time: quality lowered in a storm can come back
       fpsCount++;
     }
     if (nowReal - fpsAt > 1000) {
@@ -269,6 +339,7 @@
       lastPanel = nowReal;
       const { rec } = weatherRecord();
       overlay.update(now, state, rec, { locationName: location.name, status: statusText() });
+      if (windTest) windTest.update(state, renderer.fg ? renderer.fg.treeWind.lean[0] : 0);
       if (cfg.debug) {
         debugEl.style.display = 'block';
         const a = state.astro;
@@ -276,7 +347,7 @@
         const wind = (speed, dir) => (speed == null ? '—' : `${Math.round(speed)} km/h ${Math.round(dir ?? 0)}°`);
         const fetched = weather.data ? `${Math.round(weather.ageMs() / 60e3)} min ago` : 'not yet';
         debugEl.textContent =
-          `${fps.toFixed(1)} fps (target ${targetFps}${cfg.render.smartFps ? ', smart' : ''}) · ${governor.name()} · ${renderer.w}×${renderer.h} · vol ${renderer.vw}×${renderer.vh}\n` +
+          `${fps.toFixed(1)} fps (target ${targetFps}${cfg.render.smartFps ? ', smart' : ''}) · gpu ${renderer.gpuBusyMs.toFixed(0)} ms a frame · ${governor.name()} · ${renderer.w}×${renderer.h} · vol ${renderer.vw}×${renderer.vh}\n` +
           `sun ${a.sunAltDeg.toFixed(2)}° az ${a.sunAzDeg.toFixed(1)}° · moon ${a.moonAltDeg.toFixed(1)}° ${Math.round(a.moonFraction * 100)}%\n` +
           `exposure ${state.exposure.toExponential(2)} · deck cover ${state.weather.coverage.toFixed(2)} rain ${state.weather.rain.toFixed(2)} mist ${state.weather.mist.toFixed(2)} fog ${state.weather.fog.toFixed(2)} haze ${state.weather.haze.toFixed(2)}\n` +
           `weather fetched ${fetched} · wind 10 m ${wind(r.windSpeed, r.windDir)} · 850 hPa ${wind(r.wind850, r.dir850)} · 700 hPa ${wind(r.wind700, r.dir700)} · 300 hPa ${wind(r.wind300, r.dir300)}\n` +
@@ -317,6 +388,10 @@
 
   // Used by src/services/host.js: draw one frame every `ms` milliseconds, or at the normal rate with 0.
   window.leSetSlowFrames = function (ms) {
+    restMs = ms;
+    setSlowFrames(ms);
+  };
+  function setSlowFrames(ms) {
     if (ms === slowMs) return;
     slowMs = ms;
     stopFade();
@@ -324,7 +399,7 @@
     cancelAnimationFrame(rafId);
     clearTimeout(slowTimer);
     rafId = requestAnimationFrame(frame);
-  };
+  }
 
   // ---------------------------------------------------------------- Lively integration
   // Lively calls these globals. Dropdowns send an index, sliders a number, checkboxes a bool.
@@ -477,6 +552,33 @@
   pushWeather();
   weather.start(location.lat, location.lon, true);
   resolveLocation();
+
+  if (cfg.debug) {
+    new LE.DebugPanel({
+      cfg,
+      env,
+      life,
+      overlay,
+      renderer: () => renderer,
+      governor: () => governor,
+      realWeather: () => weather.current(Date.now()),
+      setWeather(rec, atOnce) {
+        testWeather = rec;
+        const now = weatherRecord();
+        env.setWeather(now.rec, now.source);
+        if (atOnce) {
+          env.w = null; // straight to these values, not the slow change real weather makes
+          env.treeAir = null;
+          env.wet = 0; // and nothing left of the last weather: wet ground dries and fresh snow melts over hours
+          env.freshSnow = 0;
+        }
+      },
+      poke() {
+        lastWet = lastBusy = performance.now();
+      },
+      resize: onResize,
+    });
+  }
 
   rafId = requestAnimationFrame(frame);
 })();

@@ -1,9 +1,9 @@
 /*
  * The tree on the rock at the left, and the leaves the wind carries past (see foreground.js).
  *
- *  treeLight  a 7-pixel probe, each frame: the sun and moon light at the tree (atmosphere, clouds, and the
- *             mountains or our own rock in the way, at the foot, middle and top of the tree) and the sky
- *             and ground light around it
+ *  treeLight  a 7-pixel probe, read back into plain uniforms without waiting (foreground.js): the sun and moon
+ *             light at the tree (atmosphere, clouds, and the mountains or our own rock in the way, at the
+ *             foot, middle and top of the tree), the sky and ground light around it, and the gust there
  *  treeBark   trunk and branches, drawn as tubes
  *  treeLeaf   leaves and flowers, one card each (instanced), alpha-to-coverage on a multisampled target
  *  treeDrift  falling leaves, drawn straight onto the picture
@@ -35,7 +35,22 @@ uniform vec3 uTreeFoot; // km, world
 uniform vec3 uTreeMid;
 uniform vec3 uTreeTop;
 uniform vec2 uToCam;    // horizontal unit vector (x, z) from the tree toward the eye
+uniform vec2 uGustDir;
+uniform vec2 uGustTravel;
 out vec4 o;
+
+// The gust bands that cross the forest and the grass (composite.js), sampled where the tree stands, plus
+// smaller gusts a few tens of metres across that come and go every few seconds
+float localGust() {
+  vec2 pk = uTreeMid.xz;
+  vec2 across = vec2(-uGustDir.y, uGustDir.x);
+  vec2 wc = vec2(dot(pk, uGustDir), dot(pk, across));
+  vec2 a = wc - vec2(uGustTravel.x, 0.0);
+  vec2 b = wc - vec2(uGustTravel.y, 0.0);
+  float big = textureLod(uNoise2D, a * vec2(1.6, 0.4), 2.0).r * 0.65 + textureLod(uNoise2D, b * vec2(1.0, 0.3) + 0.37, 2.0).g * 0.35;
+  float small = textureLod(uNoise2D, a * vec2(16.0, 4.0) + 0.21, 0.0).r;
+  return clamp((big - 0.5) * 2.0 * 0.55 + (small - 0.5) * 2.0 * 0.75, -1.0, 1.0);
+}
 
 // as the shadow pass (lighting.js), with our own rock in the way too
 float keyShadow(vec3 p) {
@@ -103,16 +118,17 @@ void main() {
     vec3 sunG = uSunE * transmittance(uTreeFoot.y, uSunDir.y) * max(uSunDir.y, 0.0) + uMoonE * transmittance(uTreeFoot.y, uMoonDir.y) * max(uMoonDir.y, 0.0);
     o = vec4(vec3(0.11, 0.105, 0.09) * (sunG * cs * keyShadow(uTreeFoot + vec3(0.0, 0.0012, 0.0)) * 0.6 + skyAmb(vec3(0.0, 1.0, 0.0)) * 0.7), 1.0);
   } else {
-    o = vec4(keyShadow(uTreeFoot + vec3(0.0, 0.0006, 0.0)), keyShadow(p), keyShadow(uTreeTop), cs);
+    o = vec4(keyShadow(uTreeFoot + vec3(0.0, 0.0006, 0.0)), keyShadow(p), keyShadow(uTreeTop), localGust());
   }
 }
 `;
 
   // ------------------------------------------------------------------ shared vertex code
   // (precision as in the fragment shaders: uniforms both stages use must match)
+  // Every vertex of 20 000 leaves runs this, every time the tree is drawn, so anything the same for the whole
+  // tree comes in as a uniform: the light and the state of the wind (TreeWind in foreground.js).
   const treeVS = `
 precision highp int;
-precision highp sampler2D;
 uniform vec2 uRes;
 uniform float uHFov;
 uniform float uHorizonY;
@@ -120,54 +136,53 @@ uniform vec4 uBox;       // the target's rectangle on the screen (px)
 uniform vec3 uSite;      // foot of the trunk, metres from the eye
 uniform vec3 uWindDir;   // where the air goes: horizontal unit vector, eye frame
 uniform float uWindStr;  // 0 still, 1 a strong breeze, 2.4 a storm
-uniform float uTime;
+uniform vec2 uLean;      // how far the top of the tree has moved now: downwind, across (m)
+uniform vec2 uLimb[4];   // four swings that the limbs share out between them: downwind, across (m per unit of flex)
+uniform vec4 uFront;     // the gust at four places across the crown, upwind to downwind, -1 to 1
+uniform float uFlutter;  // the clock for twigs and leaves: it runs faster in a gust
 uniform float uTreeH;
 uniform vec3 uCrownC;    // crown as an ellipsoid, tree-local metres
 uniform vec3 uCrownR;
 uniform vec3 uKeyDir;
 uniform float uKeyIsSun;
-uniform vec2 uGustDir;
-uniform vec2 uGustTravel;
-uniform sampler2D uNoise2D;
-uniform sampler2D uTreeLight;
+uniform vec4 uTreeL[7]; // the probe's seven pixels (tree.js treeLight)
 
-// The time wraps every 2400 s (it keeps its precision that way). Frequencies are rounded to whole
+// The flutter clock wraps every 2400 s (it keeps its precision that way). Frequencies are rounded to whole
 // cycles per 2400 s, so the wrap never makes the tree jump.
 float osc(float w, float ph) {
   float n = floor(w * 2400.0 / 6.2831853 + 0.5);
-  return sin(n * (6.2831853 / 2400.0) * uTime + ph);
+  return sin(n * (6.2831853 / 2400.0) * uFlutter + ph);
 }
 
-// The gust bands that cross the forest and the grass (composite.js), sampled where the tree stands, plus
-// smaller gusts a few tens of metres across that come and go every few seconds
-float localGust() {
-  vec2 pk = (uSite.xz + uCrownC.xz) * 0.001;
-  vec2 across = vec2(-uGustDir.y, uGustDir.x);
-  vec2 wc = vec2(dot(pk, uGustDir), dot(pk, across));
-  vec2 a = wc - vec2(uGustTravel.x, 0.0);
-  vec2 b = wc - vec2(uGustTravel.y, 0.0);
-  float big = textureLod(uNoise2D, a * vec2(1.6, 0.4), 2.0).r * 0.65 + textureLod(uNoise2D, b * vec2(1.0, 0.3) + 0.37, 2.0).g * 0.35;
-  float small = textureLod(uNoise2D, a * vec2(16.0, 4.0) + 0.21, 0.0).r;
-  return clamp((big - 0.5) * 2.0 * 0.55 + (small - 0.5) * 2.0 * 0.75, -1.0, 1.0);
+// The gust where P is: a gust reaches the upwind side of the crown first and rolls across it
+float gustAt(vec3 P) {
+  float q = clamp(1.5 + 1.5 * dot(P - uCrownC, uWindDir) / length(uCrownR.xz), 0.0, 2.999);
+  int i = int(q);
+  return mix(uFront[i], uFront[i + 1], q - float(i));
 }
 
 // How far the wind moves a point of the tree. A = (limb flex, limb phase, twig flex, twig phase): the
 // flex grows with the distance along the wood from the fork, so every joint stays joined.
 vec3 windOffset(vec3 P, vec4 A, float gust) {
   float s = uWindStr;
-  float g = max(1.0 + 0.7 * gust, 0.25);
   vec3 W = uWindDir;
   vec3 side = vec3(-W.z, 0.0, W.x);
-  // the whole tree leans downwind and rocks slowly
+  // the whole tree bends: more toward the top
   float h = clamp(P.y / uTreeH, 0.0, 1.2);
-  float rock = osc(1.9, 0.3) * 0.6 + osc(1.23, 1.1) * 0.4;
-  vec3 d = (W * (0.55 * s * g + 0.12 * s * rock) + side * 0.06 * s * rock) * h * h * 0.35;
-  // limbs, each with its own rhythm, wider in the gusts
-  float f1 = osc(2.6, A.y) * 0.65 + osc(4.1, A.y * 1.9) * 0.35;
-  d += (W * (0.3 * s * g + 0.25 * s * f1) + side * 0.2 * s * f1 + vec3(0.0, 0.12 * s * f1, 0.0)) * A.x * 0.12;
-  // twigs flick quickly
-  float f2 = osc(6.3, A.w) * 0.6 + osc(9.7, A.w * 2.3) * 0.4;
-  d += (W * 0.25 * s * g + (side * 0.6 + vec3(0.0, 0.5, 0.0)) * f2 * s * (0.5 + 0.5 * g)) * A.z * 0.25;
+  vec3 d = (W * uLean.x + side * uLean.y) * h * h;
+  // Each limb takes its own mix of two of the shared swings, and some go the other way across the wind, so
+  // neighbouring limbs don't move together
+  float m = A.y * 0.6366198;
+  int i = int(m) & 3;
+  vec2 l = mix(uLimb[i], uLimb[(i + 1) & 3], fract(m));
+  l.y *= fract(A.y * 5.1) > 0.5 ? 1.0 : -1.0;
+  d += (W * l.x + side * l.y + vec3(0.0, 0.6 * l.y, 0.0)) * A.x;
+  // Twigs flick quickly, each at its own rate, and come and go instead of all flicking all the time
+  float g = max(1.0 + 0.8 * gust, 0.2);
+  float rate = 3.2 + 2.6 * fract(A.w * 3.7);
+  float burst = smoothstep(-0.3, 0.7, osc(0.7 + 0.8 * fract(A.w * 9.1), A.w * 5.0));
+  float f2 = (osc(rate, A.w) * 0.6 + osc(rate * 1.6, A.w * 2.3) * 0.4) * (0.35 + 0.65 * burst);
+  d += (W * 0.22 * s * g + (side * 0.6 + vec3(0.0, 0.5, 0.0)) * f2 * s * (0.5 + 0.5 * g) * 0.6) * A.z * 0.25;
   return d;
 }
 
@@ -196,7 +211,7 @@ float crownLight(vec3 P) {
 
 // the mountains' (or our rock's) shadow, from the probe at the foot, middle and top of the tree
 float terrainLight(float y) {
-  vec4 s = texelFetch(uTreeLight, ivec2(6, 0), 0);
+  vec4 s = uTreeL[6];
   float h = clamp(y / uTreeH, 0.0, 1.0);
   return h < 0.5 ? mix(s.r, s.g, h * 2.0) : mix(s.g, s.b, h * 2.0 - 1.0);
 }
@@ -225,8 +240,7 @@ out vec3 vSide;
 void main() {
   vClumpN = vec3(0.0);
   vSide = vec3(0.0);
-  float gust = localGust();
-  vec3 P = aP + windOffset(aP, aWind, gust);
+  vec3 P = aP + windOffset(aP, aWind, gustAt(aP));
   vPos = uSite + P;
   vN = aN;
   float key = crownLight(aP) * terrainLight(aP.y);
@@ -242,7 +256,7 @@ layout(location = 0) in vec3 aStem;
 layout(location = 1) in vec3 aDir;   // along the blade, its length
 layout(location = 2) in vec3 aSide;  // across, half its width
 layout(location = 3) in vec4 aWind;
-layout(location = 4) in vec4 aLeaf;  // flutter phase, kind (1 leaf, 2 flower), variation, ao
+layout(location = 4) in vec4 aLeaf;  // flutter phase, kind (1 leaf, 2 flower), variation, ao (crown and clump included)
 layout(location = 5) in vec4 aClump; // the mass of foliage this leaf belongs to: centre, radius
 uniform float uBloom;
 ${treeVS}
@@ -254,19 +268,21 @@ out vec2 vBark;
 out vec3 vClumpN;
 out vec3 vSide;
 void main() {
-  int id = gl_VertexID % 6;
-  vec2 c = vec2((id == 1 || id == 2 || id == 4) ? 1.0 : 0.0, (id == 2 || id == 4 || id == 5) ? 1.0 : -1.0);
+  // a strip of four corners: base left, base right, tip left, tip right
+  vec2 c = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1) * 2.0 - 1.0);
   vBark = vec2(0.0);
-  float gust = localGust();
+  float gust = gustAt(aStem);
   vec3 stem = aStem + windOffset(aStem, aWind, gust);
   float s = uWindStr;
-  float g = max(1.0 + 0.7 * gust, 0.25);
+  float g = max(1.0 + 0.8 * gust, 0.2);
   vec3 nrm = normalize(cross(aDir, aSide));
   float L = length(aDir);
   float Wd = length(aSide);
-  // blades stream downwind, nod and twist: in gusts they turn their pale undersides up
-  float fl = osc(5.0 + 6.0 * fract(aLeaf.x * 13.1), aLeaf.x * 50.0) * 0.6 + osc(11.0, aLeaf.x * 23.0) * 0.4;
-  float tw = osc(7.0 + 4.0 * fract(aLeaf.x * 5.3), aLeaf.x * 31.0);
+  // Blades stream downwind, nod and twist: as a gust rolls through they turn their pale undersides up.
+  // Each one rests and shivers in its own time.
+  float rest = 0.45 + 0.55 * osc(0.6 + 1.1 * fract(aLeaf.x * 3.1), aLeaf.x * 17.0);
+  float fl = (osc(5.0 + 6.0 * fract(aLeaf.x * 13.1), aLeaf.x * 50.0) * 0.6 + osc(11.0, aLeaf.x * 23.0) * 0.4) * rest;
+  float tw = osc(7.0 + 4.0 * fract(aLeaf.x * 5.3), aLeaf.x * 31.0) * rest;
   float amp = (0.06 + 0.5 * s) * (0.55 + 0.45 * g);
   vec3 dir = normalize(aDir / L + uWindDir * 0.35 * s * g + nrm * fl * amp * 0.5) * L;
   vec3 side = normalize(aSide / Wd + nrm * tw * amp * 1.2) * Wd;
@@ -277,15 +293,13 @@ void main() {
   // Foliage is lit as masses: each clump has a lit side and a side in its own shade, and is dark inside.
   // The light crosses the leaves of the clump between this one and the sun or moon.
   vec3 rel = (aStem + aDir * 0.5) - aClump.xyz;
-  float depth = length(rel) / aClump.w;
   vClumpN = rel / max(length(rel), 1e-3);
   vSide = side / Wd;
   float b = dot(rel, uKeyDir);
   float exitT = -b + sqrt(max(b * b - dot(rel, rel) + aClump.w * aClump.w, 0.0));
   float clumpLight = mix(exp(-exitT * 2.6), 1.0, 0.12);
   float key = crownLight(aStem) * terrainLight(aStem.y) * clumpLight;
-  float ao = aLeaf.w * crownAO(aStem) * mix(0.6, 1.0, smoothstep(0.15, 0.95, depth));
-  vInfo = vec4(aLeaf.y, aLeaf.z, ao, key);
+  vInfo = vec4(aLeaf.y, aLeaf.z, aLeaf.w, key);
   vUV = c;
   gl_Position = projectEye(vPos);
 }`;
@@ -336,10 +350,11 @@ uniform float uOvercast;
 uniform float uFlash;
 uniform float uTime;
 uniform float uWet;
+uniform vec4 uSeason; // summer, autumn, winter, spring
 uniform float uSnowTree;
 uniform vec2 uToCam;
 uniform vec3 uSite;
-uniform sampler2D uTreeLight;
+uniform vec4 uTreeL[7]; // the probe's seven pixels (treeLight above)
 uniform sampler2D uG0;
 ${S.post}
 in vec3 vPos;
@@ -351,11 +366,9 @@ in vec3 vClumpN;
 in vec3 vSide;
 ${drift ? 'flat in float vAlpha;\nout vec4 fragColor;' : 'layout(location = 0) out vec4 fragColor;\nlayout(location = 1) out vec4 fragCover;'}
 
-vec3 treeLight(int i) { return texelFetch(uTreeLight, ivec2(i, 0), 0).rgb; }
-
 // sky and ground light for a surface facing n
 vec3 ambient(vec3 n) {
-  vec3 up = treeLight(2), toCam = treeLight(3), away = treeLight(4), down = treeLight(5);
+  vec3 up = uTreeL[2].rgb, toCam = uTreeL[3].rgb, away = uTreeL[4].rgb, down = uTreeL[5].rgb;
   float y = n.y;
   float c = dot(n.xz, uToCam);
   vec3 side = mix(away, toCam, c * 0.5 + 0.5);
@@ -404,9 +417,9 @@ void main() {
     // at the foot: stained by soil and rain splash, with moss creeping up from the ground
     float yl = vPos.y - uSite.y;
     float foot = 1.0 - smoothstep(0.1, 1.05, yl + nb * 0.15);
-    float lichen = smoothstep(0.3, 0.6, noise2(vec2(around * 3.1, along * 1.4) + 7.0)) * (1.0 - fiss) * (1.0 - foot);
-    alb = mix(alb, vec3(0.21, 0.22, 0.17), lichen * 0.55);
-    alb = mix(alb, vec3(0.04, 0.06, 0.022), smoothstep(0.25, 0.8, n.y) * smoothstep(-0.2, 0.5, nb) * 0.6);
+    float lichen = smoothstep(0.3, 0.65, noise2(vec2(around * 6.3, along * 3.7) + 7.0) * 0.7 + noise2(vec2(around * 17.0, along * 9.0) + 2.0) * 0.3) * (1.0 - fiss) * (1.0 - foot);
+    alb = mix(alb, vec3(0.21, 0.22, 0.17), lichen * 0.4);
+    alb = mix(alb, vec3(0.04, 0.06, 0.022), smoothstep(0.25, 0.8, n.y) * smoothstep(-0.2, 0.5, nb) * 0.6 * (1.0 - smoothstep(0.6, 2.2, yl)));
     alb = mix(alb, mix(vec3(0.04, 0.032, 0.025), vec3(0.032, 0.046, 0.018), smoothstep(-0.2, 0.4, nb)), foot * 0.8);
     ao *= 1.0 - 0.4 * fiss;
     if (dot(n, v) < 0.0) n = -n;
@@ -441,6 +454,12 @@ void main() {
         // flashes when the wind turns them; here and there a leaf turning before it falls
         vec3 upper = mix(vec3(0.03, 0.058, 0.02), vec3(0.058, 0.094, 0.03), vr);
         if (vr > 0.985) upper = vec3(0.12, 0.1, 0.035);
+        // the seasons: fresh light green in spring, reds and golds in autumn with some leaves still green, dull in winter
+        vec3 spring = mix(vec3(0.05, 0.1, 0.022), vec3(0.095, 0.155, 0.035), vr);
+        float turned = step(0.5, fract(vr * 17.0));
+        vec3 autumn = mix(upper, mix(vec3(0.2, 0.045, 0.018), vec3(0.34, 0.17, 0.03), fract(vr * 7.0)), turned);
+        vec3 winter = mix(vec3(0.033, 0.046, 0.024), vec3(0.058, 0.066, 0.034), vr);
+        upper = upper * uSeason.x + autumn * uSeason.y + winter * uSeason.z + spring * uSeason.w;
         vec3 lower = mix(vec3(0.095, 0.115, 0.072), vec3(0.125, 0.13, 0.085), vr);
         if (vr > 0.82) lower = mix(lower, vec3(0.14, 0.11, 0.07), 0.45);
         alb = top ? upper : lower;
@@ -448,7 +467,7 @@ void main() {
         specK = top ? 1.0 : 0.15;
         rough = top ? mix(0.36, 0.22, uWet) : 0.8;
         trans = top ? 1.0 : 0.8;
-        transC = vec3(0.09, 0.15, 0.025); // sunlight through a leaf comes out yellow-green
+        transC = mix(vec3(0.09, 0.15, 0.025), vec3(0.24, 0.11, 0.02), uSeason.y); // sunlight through a leaf takes its colour
       }
       // folded a little along the midrib, so each half catches the light differently
       if (dot(vSide, vSide) > 0.25) n = normalize(n - vSide * x * 0.4);
@@ -463,8 +482,8 @@ void main() {
   alb = mix(alb, vec3(0.82, 0.85, 0.9), uSnowTree * smoothstep(0.35, 0.85, n.y));
   alb *= 1.0 - 0.3 * uWet;
 
-  vec3 sunL = treeLight(0);
-  vec3 moonL = treeLight(1);
+  vec3 sunL = uTreeL[0].rgb;
+  vec3 moonL = uTreeL[1].rgb;
   float shS = uKeyIsSun > 0.5 ? keyVis : 1.0;
   float shM = uKeyIsSun > 0.5 ? 1.0 : keyVis;
   float ndlS = dot(n, uSunDir);

@@ -1,0 +1,15 @@
+# Packs the wallpaper page into page.zip for build.cmd, which puts it inside the exe.
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$zipPath = Join-Path $PSScriptRoot 'page.zip'
+if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+$files = @('index.html', 'host/banner.jpg') | ForEach-Object { Get-Item (Join-Path $root $_) }
+$files += Get-ChildItem (Join-Path $root 'src') -Recurse -File
+$zip = [IO.Compression.ZipFile]::Open($zipPath, 'Create')
+try {
+  foreach ($f in $files) {
+    $rel = $f.FullName.Substring($root.Length + 1).Replace('\', '/')
+    [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $f.FullName, $rel, 'Optimal')
+  }
+} finally { $zip.Dispose() }

@@ -1,5 +1,5 @@
 /*
- * Living Earth 3840 — configuration
+ * Living Earth Himalaya — configuration
  * Every value here can be changed by Lively properties (LivelyProperties.json)
  * or, for browser testing, by URL parameters (see README.md → "Testing in a browser").
  */
@@ -32,12 +32,15 @@
       fpsCap: 30,
       smartFps: true, // drop to calmFps while nothing fast (birds, rain, snow, lightning, meteors) is on screen
       calmFps: 20,
+      maxGpuShare: 0.5, // the most of the GPU's time this page may take. The rest is for the desktop and other apps
+      calmSceneMs: 500, // with no rain or snow, redraw the scene this often and fade between pictures: 0 = every frame
       quality: 'auto', // auto | eco | balanced | high | ultra
       renderScale: 1.0, // internal resolution multiplier
+      maxPixels: 4.2e6, // about 3840x1080. A bigger window (a 4K screen) is drawn at this size and scaled up
       heading: 50, // compass direction at the centre of the panorama (50 = north-east: sunrise behind the peaks)
       seed: 1, // landscape variation
       cameraAltitude: 2.8, // km above sea level
-      horizonY: 0.34, // horizon height as a fraction of the screen (0 = bottom)
+      horizonY: 0.4, // horizon height as a fraction of the screen (0 = bottom)
       maxHFovDeg: 140, // horizontal field of view for a 32:9 span
       tree: true, // the tree on the rock at the left, and the leaves the wind carries past
     },
@@ -74,6 +77,7 @@
   c.overrides.date = q.get('date') || c.overrides.date;
   c.overrides.timelapse = num('timelapse', c.overrides.timelapse);
   c.render.fpsCap = num('fps', c.render.fpsCap);
+  c.render.calmSceneMs = num('calm', q.get('test') === '1' ? 0 : c.render.calmSceneMs); // tests look at every frame
   if (q.has('smartfps')) c.render.smartFps = q.get('smartfps') !== '0';
   if (q.has('tree')) c.render.tree = q.get('tree') !== '0';
   c.render.quality = q.get('quality') || c.render.quality;
@@ -96,6 +100,7 @@
   // the place name shown in the panel, chosen in the Windows app (host/)
   if (q.get('place')) c.location.name = q.get('place').slice(0, 60);
   c.debug = q.get('debug') === '1';
+  c.windTest = q.get('windtest') === '1' && !c.debug; // a panel for trying wind speeds and directions on the tree. ?debug=1 has its own
   c.debugView = parseInt(q.get('view') || '0', 10) || 0; // 1 albedo 2 normal 3 shadow 4 AO 5 depth 6 volume 7 canopy
   c.testMode = q.get('test') === '1'; // used by automated screenshot tests
   c.life = q.get('life') !== '0'; // birds, smoke, meteors, satellites, village lights

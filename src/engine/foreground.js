@@ -5,15 +5,20 @@
  * five more times, with a rosette of leathery leaves at every tip (and last year's rosette a little
  * below it), as a tree rhododendron grows on a Himalayan ridge. Red trusses of flowers in spring.
  *
- * Every frame (shaders/tree.js):
+ * Frame by frame (shaders/tree.js):
  *  1. a 7-pixel probe of the light at the tree (sun and moon through air and cloud, the mountains'
- *     shadow at its foot, middle and top, the sky and ground light around it)
- *  2. bark and leaves into a small multisampled target around the tree, moved by the real wind: the
- *     whole tree leans and rocks, limbs sway, twigs flick, leaves flutter and turn their pale
- *     undersides up in the gusts
- *  3. that target laid over the picture
+ *     shadow at its foot, middle and top, the sky and ground light around it, the gust), read back
+ *     into uniforms without waiting for the GPU
+ *  2. when it is due: bark and leaves into a small multisampled target around the tree, moved by the
+ *     real wind (TreeWind): gusts bend the tree and it swings back, roll across the crown, sway the limbs
+ *     each their own way and turn the leaves' pale undersides up. Only what the fixed camera can see is
+ *     drawn (shellOfTree)
+ *  3. that target laid over the picture, every frame
  *  4. falling leaves: from the tree, and from upwind when the wind is up, drifting with its real speed
  *     and direction, rocking from side to side as they sink. Those beyond the tree are drawn before it.
+ *
+ * The tree can cost as much GPU time as the whole landscape, so it gets the same care: nothing here may
+ * make the browser or the desktop wait.
  *
  * Units: metres, eye frame (x right, y up, z ahead). Tree-local positions are from the foot of the trunk.
  */
@@ -26,7 +31,15 @@
   const LEAF_FLOATS = 21; // stem3 dir3 side3 wind4 leaf4 clump4
   const DRIFT_FLOATS = 13; // centre3 axisA3 axisB3 info4
   const MAX_DRIFT = 90;
-  const SWAY_ROOM = 0.7; // m the wind can move the tips, for the target's size
+  const SWAY_ROOM = 1.2; // m the wind can move the tips, for the target's size
+  const LEAN_MAX = 0.6; // m at the top of the tree, however hard it blows
+  const LIMB_MAX = 0.12; // m per unit of a limb's flex (at most about 2.7)
+  // the limbs' swings: natural frequencies (rad/s, about 0.5 to 1.3 Hz) and damping
+  const LIMB_W = [3.2, 4.5, 6.1, 8.3];
+  const LIMB_Z = [0.2, 0.2, 0.22, 0.25];
+  const SHELL_CELL = 0.0026; // rad, for working out what is hidden: about 4 screen pixels at any window size
+  const SHELL_LAYERS = 6; // leaves in front of something before it counts as hidden: gaps open in the wind (compared by eye and per pixel)
+  const LEAF_BATCHES = 4; // separate draws, so other GPU work can get a turn between them
 
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
   const smooth = (a, b, x) => {
@@ -78,7 +91,7 @@
     const R = rng(seed);
     const rr = (a, b) => a + (b - a) * R();
     const up = [0, 1, 0];
-    // it leans out toward the open view, the way a tree on an edge reaches for the light
+    // it reaches out toward the open view, the way a tree on an edge reaches for the light
     const lean = norm([0.8, 0, 0.3]);
     const branches = []; // { nodes: [{ p, r, w }], level, sides }
     const tips = []; // { p, d, s, twigBase, limbPh, twigPh }
@@ -91,32 +104,27 @@
       twigPh,
     ];
 
-    // trunk, with a flared, rooted foot
+    // one stout trunk that twists as it rises, with a flared, rooted foot
     const trunk = [];
-    let p = [0, -0.25, 0];
-    let d = norm([lean[0] * 0.3, 1, lean[2] * 0.3]);
-    const TRUNK = 1.75;
-    const NT = 7;
+    const TRUNK = 2.5;
+    const NT = 9;
     for (let i = 0; i <= NT; i++) {
       const f = i / NT;
-      const r = 0.17 - 0.05 * f + 0.13 * Math.exp(-f * 9);
-      trunk.push({ p, r, w: [0, 0, 0, 0] });
-      if (i === NT) break;
-      // gnarled: it wanders, kinks, and twists toward its lean
-      d = norm(add(d, [rr(-0.3, 0.3) + lean[0] * 0.14, 0, rr(-0.3, 0.3) + lean[2] * 0.14]));
-      p = madd(p, d, TRUNK / NT);
+      const neck = Math.max(0, (f - 0.8) / 0.2);
+      const r = (0.25 - 0.06 * f + 0.24 * Math.exp(-f * 9)) * (1 - 0.2 * neck * neck * (3 - 2 * neck));
+      trunk.push({ p: [0.3 * Math.sin(f * 3.6) + rr(-0.012, 0.012), -0.25 + TRUNK * f, 0.16 * Math.sin(f * 5.1) + rr(-0.012, 0.012)], r, w: [0, 0, 0, 0] });
     }
     branches.push({ nodes: trunk, level: 0, sides: 12 });
-    // roots gripping the rock
-    const nRoots = 4 + Math.floor(R() * 2);
+    // roots gripping the ground
+    const nRoots = 5 + Math.floor(R() * 2);
     for (let i = 0; i < nRoots; i++) {
       const az = (i / nRoots) * Math.PI * 2 + rr(-0.4, 0.4);
       let rd = norm([Math.cos(az), -0.25, Math.sin(az)]);
-      let rp = [Math.cos(az) * 0.08, 0.05, Math.sin(az) * 0.08];
+      let rp = [Math.cos(az) * 0.2, 0.08, Math.sin(az) * 0.2];
       const nodes = [];
-      const L = rr(0.5, 0.95);
+      const L = rr(0.8, 1.3);
       for (let k = 0; k <= 4; k++) {
-        nodes.push({ p: rp, r: 0.09 * (1 - 0.8 * (k / 4)) + 0.01, w: [0, 0, 0, 0] });
+        nodes.push({ p: rp, r: 0.12 * (1 - 0.8 * (k / 4)) + 0.01, w: [0, 0, 0, 0] });
         rd = norm(add(rd, [rr(-0.25, 0.25), -0.12, rr(-0.25, 0.25)]));
         rp = madd(rp, rd, L / 4);
       }
@@ -139,7 +147,7 @@
       const crook = level <= 2 ? 0.26 : 0.18;
       for (let i = 0; i <= n; i++) {
         const f = i / n;
-        nodes.push({ p: q, r: Math.max(r0 * (1 - 0.22 * f), 0.0065), w: windAt(s, twigBase, limbPh, twigPh) });
+        nodes.push({ p: q, r: Math.max(r0 * (1 - (level === 1 ? 0.6 : 0.22) * f), 0.0065), w: windAt(s, twigBase, limbPh, twigPh) });
         if (i === n) break;
         // reach for the light, wander and kink; long thin wood sags under its leaves
         const sag = level >= 3 ? 0.05 * (level - 2) * f : 0;
@@ -149,19 +157,22 @@
       }
       branches.push({ nodes, level, sides: level <= 1 ? 9 : level === 2 ? 7 : level === 3 ? 5 : 4 });
       const end = nodes[n];
-      if (dead) return;
-      if (level >= 7 || length < 0.11) {
+      if (dead) return { p: end.p, s };
+      // past the edge of the crown a shoot ends in leaves, so the crown keeps its round form with no long bare limbs
+      const mid = [trunkTop[0] + 0.1, trunkTop[1] + 1.75, trunkTop[2] + 0.1];
+      const past = ((end.p[0] - mid[0]) / 3.6) ** 2 + ((end.p[1] - mid[1]) / 2.3) ** 2 + ((end.p[2] - mid[2]) / 3.3) ** 2 > 1;
+      if (level >= 7 || length < 0.11 || (level >= 2 && past)) {
         tips.push({ p: end.p, d: dd, s, twigBase, limbPh, twigPh, clump });
         return;
       }
       // leaves of earlier years stay on where the shoot forked
-      if (level >= 5) forks.push({ p: end.p, d: dd, s, twigBase, limbPh, twigPh, clump });
-      const kids = 2 + (R() < 0.55 ? 1 : 0);
+      if (level >= 4) forks.push({ p: end.p, d: dd, s, twigBase, limbPh, twigPh, clump });
+      const kids = 2 + (R() < 0.6 ? 1 : 0);
       const ax = perp(dd);
       const az0 = R() * Math.PI * 2;
       for (let k = 0; k < kids; k++) {
         // some shoots die back in the shade inside the crown and stay bare
-        if (level >= 2 && R() < 0.13) {
+        if (level >= 3 && R() < 0.08) {
           const bare = norm(rot(rot(dd, ax, rr(0.5, 0.9)), dd, az0 + k * 2.1));
           grow(end.p, bare, length * rr(0.3, 0.5), end.r * 0.55, Math.max(level + 1, 5), s, twigBase, limbPh, twigPh, true, clump);
           continue;
@@ -180,21 +191,24 @@
 
     // limbs from the top of the trunk
     const trunkTop = trunk[NT].p;
-    const nLimbs = 3 + (R() < 0.5 ? 1 : 0);
-    const az0 = R() * Math.PI * 2;
-    for (let i = 0; i < nLimbs; i++) {
-      const az = az0 + (i / nLimbs) * Math.PI * 2 + rr(-0.35, 0.35);
-      const tilt = rr(0.5, 0.8);
-      let ld = [Math.sin(tilt) * Math.cos(az), Math.cos(tilt), Math.sin(tilt) * Math.sin(az)];
-      ld = norm(add(ld, mul(lean, 0.3)));
-      grow(madd(trunkTop, ld, -0.05), ld, rr(1.15, 1.4) * (1 + 0.2 * dot(norm([ld[0], 0, ld[2]]), lean)), 0.08, 1, 0, -1, R() * Math.PI * 2, 0);
-    }
-    // a second stem from low on the trunk, the way these trees grow, and a low limb reaching out over the edge
-    {
-      const ld = norm(add(mul(lean, -0.45), [0.1, 1, -0.35]));
-      grow(trunk[3].p, ld, 1.25, 0.095, 1, 0, -1, R() * Math.PI * 2, 0);
-      const ld2 = norm(add(lean, [0, 0.55, 0.15]));
-      grow(trunk[5].p, ld2, 1.05, 0.06, 2, 0, -1, R() * Math.PI * 2, 0);
+    // The trunk parts into three leaders. Each carries the limbs that lie its way, and the limbs are spread evenly over
+    // a dome, so the crown has no gaps or lobes.
+    const azL = R() * Math.PI * 2;
+    const leaders = [0, 1, 2].map((i) => {
+      const az = azL + (i / 3) * Math.PI * 2 + rr(-0.25, 0.25);
+      const dir = norm([0.62 * Math.cos(az), 0.8, 0.62 * Math.sin(az)]);
+      const phase = R() * Math.PI * 2;
+      const end = grow(madd(trunkTop, up, -0.2), dir, rr(1.05, 1.25), 0.135, 1, 0, -1, phase, 0, true);
+      return { dir, phase, end };
+    });
+    const LIMBS = 16;
+    for (let i = 0; i < LIMBS; i++) {
+      const y = 0.2 + (0.76 * (i + 0.5)) / LIMBS;
+      const rho = Math.sqrt(1 - y * y);
+      const az = azL + i * 2.39996 + rr(-0.15, 0.15);
+      const dir = norm([rho * Math.cos(az), y, rho * Math.sin(az)]);
+      const from = leaders.reduce((a, b) => (dot(b.dir, dir) > dot(a.dir, dir) ? b : a));
+      grow(from.end.p, dir, rr(0.8, 1.0) * (0.72 + 0.4 * y), 0.05, 2, from.end.s, -1, from.phase, 0);
     }
 
     // ---- leaves and flowers
@@ -211,7 +225,7 @@
         const tilt = inner ? rr(tiltA * 0.55, tiltA * 0.8) : rr(tiltA, tiltB);
         let ld = rot(rot(axis, ax, tilt), axis, az0r + (j / n) * Math.PI * 2 + rr(-0.25, 0.25));
         ld = norm(add(ld, [0, -droop * rr(0.6, 1.4), 0]));
-        const L = rr(0.12, 0.2) * (inner ? 0.8 : 1);
+        const L = rr(0.14, 0.23) * (inner ? 0.8 : 1);
         let side = cross([0, 1, 0], ld);
         side = len(side) < 1e-3 ? perp(ld) : norm(side);
         side = rot(side, ld, rr(-0.7, 0.7));
@@ -231,15 +245,15 @@
       const tw2 = windAt(t.s - back, t.twigBase, t.limbPh, t.twigPh);
       rosette(madd(t.p, t.d, -back), t.d, tw2, 7 + Math.floor(R() * 5), 1.25, 1.75, 0.45, 0.8, t.clump);
       // a truss of bells
-      if (R() < 0.42) {
-        const c = madd(t.p, t.d, 0.06);
+      if (R() < 0.3) {
+        const c = madd(t.p, t.d, 0.09);
         const nb = 12 + Math.floor(R() * 7);
         for (let b = 0; b < nb; b++) {
           let o = norm([rr(-1, 1), rr(-1, 1), rr(-1, 1)]);
           if (dot(o, t.d) < -0.2) o = madd(o, t.d, 0.8);
           o = norm(o);
-          const rad = rr(0.026, 0.036);
-          const bc = madd(c, o, 0.055);
+          const rad = rr(0.034, 0.046);
+          const bc = madd(c, o, 0.085);
           const a1 = rot(perp(o), o, R() * Math.PI * 2);
           const a2 = cross(o, a1);
           flowers.push([...madd(bc, a1, -rad), ...mul(a1, rad * 2), ...mul(a2, rad), ...tw, R(), 2, R(), 1.0, t.clump]);
@@ -279,6 +293,14 @@
     }
     const crownC = mul(add(lo, hi), 0.5);
     const crownR = mul(sub(hi, lo), 0.5);
+    // Shade never changes with the wind or the hour: how deep each leaf sits in its clump and in the crown,
+    // worked out once here instead of for every vertex in every frame
+    for (const l of leaves) {
+      const rel = [l[0] + l[3] * 0.5 - l[17], l[1] + l[4] * 0.5 - l[18], l[2] + l[5] * 0.5 - l[19]];
+      const q = [(l[0] - crownC[0]) / crownR[0], (l[1] - crownC[1]) / crownR[1], (l[2] - crownC[2]) / crownR[2]];
+      const crownAO = clamp(0.45 + 0.55 * smooth(0.25, 1, len(q)) + 0.15 * q[1], 0.4, 1);
+      l[16] *= crownAO * (0.6 + 0.4 * smooth(0.15, 0.95, len(rel) / l[20]));
+    }
     const boundLo = [lo[0] - 0.3, -0.4, lo[2] - 0.3];
     const boundHi = [hi[0] + 0.3, hi[1] + 0.3, hi[2] + 0.3];
     for (const b of branches) {
@@ -290,7 +312,123 @@
       }
     }
 
-    // ---- bark tubes, straight into typed arrays (tens of thousands of vertices)
+    const { bark, index } = barkTubes(branches, awayDir);
+    const leafData = new Float32Array(leaves.length * LEAF_FLOATS);
+    leaves.forEach((l, i) => leafData.set(l, i * LEAF_FLOATS));
+
+    return {
+      branches,
+      bark,
+      index,
+      leaves: leafData,
+      leafCount: leaves.length,
+      flowerCount: flowers.length, // they come last in the leaf list
+      crownC,
+      crownR,
+      trunkTop,
+      clumps: cBall.size,
+      height: hi[1],
+      boundLo,
+      boundHi,
+      tips: tips.length,
+    };
+  }
+
+  // smooth noise over time, -1 to 1, that never repeats
+  const hash1 = (n) => {
+    const s = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+    return s - Math.floor(s);
+  };
+  const noise1 = (t, seed) => {
+    const i = Math.floor(t);
+    const f = t - i;
+    const u = f * f * (3 - 2 * f);
+    return 2 * (hash1(i + seed * 57.3) * (1 - u) + hash1(i + 1 + seed * 57.3) * u) - 1;
+  };
+
+  /**
+   * The state of the wind in the tree. Gusts come irregularly and never repeat, and the wood answers them as a
+   * real tree does: the trunk and each swing of limbs is a spring with its own natural frequency, so a gust bends
+   * them, they swing back when it passes, and the swinging dies away. A gust also reaches the upwind side of the
+   * crown first and rolls across it at the speed of the air. The strength still comes from the real wind, so still
+   * air leaves the tree still. All of it is a few numbers a frame, passed to the shaders as uniforms.
+   */
+  class TreeWind {
+    constructor() {
+      this.t = 0;
+      this.lean = [0, 0]; // the top of the tree: downwind, across (m)
+      this.leanV = [0, 0];
+      this.limbs = new Float32Array(LIMB_W.length * 2); // each swing: downwind, across
+      this.limbV = new Float32Array(LIMB_W.length * 2);
+      this.front = new Float32Array(4); // the gust at four places across the crown, upwind to downwind
+      this.flutter = 0; // the twigs' and leaves' clock
+    }
+
+    /** The gust at time t, -1 to 1. field: the gust passing here in the bands crossing the forest (the probe). */
+    gustAt(t, field) {
+      // some spells are lively, others nearly calm
+      const lively = 0.3 + 0.7 * (0.5 + 0.5 * noise1(t * 0.035, 7));
+      const g = (0.6 * noise1(t * 0.23, 1) + 0.4 * noise1(t * 0.61, 2) + 0.25 * noise1(t * 1.7, 3)) * lively + 0.4 * field;
+      return clamp(g * 1.3, -1, 1);
+    }
+
+    /** dt s, str the wind's strength (0 to 2.4), kmh its speed, field as above, width m across the crown. */
+    step(dt, str, kmh, field, width) {
+      if (!(dt > 0)) return;
+      // the air crosses the crown at the speed of the gusts: seconds in light air, a moment in a storm
+      const cross = Math.min(width / Math.max((kmh * 1.4) / 3.6, 2), 3);
+      // after a long pause, settle at rest instead of working through the time
+      const settle = dt > 2;
+      const n = settle ? 0 : Math.min(Math.ceil(dt / 0.03), 67);
+      const h = settle ? 0 : dt / n;
+      for (let k = 0; k < n; k++) this._advance(h, str, cross, field);
+      this.t += settle ? dt : 0;
+      if (settle) {
+        this.lean[0] = 0.2 * str;
+        this.lean[1] = 0;
+        this.leanV[0] = this.leanV[1] = 0;
+        this.limbs.fill(0);
+        this.limbV.fill(0);
+      }
+      for (let i = 0; i < 4; i++) this.front[i] = this.gustAt(this.t - (i / 3) * cross, field);
+    }
+
+    _advance(h, str, cross, field) {
+      this.t += h;
+      const t = this.t;
+      const g = this.gustAt(t, field);
+      // Natural wind pushes one way, harder and softer. It also veers a little, more so when it is light
+      const veer = 0.5 + 0.5 / (1 + str * 2);
+      // a soft limit: a storm bends the wood as far as it goes and it still moves there, instead of stopping dead
+      const soft = (v, m) => m * Math.tanh(v / m);
+      const toX = soft(0.2 * str * (1 + 0.8 * g), LEAN_MAX * 0.85);
+      const toY = 0.1 * str * veer * noise1(t * 0.4, 4);
+      const W = 2.6; // about 0.4 Hz: the trunk of a tree this size
+      const Z = 0.14;
+      this.leanV[0] += (W * W * (toX - this.lean[0]) - 2 * Z * W * this.leanV[0]) * h;
+      this.leanV[1] += (W * W * (toY - this.lean[1]) - 2 * Z * W * this.leanV[1]) * h;
+      this.lean[0] = clamp(this.lean[0] + this.leanV[0] * h, -LEAN_MAX, LEAN_MAX);
+      this.lean[1] = clamp(this.lean[1] + this.leanV[1] * h, -LEAN_MAX, LEAN_MAX);
+      for (let i = 0; i < LIMB_W.length; i++) {
+        // each swing feels the gust at its own place in the crown, and its own eddies
+        const gi = this.gustAt(t - (i / 3) * cross, field);
+        const x = soft(0.03 * str + 0.04 * str * (0.7 * gi + 0.9 * noise1(t * (0.7 + 0.2 * i), 10 + i)), LIMB_MAX * 0.7);
+        const y = soft(0.04 * str * veer * noise1(t * (0.9 + 0.25 * i), 20 + i), LIMB_MAX * 0.7);
+        const w = LIMB_W[i];
+        const z = LIMB_Z[i];
+        const a = i * 2;
+        this.limbV[a] += (w * w * (x - this.limbs[a]) - 2 * z * w * this.limbV[a]) * h;
+        this.limbV[a + 1] += (w * w * (y - this.limbs[a + 1]) - 2 * z * w * this.limbV[a + 1]) * h;
+        this.limbs[a] = clamp(this.limbs[a] + this.limbV[a] * h, -LIMB_MAX, LIMB_MAX);
+        this.limbs[a + 1] = clamp(this.limbs[a + 1] + this.limbV[a + 1] * h, -LIMB_MAX, LIMB_MAX);
+      }
+      // twigs and leaves hurry in a gust and slow in a lull
+      this.flutter = (this.flutter + h * (0.5 + 0.6 * (g + 1)) * (0.6 + 0.4 * Math.min(str, 1))) % 2400;
+    }
+  }
+
+  // Bark tubes, straight into typed arrays (tens of thousands of vertices)
+  function barkTubes(branches, awayDir) {
     let nv = 0;
     let ni = 0;
     for (const b of branches) {
@@ -302,23 +440,122 @@
     const index = new Uint32Array(ni);
     const at = { v: 0, i: 0 };
     for (const b of branches) tube(b, bark, index, at, awayDir);
-    const leafData = new Float32Array(leaves.length * LEAF_FLOATS);
-    leaves.forEach((l, i) => leafData.set(l, i * LEAF_FLOATS));
+    return { bark, index };
+  }
 
-    return {
-      bark,
-      index,
-      leaves: leafData,
-      leafCount: leaves.length,
-      crownC,
-      crownR,
-      trunkTop,
-      clumps: cBall.size,
-      height: hi[1],
-      boundLo,
-      boundHi,
-      tips: tips.length,
+  /**
+   * Only the part of the crown the camera can see. The camera never moves, and a dense crown stacks up to 38
+   * leaves on one pixel, so most of the inside can never show. Going from the nearest leaf to the farthest,
+   * this counts how many solid blades already cover each small patch of the view. A leaf with SHELL_LAYERS or
+   * more in front of it everywhere is left out, and so is a thin shoot hidden the same way. Trunk and main limbs
+   * always stay. The kept leaves go nearest first, so the GPU rejects whatever is behind them before shading it.
+   */
+  function shellOfTree(T, site, awayDir, depth = SHELL_LAYERS) {
+    const L = T.leaves;
+    const nLeaf = T.leafCount - T.flowerCount;
+    const cellOf = (x, y, z) => [Math.atan2(x + site[0], z + site[2]) / SHELL_CELL, (y + site[1]) / Math.hypot(x + site[0], z + site[2]) / SHELL_CELL];
+
+    let cx0 = 1e9;
+    let cy0 = 1e9;
+    let cx1 = -1e9;
+    let cy1 = -1e9;
+    const grow = (c) => {
+      cx0 = Math.min(cx0, c[0]);
+      cy0 = Math.min(cy0, c[1]);
+      cx1 = Math.max(cx1, c[0]);
+      cy1 = Math.max(cy1, c[1]);
     };
+    for (let i = 0; i < T.leafCount; i++) {
+      const o = i * LEAF_FLOATS;
+      grow(cellOf(L[o], L[o + 1], L[o + 2]));
+      grow(cellOf(L[o] + L[o + 3], L[o + 1] + L[o + 4], L[o + 2] + L[o + 5]));
+    }
+    const PAD = 4;
+    const ox = Math.floor(cx0) - PAD;
+    const oy = Math.floor(cy0) - PAD;
+    const cw = Math.ceil(cx1) - ox + PAD;
+    const ch = Math.ceil(cy1) - oy + PAD;
+    const layers = new Uint8Array(cw * ch);
+    const stamp = new Int32Array(cw * ch).fill(-1);
+    const cellIndex = (c) => {
+      const x = Math.floor(c[0]) - ox;
+      const y = Math.floor(c[1]) - oy;
+      return x >= 0 && y >= 0 && x < cw && y < ch ? y * cw + x : -1;
+    };
+
+    const midDist = (i) => {
+      const o = i * LEAF_FLOATS;
+      return Math.hypot(L[o] + L[o + 3] * 0.5 + site[0], L[o + 1] + L[o + 4] * 0.5 + site[1], L[o + 2] + L[o + 5] * 0.5 + site[2]);
+    };
+    const nearFirst = (a, b) => a[1] - b[1];
+    const order = [];
+    for (let i = 0; i < nLeaf; i++) order.push([i, midDist(i)]);
+    order.sort(nearFirst);
+
+    const kept = [];
+    const cells = [];
+    for (const [i] of order) {
+      const o = i * LEAF_FLOATS;
+      // The blade as it is drawn: (a along it, x across it), as the shape in the leaf's fragment shader. A leaf
+      // spans a few cells, so its projection is flat enough to step through it without any more trigonometry.
+      const base = cellOf(L[o], L[o + 1], L[o + 2]);
+      const tip = cellOf(L[o] + L[o + 3], L[o + 1] + L[o + 4], L[o + 2] + L[o + 5]);
+      const edge = cellOf(L[o] + L[o + 6], L[o + 1] + L[o + 7], L[o + 2] + L[o + 8]);
+      const ax = tip[0] - base[0];
+      const ay = tip[1] - base[1];
+      const sx = edge[0] - base[0];
+      const sy = edge[1] - base[1];
+      const na = Math.max(2, Math.ceil(Math.hypot(ax, ay) * 2));
+      const nx = Math.max(2, Math.ceil(Math.hypot(sx, sy) * 4));
+      cells.length = 0;
+      let hidden = true;
+      for (let ia = 0; ia <= na; ia++) {
+        const a = ia / na;
+        const wp = Math.min(1.9 * Math.sqrt(a * (1 - a)) * (1.25 - 0.45 * a), 1) * smooth(0, 0.12, a);
+        for (let ix = 0; ix <= nx; ix++) {
+          const x = (ix / nx) * 2 - 1;
+          if (Math.abs(x) > wp) continue;
+          const cx = Math.floor(base[0] + ax * a + sx * x) - ox;
+          const cy = Math.floor(base[1] + ay * a + sy * x) - oy;
+          if (cx < 0 || cy < 0 || cx >= cw || cy >= ch) continue;
+          const c = cy * cw + cx;
+          if (stamp[c] === i) continue;
+          stamp[c] = i;
+          cells.push(c);
+          if (layers[c] < depth) hidden = false;
+        }
+      }
+      if (hidden && cells.length) continue;
+      kept.push(i);
+      for (const c of cells) if (layers[c] < 255) layers[c]++;
+    }
+
+    // flowers sit at the tips, in front: all of them stay
+    const flowers = [];
+    for (let i = nLeaf; i < T.leafCount; i++) flowers.push([i, midDist(i)]);
+    flowers.sort(nearFirst);
+    const data = new Float32Array((kept.length + flowers.length) * LEAF_FLOATS);
+    kept.forEach((i, k) => data.set(L.subarray(i * LEAF_FLOATS, (i + 1) * LEAF_FLOATS), k * LEAF_FLOATS));
+    flowers.forEach(([i], k) => data.set(L.subarray(i * LEAF_FLOATS, (i + 1) * LEAF_FLOATS), (kept.length + k) * LEAF_FLOATS));
+
+    const visible = (b) => {
+      if (b.level < 3) return true;
+      for (let n = 0; n < b.nodes.length; n++) {
+        const p = b.nodes[n].p;
+        const q = b.nodes[Math.min(n + 1, b.nodes.length - 1)].p;
+        const steps = Math.max(1, Math.ceil(len(sub(q, p)) / (midDistOf(p) * SHELL_CELL)));
+        for (let s = 0; s <= steps; s++) {
+          const m = madd(p, sub(q, p), s / steps);
+          const c = cellIndex(cellOf(m[0], m[1], m[2]));
+          if (c < 0 || layers[c] < depth) return true;
+        }
+      }
+      return false;
+    };
+    const midDistOf = (p) => Math.hypot(p[0] + site[0], p[1] + site[1], p[2] + site[2]);
+    const { bark, index } = barkTubes(T.branches.filter(visible), awayDir);
+
+    return { ...T, bark, index, leaves: data, leafCount: data.length / LEAF_FLOATS };
   }
 
   // A tube along a branch, its seam turned away from the eye, closed at the end with a short cone.
@@ -400,6 +637,14 @@
       this.moving = false;
       this.R = rng(0x51ed);
       this.lightTarget = createTarget(gl, 7, 1, [{ fmt: 'rgba16f', filter: gl.NEAREST }]);
+      this.light = new Float32Array(28); // the probe's seven pixels
+      this.gust = 0; // the gust at the tree, smoothed between probes
+      this.treeWind = new TreeWind();
+      this._windT = null;
+      this._lightBuf = gl.createBuffer();
+      this._lightFence = null;
+      this._lightRead = false;
+      this._treeT = null; // when the tree was last drawn into its target
       this.barkVAO = gl.createVertexArray();
       this.leafVAO = gl.createVertexArray();
       this.driftVAO = gl.createVertexArray();
@@ -428,6 +673,18 @@
       }
     }
 
+    _leafPointers(first) {
+      const gl = this.gl;
+      const st = LEAF_FLOATS * 4;
+      let off = first * st;
+      [3, 3, 3, 4, 4, 4].forEach((n, i) => {
+        gl.enableVertexAttribArray(i);
+        gl.vertexAttribPointer(i, n, gl.FLOAT, false, st, off);
+        gl.vertexAttribDivisor(i, 1);
+        off += n * 4;
+      });
+    }
+
     /** New size or a new view: the tree's place, its geometry (seams face away from the eye) and its target. */
     resize(w, h) {
       const gl = this.gl;
@@ -436,7 +693,7 @@
       const away = norm([site[0], 0, site[2]]);
       const seed = (this.r.cfg.render.seed | 0) * 7919 + 17;
       if (!this.tree || this._seed !== seed || this._away === undefined || Math.abs(this._away - away[0]) > 1e-4) {
-        this.tree = growTree(seed, away);
+        this.tree = shellOfTree(growTree(seed, away), this.site, away);
         this._seed = seed;
         this._away = away[0];
         const T = this.tree;
@@ -454,13 +711,7 @@
         gl.bindVertexArray(this.leafVAO);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.leafBuf);
         gl.bufferData(gl.ARRAY_BUFFER, T.leaves, gl.STATIC_DRAW);
-        const sl = LEAF_FLOATS * 4;
-        [3, 3, 3, 4, 4, 4].reduce((off, n, i) => {
-          gl.enableVertexAttribArray(i);
-          gl.vertexAttribPointer(i, n, gl.FLOAT, false, sl, off * 4);
-          gl.vertexAttribDivisor(i, 1);
-          return off + n;
-        }, 0);
+        this._leafPointers(0);
         gl.bindVertexArray(this.r.vao);
       }
       // the screen rectangle the tree can reach, swaying included
@@ -543,6 +794,7 @@
 
     _freeTarget() {
       const gl = this.gl;
+      this._treeT = null; // whatever comes next starts empty
       if (this.ms) {
         gl.deleteFramebuffer(this.ms.fbo);
         this.ms.rb.forEach((rb) => gl.deleteRenderbuffer(rb));
@@ -555,15 +807,43 @@
     // ---------------------------------------------------------------- per frame
     _wind(state) {
       const kmh = state.treeKmh || 0;
-      const g = state.gustDir;
-      return { kmh, str: Math.min(kmh / 30, 2.4), dir: [g[0], 0, g[1]] };
+      const g = state.treeDir || state.gustDir;
+      // a light breeze already shows on a tree: this rises faster at first than the speed does
+      return { kmh, str: Math.min(Math.pow(kmh / 30, 0.8), 2.4), dir: [g[0], 0, g[1]] };
+    }
+
+    /** Moves the wind in the tree on to now. */
+    _stepWind(state) {
+      const t = state.time;
+      const dt = this._windT === null ? 0 : t - this._windT;
+      this._windT = t;
+      const w = this._wind(state);
+      const T = this.tree;
+      this.treeWind.step(dt, w.str, w.kmh, this.gust, 2 * Math.hypot(T.crownR[0], T.crownR[2]));
+    }
+
+    /**
+     * Is it time to draw the tree anew? Between times the last picture of it stays in its target and is laid
+     * over each frame. Its leaves move at 1 to 2 cycles a second, so about 15 pictures a second show that
+     * fully; in still air nothing moves but the slowly changing light.
+     */
+    _treeDue(state) {
+      if (this._treeT === null) return true;
+      const since = state.time - this._treeT;
+      if (since < 0) return true;
+      const R = this.r;
+      const w = state.weather;
+      // Rain and snow are drawn over the tree and a flash lights it, so those keep up with every frame. In rest
+      // mode the scene behind changes only every 2 s anyway, and there lightness matters most.
+      if (!R._rest && (w.rain > 0.003 || w.snow > 0.003 || w.flash > 0.01 || R._fade < 1)) return true;
+      const hz = R._rest ? 10 : this._wind(state).kmh > 2.5 ? R.quality.treeHz : 8;
+      // 0.7, not 1: at 20 frames a second a 15 Hz tree is drawn in each one, at 30 in every second one
+      return since >= 0.7 / hz;
     }
 
     /** How far (m) the crown has swayed downwind now, for the dappled shadow it casts on the rock. */
-    swayOffset(state) {
-      const w = this._wind(state);
-      const t = state.time % 2400;
-      return w.str * (0.18 + 0.1 * Math.sin(t * 2.6) + 0.05 * Math.sin(t * 4.1 + 1.3));
+    swayOffset() {
+      return this.treeWind.lean[0];
     }
 
     _bloom(state) {
@@ -661,7 +941,7 @@
         // aim at a point in view a few seconds ahead, mostly near the tree, and start upwind of it
         const u = R() < 0.65 ? rr(-1, -0.35) : rr(-1, 1);
         const a = u * v.hfov * 0.5;
-        const dist = rr(4.5, 28);
+        const dist = rr(10, 32);
         const slope = rr(-0.15, 0.42);
         const target = [Math.sin(a) * dist, slope * dist, Math.cos(a) * dist];
         const lead = rr(1.5, 4);
@@ -669,7 +949,7 @@
       }
       const k = norm([rr(-1, 1), rr(-1, 1), rr(-1, 1)]);
       const A0 = perp(k);
-      const hl = petal ? rr(0.02, 0.028) : rr(0.055, 0.09);
+      const hl = petal ? rr(0.02, 0.028) : rr(0.04, 0.065);
       const hw = petal ? hl * rr(0.8, 1) : hl * rr(0.3, 0.42);
       const swAz = R() * Math.PI * 2;
       return {
@@ -730,6 +1010,7 @@
       const w = state.weather;
       const T = this.tree;
       const wind = this._wind(state);
+      const t = state.time % 2400;
       p.set('uRes', [R.w, R.h]);
       p.set('uHFov', v.hfov);
       p.set('uHorizonY', v.horizonY);
@@ -737,19 +1018,23 @@
       p.set('uSite', this.site);
       p.set('uWindDir', wind.dir);
       p.set('uWindStr', wind.str);
-      p.set('uTime', state.time % 2400);
+      p.set('uTime', t);
       p.set('uTreeH', T.height);
       p.set('uCrownC', T.crownC);
       p.set('uCrownR', T.crownR);
       p.set('uKeyDir', state.keyDir);
       p.set('uKeyIsSun', state.keyIsSun);
-      p.set('uGustDir', state.gustDir);
-      p.set('uGustTravel', state.gustTravel);
+      p.set('uTreeL', this.light);
+      p.set('uLean', this.treeWind.lean);
+      p.set('uLimb', this.treeWind.limbs);
+      p.set('uFront', this.treeWind.front);
+      p.set('uFlutter', this.treeWind.flutter);
       p.set('uSunDir', state.sunDir);
       p.set('uMoonDir', state.moonDir);
       p.set('uOvercast', w.overcast);
       p.set('uFlash', w.flash);
       p.set('uWet', w.wet);
+      p.set('uSeason', state.season);
       p.set('uMieScale', w.haze);
       const snowAt = smooth(state.snowLine - 0.18, state.snowLine + 0.28, R.cfg.render.cameraAltitude);
       p.set('uSnowTree', snowAt * 0.85);
@@ -763,13 +1048,43 @@
       p.set('uFade', R._fade);
       p.set('uBloom', this._bloom(state));
       R._bind(p, {
-        uNoise2D: R.noise2D,
-        uTreeLight: this.lightTarget.tex[0],
         uG0: R.gbuf.tex[0],
         uTransLUT: R.transLUT.tex[0],
         uSkyLUT: R.skyLUT.tex[0],
         uAdapt: R.adaptA.tex[0],
       });
+    }
+
+    /** Takes in the probe's result once the GPU has it. False while it is still on its way. */
+    _collectLight() {
+      const f = this._lightFence;
+      if (f === null) return true;
+      const gl = this.gl;
+      if (!gl.isContextLost() && gl.getSyncParameter(f, gl.SYNC_STATUS) !== gl.SIGNALED) return false;
+      gl.deleteSync(f);
+      this._lightFence = null;
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this._lightBuf);
+      gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.light);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      return true;
+    }
+
+    /** The probe's pixels, into this.light. Waits for the GPU only once, for the very first picture of the tree. */
+    _readLight() {
+      const gl = this.gl;
+      if (!this._lightRead) {
+        this._lightRead = true;
+        gl.readPixels(0, 0, 7, 1, gl.RGBA, gl.FLOAT, this.light);
+        this.gust = this.light[27];
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this._lightBuf);
+        gl.bufferData(gl.PIXEL_PACK_BUFFER, this.light.byteLength, gl.STREAM_READ);
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+        return;
+      }
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this._lightBuf);
+      gl.readPixels(0, 0, 7, 1, gl.RGBA, gl.FLOAT, 0);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      this._lightFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
     }
 
     _probe(state) {
@@ -790,8 +1105,11 @@
       p.set('uTreeTop', km([T.crownC[0], T.height, T.crownC[2]]));
       const tc = norm([-this.site[0], 0, -this.site[2]]);
       p.set('uToCam', [tc[0], tc[2]]);
+      p.set('uGustDir', state.gustDir);
+      p.set('uGustTravel', state.gustTravel);
       R._bind(p, { uTransLUT: R.transLUT.tex[0], uSkyLUT: R.skyLUT.tex[0], uNoise2D: R.noise2D, uNoise3D: R.noise3D });
       R._draw();
+      this._readLight();
     }
 
     _drawDrift(state, first, count) {
@@ -812,64 +1130,92 @@
       gl.disable(gl.BLEND);
     }
 
+    /** Leaves into the bound target, nearest first and in separate draws, so other GPU work gets a turn between them. */
+    _drawLeaves(count) {
+      const gl = this.gl;
+      gl.bindVertexArray(this.leafVAO);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.leafBuf);
+      const per = Math.ceil(count / LEAF_BATCHES);
+      for (let first = 0; first < count; first += per) {
+        this._leafPointers(first);
+        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, Math.min(per, count - first));
+        gl.flush();
+      }
+      this._leafPointers(0);
+    }
+
+    /** Bark and leaves into the multisampled target, then resolved: colour (already weighted by coverage) and coverage. */
+    _drawTree(state) {
+      const R = this.r;
+      const gl = this.gl;
+      const box = this.box;
+      const [bw, bh] = [box[2], box[3]];
+      const T = this.tree;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.ms.fbo);
+      gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+      gl.viewport(0, 0, bw, bh);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clearDepth(1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LESS);
+      gl.depthMask(true);
+      // Leaves first: bark is the costlier per pixel, and most of it is behind them. Out of season no flower
+      // is drawn at all (they would be size zero anyway), which is about a fifth of the corners to work out.
+      let p = R.prog.treeLeaf;
+      gl.useProgram(p.p);
+      this._common(p, state, box);
+      if (this.ms.samples) gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+      this._drawLeaves(this._bloom(state) > 0 ? T.leafCount : T.leafCount - T.flowerCount);
+      gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+      p = R.prog.treeBark;
+      gl.useProgram(p.p);
+      this._common(p, state, box);
+      gl.bindVertexArray(this.barkVAO);
+      gl.drawElements(gl.TRIANGLES, T.index.length, gl.UNSIGNED_INT, 0);
+      gl.disable(gl.DEPTH_TEST);
+      gl.bindVertexArray(R.vao);
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.ms.fbo);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.resolved.fbo);
+      for (let a = 0; a < 2; a++) {
+        gl.readBuffer(gl.COLOR_ATTACHMENT0 + a);
+        gl.drawBuffers(a === 0 ? [gl.COLOR_ATTACHMENT0, gl.NONE] : [gl.NONE, gl.COLOR_ATTACHMENT1]);
+        gl.blitFramebuffer(0, 0, bw, bh, 0, 0, bw, bh, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+      }
+      gl.readBuffer(gl.COLOR_ATTACHMENT0);
+      gl.drawBuffers(this.resolved.bufs);
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+      gl.flush();
+      this._treeT = state.time;
+    }
+
     /** Draws the leaves beyond the tree, the tree, then the leaves in front of it, over the picture. */
     draw(state) {
       if (!this.enabled || !this.tree) return;
       const R = this.r;
       const gl = this.gl;
       this.update(state);
-      this._probe(state);
+      if (this._collectLight()) this._probe(state); // one at a time: it never waits for the GPU
+      this.gust += (this.light[27] - this.gust) * 0.3;
+      this._stepWind(state);
       this._drawDrift(state, 0, this.nFar);
       if (this.box && this.ms) {
         const box = this.box;
-        const [bw, bh] = [box[2], box[3]];
-        // 1. bark and leaves into the multisampled target
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this.ms.fbo);
-        gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
-        gl.viewport(0, 0, bw, bh);
-        gl.clearColor(0, 0, 0, 0);
-        gl.clearDepth(1);
-        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-        gl.enable(gl.DEPTH_TEST);
-        gl.depthFunc(gl.LESS);
-        gl.depthMask(true);
-        let p = R.prog.treeBark;
-        gl.useProgram(p.p);
-        this._common(p, state, box);
-        gl.bindVertexArray(this.barkVAO);
-        gl.drawElements(gl.TRIANGLES, this.tree.index.length, gl.UNSIGNED_INT, 0);
-        p = R.prog.treeLeaf;
-        gl.useProgram(p.p);
-        this._common(p, state, box);
-        if (this.ms.samples) gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
-        gl.bindVertexArray(this.leafVAO);
-        gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.tree.leafCount);
-        gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
-        gl.disable(gl.DEPTH_TEST);
-        gl.bindVertexArray(R.vao);
-        // 2. resolve: colour (already weighted by coverage) and coverage
-        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.ms.fbo);
-        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.resolved.fbo);
-        for (let a = 0; a < 2; a++) {
-          gl.readBuffer(gl.COLOR_ATTACHMENT0 + a);
-          gl.drawBuffers(a === 0 ? [gl.COLOR_ATTACHMENT0, gl.NONE] : [gl.NONE, gl.COLOR_ATTACHMENT1]);
-          gl.blitFramebuffer(0, 0, bw, bh, 0, 0, bw, bh, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+        if (this._treeDue(state)) this._drawTree(state);
+        // over the picture
+        {
+          R._target(null, R.w, R.h);
+          const p = R.prog.treeComp;
+          gl.useProgram(p.p);
+          p.set('uRes', [R.w, R.h]);
+          p.set('uBox', box);
+          R._bind(p, { uTreeColor: this.resolved.tex[0], uTreeCover: this.resolved.tex[1] });
+          gl.enable(gl.BLEND);
+          gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+          gl.drawArrays(gl.TRIANGLES, 0, 6);
+          gl.disable(gl.BLEND);
         }
-        gl.readBuffer(gl.COLOR_ATTACHMENT0);
-        gl.drawBuffers(this.resolved.bufs);
-        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
-        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
-        // 3. over the picture
-        R._target(null, R.w, R.h);
-        p = R.prog.treeComp;
-        gl.useProgram(p.p);
-        p.set('uRes', [R.w, R.h]);
-        p.set('uBox', box);
-        R._bind(p, { uTreeColor: this.resolved.tex[0], uTreeCover: this.resolved.tex[1] });
-        gl.enable(gl.BLEND);
-        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-        gl.drawArrays(gl.TRIANGLES, 0, 6);
-        gl.disable(gl.BLEND);
       }
       this._drawDrift(state, this.nFar, this.nNear);
     }
@@ -878,11 +1224,15 @@
       const gl = this.gl;
       this._freeTarget();
       deleteTarget(gl, this.lightTarget);
-      [this.barkBuf, this.barkIdx, this.leafBuf, this.driftBuf].forEach((b) => gl.deleteBuffer(b));
+      if (this._lightFence !== null) gl.deleteSync(this._lightFence);
+      this._lightFence = null;
+      [this.barkBuf, this.barkIdx, this.leafBuf, this.driftBuf, this._lightBuf].forEach((b) => gl.deleteBuffer(b));
       [this.barkVAO, this.leafVAO, this.driftVAO].forEach((v) => gl.deleteVertexArray(v));
     }
   }
 
   LE.Foreground = Foreground;
   LE.growTree = growTree; // for tests
+  LE.shellOfTree = shellOfTree;
+  LE.TreeWind = TreeWind;
 })();

@@ -763,6 +763,154 @@ test('the tree grows the same from the same seed, and differently from another',
   assert.notDeepEqual(a.leaves.subarray(0, 50), c.leaves.subarray(0, 50));
 });
 
+// A run of the tree's wind: its top's movement downwind, and each limb swing, sampled 30 times a second
+function windRun(LE, kmh, seconds = 300, dt = 1 / 30) {
+  const tw = new LE.TreeWind();
+  const str = Math.min(Math.pow(kmh / 30, 0.8), 2.4);
+  const lean = [];
+  const limbs = [[], [], [], []];
+  for (let t = 0; t < seconds; t += dt) {
+    tw.step(dt, str, kmh, 0, 8);
+    lean.push(tw.lean[0]);
+    for (let i = 0; i < 4; i++) limbs[i].push(tw.limbs[i * 2 + 1]);
+  }
+  return { tw, lean, limbs };
+}
+const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length;
+const spread = (a) => Math.sqrt(mean(a.map((v) => (v - mean(a)) ** 2)));
+function correlation(a, b) {
+  const ma = mean(a);
+  const mb = mean(b);
+  let ab = 0;
+  let aa = 0;
+  let bb = 0;
+  for (let i = 0; i < a.length; i++) {
+    ab += (a[i] - ma) * (b[i] - mb);
+    aa += (a[i] - ma) ** 2;
+    bb += (b[i] - mb) ** 2;
+  }
+  return ab / Math.sqrt(aa * bb);
+}
+
+test('still air leaves the tree still, and stronger wind moves it more', () => {
+  const { LE } = load(['engine/gl.js', 'engine/foreground.js']);
+  const still = windRun(LE, 0, 60);
+  assert.ok(Math.max(...still.lean.map(Math.abs)) < 1e-6, 'no movement in still air');
+  const light = windRun(LE, 7);
+  const strong = windRun(LE, 35);
+  assert.ok(spread(light.lean) > 0.005, `a light breeze shows (${spread(light.lean)})`);
+  assert.ok(mean(strong.lean) > mean(light.lean) * 2, 'it leans further in a stronger wind');
+  assert.ok(spread(strong.lean) > spread(light.lean) * 2, 'and swings more');
+});
+
+test('the wind in the tree never settles into a repeating loop', () => {
+  const { LE } = load(['engine/gl.js', 'engine/foreground.js']);
+  const { lean, limbs } = windRun(LE, 20, 300);
+  // compared with itself at any delay from 5 s to 2 minutes, the movement is not a copy
+  let worst = 0;
+  for (let lag = 150; lag <= 3600; lag += 15) {
+    const n = lean.length - lag;
+    worst = Math.max(worst, correlation(lean.slice(0, n), lean.slice(lag, lag + n)));
+  }
+  assert.ok(worst < 0.75, `repeats too closely, correlation ${worst.toFixed(2)}`);
+  // gusts come and go: the sway over one half minute differs from the next
+  const parts = [];
+  for (let i = 0; i < 10; i++) parts.push(spread(lean.slice(i * 900, (i + 1) * 900)));
+  assert.ok(Math.max(...parts) > Math.min(...parts) * 1.4, `the same swing all the time: ${parts.map((v) => v.toFixed(3))}`);
+  // limbs swing separately
+  for (let i = 0; i < 4; i++)
+    for (let j = i + 1; j < 4; j++) {
+      const c = Math.abs(correlation(limbs[i], limbs[j]));
+      assert.ok(c < 0.6, `swings ${i} and ${j} move together, correlation ${c.toFixed(2)}`);
+    }
+});
+
+test('a gust reaches the upwind side of the crown first, sooner in a stronger wind', () => {
+  const { LE } = load(['engine/gl.js', 'engine/foreground.js']);
+  const frontDelay = (kmh) => {
+    const str = Math.min(Math.pow(kmh / 30, 0.8), 2.4);
+    const tw = new LE.TreeWind();
+    const up = [];
+    const down = [];
+    for (let t = 0; t < 120; t += 1 / 30) {
+      tw.step(1 / 30, str, kmh, 0, 8);
+      up.push(tw.front[0]);
+      down.push(tw.front[3]);
+    }
+    let best = 0;
+    let bestC = -2;
+    for (let lag = 0; lag <= 120; lag++) {
+      const n = up.length - lag;
+      const c = correlation(up.slice(0, n), down.slice(lag, lag + n));
+      if (c > bestC) {
+        bestC = c;
+        best = lag;
+      }
+    }
+    return best / 30;
+  };
+  const light = frontDelay(10);
+  const storm = frontDelay(60);
+  assert.ok(light > 1.5 && light <= 3.1, `light wind crosses in ${light} s`);
+  assert.ok(storm < light / 2, `a storm crosses in ${storm} s, light wind in ${light} s`);
+});
+
+test('the tree bends with a gust and swings back when it has passed', () => {
+  const { LE } = load(['engine/gl.js', 'engine/foreground.js']);
+  const tw = new LE.TreeWind();
+  // only the strength changes here, for a clear start and end to the push
+  for (let t = 0; t < 5; t += 1 / 30) tw.step(1 / 30, 1.5, 45, 0, 8);
+  const pushed = tw.lean[0];
+  assert.ok(pushed > 0.05, `bends downwind (${pushed})`);
+  let lowest = Infinity;
+  const after = [];
+  for (let t = 0; t < 6; t += 1 / 30) {
+    tw.step(1 / 30, 0, 0, 0, 8);
+    lowest = Math.min(lowest, tw.lean[0]);
+    after.push(tw.lean[0]);
+  }
+  assert.ok(lowest < 0, `swings past upright (${lowest})`);
+  const end = after.slice(-30);
+  assert.ok(Math.max(...end.map(Math.abs)) < pushed, 'and the swinging dies away');
+});
+
+test('in a storm the tree is still moving, not pinned at its limit', () => {
+  const { LE } = load(['engine/gl.js', 'engine/foreground.js']);
+  const { lean, limbs } = windRun(LE, 100, 120);
+  assert.ok(spread(lean) > 0.02, `the tree still swings (${spread(lean)})`);
+  const pinned = limbs[0].filter((v) => Math.abs(v) >= 0.1199).length / limbs[0].length;
+  assert.ok(pinned < 0.05, `limbs stuck at the limit ${(pinned * 100).toFixed(0)}% of the time`);
+});
+
+test('the tree turns to a new wind direction long before the forest gust pattern does', () => {
+  const { env, advance } = newEnv();
+  const wind = (windDir) => ({ code: 2, cloud: 40, windSpeed: 20, gusts: 30, windDir, precip: 0, temp: 20 });
+  env.setWeather(wind(270), 'live');
+  advance(10, 0.5);
+  const was = [...env.state.treeDir];
+  const forest = [...env.state.gustDir];
+  env.setWeather(wind(0), 'live'); // a quarter turn
+  advance(240, 0.5);
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1];
+  assert.ok(dot(env.state.treeDir, was) < 0.25, `the tree turned: ${dot(env.state.treeDir, was)}`);
+  assert.ok(dot(env.state.gustDir, forest) > dot(env.state.treeDir, was) + 0.2, 'the forest pattern turns more slowly');
+  assert.ok(Math.abs(Math.hypot(...env.state.treeDir) - 1) < 1e-3, 'a direction, not a speed');
+});
+
+test('the wind in the tree stays stable and in range at any frame rate, and after a pause', () => {
+  const { LE } = load(['engine/gl.js', 'engine/foreground.js']);
+  for (const dt of [1 / 60, 1 / 6, 0.5, 1.9, 30]) {
+    const { tw, lean, limbs } = windRun(LE, 90, 90 * Math.max(dt, 1), dt);
+    assert.ok(lean.every((v) => Number.isFinite(v) && Math.abs(v) <= 0.6), `lean at dt ${dt}`);
+    for (const l of limbs) assert.ok(l.every((v) => Number.isFinite(v) && Math.abs(v) <= 0.1201), `limbs at dt ${dt}`);
+    assert.ok(tw.front.every(Number.isFinite) && tw.flutter >= 0 && tw.flutter < 2400, `other values at dt ${dt}`);
+  }
+  const tw = new LE.TreeWind();
+  tw.flutter = 2399.99;
+  tw.step(1, 1, 30, 0, 8);
+  assert.ok(tw.flutter < 2400, 'the flutter clock wraps');
+});
+
 test('the tree is a full, tree-sized crown with valid geometry', () => {
   const { LE } = load(['engine/gl.js', 'engine/foreground.js']);
   const T = LE.growTree(7936, [-0.8, 0, 0.6]);
@@ -775,6 +923,337 @@ test('the tree is a full, tree-sized crown with valid geometry', () => {
   assert.ok(T.index.every((i) => i < verts), 'indices in range');
   // wind weights never pull a leaf against the wood it grows on: they only grow along a shoot
   for (let i = 0; i < T.leafCount; i++) assert.ok(T.leaves[i * 21 + 9] >= 0 && T.leaves[i * 21 + 11] >= 0);
+});
+
+// Where a leaf's blade falls, in the same angular cells shellOfTree works in
+function bladeCells(T, site, i, cell) {
+  const o = i * 21;
+  const L = T.leaves;
+  const cells = new Set();
+  for (let a = 0.1; a <= 0.9; a += 0.1) {
+    const x = L[o] + L[o + 3] * a + site[0];
+    const y = L[o + 1] + L[o + 4] * a + site[1];
+    const z = L[o + 2] + L[o + 5] * a + site[2];
+    cells.add(`${Math.floor(Math.atan2(x, z) / cell)},${Math.floor(y / Math.hypot(x, z) / cell)}`);
+  }
+  return cells;
+}
+
+test('the crown keeps only what the fixed camera can see, and its outline stays the same', () => {
+  const { LE } = load(['engine/gl.js', 'engine/foreground.js']);
+  const a = (-0.672 * ((140 * Math.PI) / 180)) / 2;
+  const site = [Math.sin(a) * 28, -3.6, Math.cos(a) * 28];
+  const away = [Math.sin(a), 0, Math.cos(a)];
+  const all = LE.growTree(7936, away);
+  const shell = LE.shellOfTree(all, site, away);
+  const leavesAll = all.leafCount - all.flowerCount;
+  const leavesKept = shell.leafCount - shell.flowerCount;
+  assert.ok(leavesKept < leavesAll * 0.8, `hidden leaves are dropped (${leavesKept} of ${leavesAll})`);
+  assert.ok(leavesKept > leavesAll * 0.15, `but the crown stays full (${leavesKept} of ${leavesAll})`);
+  assert.equal(shell.flowerCount, all.flowerCount, 'every flower stays: they sit at the tips, in front');
+  assert.ok(shell.index.length < all.index.length, 'twigs hidden inside the crown go too');
+
+  // every part of the screen the full crown covers is still covered: the outline can't change
+  const CELL = 0.004;
+  const seen = (T, n) => {
+    const s = new Set();
+    for (let i = 0; i < n; i++) for (const c of bladeCells(T, site, i, CELL)) s.add(c);
+    return s;
+  };
+  const before = seen(all, leavesAll);
+  const after = seen(shell, leavesKept);
+  let lost = 0;
+  for (const c of before) if (!after.has(c)) lost++;
+  assert.ok(lost / before.size < 0.002, `outline kept: ${lost} of ${before.size} cells lost`);
+
+  // nearest first, so the GPU can reject what is behind without shading it
+  const dist = (i) => {
+    const o = i * 21;
+    const L = shell.leaves;
+    return Math.hypot(L[o] + L[o + 3] * 0.5 + site[0], L[o + 1] + L[o + 4] * 0.5 + site[1], L[o + 2] + L[o + 5] * 0.5 + site[2]);
+  };
+  for (let i = 1; i < leavesKept; i += 37) assert.ok(dist(i) >= dist(i - 1) - 1e-3, 'sorted near to far');
+
+  const verts = shell.bark.length / 14;
+  assert.ok(shell.index.every((i) => i < verts), 'indices in range');
+  assert.ok(shell.leaves.every(Number.isFinite) && shell.bark.every(Number.isFinite), 'no NaN or Infinity');
+  assert.deepEqual([...shell.crownC], [...all.crownC], 'the light on the crown is worked out as before');
+});
+
+test('the tree redraws only as often as something on it changes', () => {
+  const { fg } = newForeground();
+  const dry = { rain: 0, snow: 0, flash: 0 };
+  const due = (time, treeKmh, weather = dry) => fg._treeDue({ time, treeKmh, weather, gustDir: [1, 0] });
+  fg.r.quality = { treeHz: 15 };
+  fg.r._fade = 1;
+  fg.r._rest = false;
+  assert.equal(due(10, 20), true, 'the first frame always draws it');
+  fg._treeT = 10;
+  assert.equal(due(10 + 1 / 30, 20), false, 'at 30 fps, windy: every second frame');
+  assert.equal(due(10 + 2 / 30, 20), true);
+  assert.equal(due(10 + 1 / 20, 20), true, 'at 20 fps, windy: every frame');
+  assert.equal(due(10 + 0.05, 1), false, 'in still air it waits, because nothing on it moves');
+  assert.equal(due(10 + 0.1, 1), true);
+  assert.equal(due(10 + 1 / 30, 20, { rain: 0.5, snow: 0, flash: 0 }), true, 'rain is drawn over it, so it keeps up with the rain');
+  assert.equal(due(10 + 1 / 30, 1, { rain: 0, snow: 0, flash: 0.5 }), true, 'a flash lights it at once');
+  fg.r._fade = 0.5;
+  assert.equal(due(10 + 1 / 30, 1), true, 'it follows the fade-in');
+  fg.r._fade = 1;
+  fg.r._slow = true;
+  assert.equal(due(10 + 1 / 30, 20), false, 'at 30 fps in a calm scene: 15 Hz here too');
+  assert.equal(due(10 + 2 / 30, 20), true, 'a calm scene keeps the full rate');
+  fg.r._rest = true;
+  assert.equal(due(10 + 0.05, 20), false, 'rest mode keeps it light');
+  assert.equal(due(10 + 0.05, 20, { rain: 0.5, snow: 0, flash: 0 }), false, 'even in the rain');
+  assert.equal(due(10 + 0.2, 20), true, 'but it still moves in the wind');
+  fg.resize(3840, 1080);
+  assert.equal(due(10.01, 20), true, 'a new target has to be drawn at once');
+});
+
+// ---------------------------------------------------------------- never letting frames pile up on the GPU
+function newRendererWithFence() {
+  const h = load(['engine/gl.js', 'engine/quality.js', 'engine/foreground.js', 'engine/renderer.js']);
+  let now = 1000;
+  h.ctx.performance = { now: () => now };
+  const fences = [];
+  let signaled = false;
+  const gl = {
+    SIGNALED: 1,
+    SYNC_STATUS: 2,
+    SYNC_GPU_COMMANDS_COMPLETE: 3,
+    lost: false,
+    isContextLost() {
+      return this.lost;
+    },
+    fenceSync() {
+      fences.push('live');
+      return fences.length - 1;
+    },
+    deleteSync(f) {
+      fences[f] = 'deleted';
+    },
+    getSyncParameter() {
+      return signaled ? 1 : 0;
+    },
+    flush() {},
+  };
+  const r = new h.LE.Renderer({}, {});
+  r.gl = gl;
+  return { r, gl, fences, advance: (ms) => (now += ms), signal: (v) => (signaled = v) };
+}
+
+test('a new frame waits until the GPU has finished the last one', () => {
+  const { r, fences, advance, signal } = newRendererWithFence();
+  assert.equal(r.frameDone(), true, 'nothing in flight at the start');
+  r._fenceFrame();
+  assert.equal(r.frameDone(), false, 'still on the GPU');
+  advance(40);
+  assert.equal(r.frameDone(), false);
+  signal(true);
+  advance(10);
+  assert.equal(r.frameDone(), true, 'finished');
+  assert.equal(fences[0], 'deleted', 'the fence is released');
+  assert.equal(r.frameDone(), true, 'stays free until the next frame');
+  near(r.gpuBusyMs, 42, 0.01, 'the time on the GPU, less half a screen refresh for when it was noticed');
+});
+
+test('a calm scene is drawn a few bands at a time, and shows only when it is whole and the last fade has ended', () => {
+  const { r, gl, advance } = newRendererWithFence();
+  gl.useProgram = () => {};
+  const bands = [];
+  const seen = {};
+  const times = [];
+  r.status = 'running';
+  r.w = 100;
+  r.h = 80;
+  r.pictureBands = 4;
+  r._pictureReady = true;
+  r.pictureA = { tex: ['A'] };
+  r.pictureB = { tex: ['B'] };
+  r.pictureNext = { tex: ['C'] };
+  r.prog = { fade: { p: 1, set: (k, v) => (seen[k] = v) } };
+  r._target = () => {};
+  r._bind = (p, t) => Object.assign(seen, t);
+  r._draw = () => {};
+  r._spritePass = () => {};
+  r.fg = { draw() {} };
+  const state = { time: 5, treeDir: [1, 0], treeKmh: 0, windAmt: 0 };
+  r._compositePass = (s, meter, band) => {
+    bands.push([band.y, band.h]);
+    times.push(s.time);
+  };
+
+  r._pictureJob = { state, time: 5, y: 0, fresh: true };
+  assert.equal(r.pictureBusy(), true);
+  r.drawFade(0.2, state);
+  assert.equal(bands.length, 0, 'the frame that drew the clouds has enough to do');
+  state.time = 6; // the fades move the clock on
+  for (let i = 0; i < 4; i++) r.drawFade(0.5, state);
+  assert.deepEqual(bands, [[0, 20], [20, 20], [40, 20], [60, 20]], 'the bands fill the picture, each in its own frame');
+  assert.deepEqual(times, [5, 5, 5, 5], 'and all show one moment');
+  assert.equal(state.time, 6);
+  assert.equal(seen.uTo, 'B', 'whole, but the last fade has not ended: taking over now would jump');
+  assert.equal(r.pictureBusy(), true);
+  r.drawFade(0.9, state);
+  assert.equal(bands.length, 4, 'no more bands');
+  advance(100);
+  r.drawFade(1, state);
+  assert.equal(seen.uFrom, 'B', 'the fade starts from what is on the screen');
+  assert.equal(seen.uTo, 'C');
+  assert.equal(seen.uMix, 0);
+  assert.equal(r.pictureBusy(), false);
+  assert.equal(r.pictureAt, 1100, 'the next fade is timed from now');
+  assert.equal(r.pictureNext.tex[0], 'A', 'the oldest picture is drawn over next');
+});
+
+test('the wind in the grass runs the way the real wind blows, at its speed, and never jumps', () => {
+  const { r } = newRendererWithFence();
+  const air = (time, x, z, kmh = 36, windAmt = 0.5) => ({ time, treeDir: [x, z], treeKmh: kmh, windAmt });
+  r._grassStep(air(10, 1, 0));
+  assert.deepEqual([...r._grassWind], [0, 0, 0, 0], 'the first frame only starts the clock');
+  r._grassStep(air(10.1, 1, 0));
+  near(r._grassWind[0], 0.6, 1e-9, 'air going right at 36 km/h: gusts go right at 6 m/s');
+  assert.equal(r._grassWind[1], 0);
+  assert.ok(r._grassWind[2] > 0, 'the blades lean right');
+  const { r: left } = newRendererWithFence();
+  left._grassStep(air(10, -1, 0));
+  left._grassStep(air(10.1, -1, 0));
+  assert.ok(left._grassWind[0] < 0 && left._grassWind[2] < 0, 'air going left: both go left');
+  const { r: away } = newRendererWithFence();
+  away._grassStep(air(10, 0, 1));
+  away._grassStep(air(10.1, 0, 1));
+  assert.equal(away._grassWind[0], 0, 'air going straight away from us: nothing sideways');
+  near(away._grassWind[1], 0.18, 1e-9, 'it runs up the picture, foreshortened');
+  near(away._grassWind[2], 0, 1e-9, 'and the blades lean neither way');
+  const before = r._grassWind[0];
+  r._grassStep(air(100000, 1, 0));
+  assert.ok(r._grassWind[0] - before <= 1.5 + 1e-9, 'a long gap, such as a pause, moves it on by one frame at most');
+  const { r: light } = newRendererWithFence();
+  light._grassStep(air(10, 1, 0, 3, 0.05));
+  light._grassStep(air(10.25, 1, 0, 3, 0.05));
+  near(light._grassWind[0], 0.15, 1e-9, 'light air still moves through it at a walking pace');
+  for (let i = 1; i < 60; i++) light._grassStep(air(10.25 + i * 0.25, 1, 0, 3, 0.05));
+  assert.ok(light._grassWind[3] > 0.28, 'and can be seen, in 3 km/h that hardly moves a tree: ' + light._grassWind[3]);
+  for (let i = 1; i <= 2000; i++) r._grassStep(air(100000 + i * 0.25, 1, 0));
+  assert.ok(r._grassWind[0] < 50, 'it wraps on a whole number of noise tiles');
+  near(0.08 * 50, 4, 1e-9);
+  near(0.16 * 1.25 * 50, 10, 1e-9);
+  const { r: still } = newRendererWithFence();
+  still._grassStep(air(10, 1, 0, 0, 0));
+  still._grassStep(air(10.25, 1, 0, 0, 0));
+  assert.deepEqual([...still._grassWind], [0, 0, 0, 0], 'no wind: no movement at all');
+});
+
+test('between scenes the grass alone is drawn again, in the place it really is, and only while there is wind', () => {
+  const { r } = newRendererWithFence();
+  r.cfg = { render: { horizonY: 0.4, maxHFovDeg: 140 } };
+  r.w = 1827;
+  r.h = 935;
+  const box = r._grassBox();
+  assert.equal(box.grass, true);
+  assert.equal(box.x, 0, 'the rock runs off the left of the picture');
+  assert.ok(box.w > 400 && box.w < 560, 'to just past its tip, around pixel 480: ' + box.w);
+  assert.ok(box.y < 155 && box.y >= 0, 'from below its near edge, about 155 up: ' + box.y);
+  assert.ok(box.y + box.h > 246 && box.y + box.h < 320, 'to above its far edge, about 246 up: ' + (box.y + box.h));
+  assert.ok((box.w * box.h) / (r.w * r.h) < 0.08, 'a small part of the picture');
+  r.w = 320;
+  r.h = 90;
+  const small = r._grassBox();
+  assert.ok(small.y >= 0 && small.y + small.h <= 90 && small.w <= 320, 'stays inside any picture');
+
+  const calls = [];
+  r._compositePass = (s, meter, band) => calls.push(band);
+  r._grassBox = () => 'the box';
+  r._grassWind[3] = 0.3;
+  assert.equal(r.grassMoving(), true);
+  r._grassPass({});
+  assert.deepEqual(calls, ['the box']);
+  r._rest = true;
+  r._grassPass({});
+  assert.equal(calls.length, 1, 'not in the Windows app\'s rest mode, while you work');
+  r._rest = false;
+  r._grassWind[3] = 0;
+  r._grassPass({});
+  assert.equal(calls.length, 1, 'not in still air');
+  assert.equal(r.grassMoving(), false, 'so the fades can slow down');
+});
+
+test('a slow GPU draws a calm scene in more, thinner bands, so no frame holds it up for long', () => {
+  const { r } = newRendererWithFence();
+  r.pictureBands = 8;
+  r.gpuBusyMs = 30;
+  r._tunePictureBands();
+  assert.equal(r.pictureBands, 10);
+  for (let i = 0; i < 40; i++) r._tunePictureBands();
+  assert.equal(r.pictureBands, 32, 'up to a limit, or a new scene would come too rarely');
+  r.gpuBusyMs = 12;
+  r._tunePictureBands();
+  assert.equal(r.pictureBands, 32, 'it settles rather than hunting');
+  r.gpuBusyMs = 8.7;
+  for (let i = 0; i < 40; i++) r._tunePictureBands();
+  assert.equal(r.pictureBands, 4, 'a quick GPU gets fewer');
+});
+
+test('the Windows app\'s rest mode and a calm scene ask different things of the renderer', () => {
+  const { r } = newRendererWithFence();
+  r._bgPacer = {};
+  r.setSlowMode(true, false);
+  assert.equal(r._slow, true);
+  assert.equal(r._rest, false, 'a calm scene keeps the tree at the full rate');
+  assert.equal(r._bgPacer.targetMs, 12, 'and a smaller shadow chunk, because scenes come often');
+  r.setSlowMode(true);
+  assert.equal(r._rest, true, 'the app only says on or off');
+  assert.equal(r._bgPacer.targetMs, 25);
+  r._pictureReady = true;
+  r._pictureJob = {};
+  r.setSlowMode(false);
+  assert.equal(r._rest, false);
+  assert.equal(r._pictureReady, false);
+  assert.equal(r.pictureBusy(), false, 'back to full frames, no picture is left half drawn');
+});
+
+test('the time a frame takes on the GPU is smoothed, so one slow frame does not halve the frame rate', () => {
+  const { r, advance, signal } = newRendererWithFence();
+  signal(true);
+  const frame = (ms) => {
+    r._fenceFrame();
+    advance(ms);
+    r.frameDone();
+  };
+  for (let i = 0; i < 40; i++) frame(30);
+  near(r.gpuBusyMs, 22, 0.1, 'settles on the real cost');
+  frame(300);
+  assert.ok(r.gpuBusyMs < 90, `one spike moves it only part of the way (${r.gpuBusyMs})`);
+  for (let i = 0; i < 40; i++) frame(30);
+  near(r.gpuBusyMs, 22, 0.5, 'and it comes back');
+});
+
+test('a fence that never signals can not freeze the wallpaper for good', () => {
+  const { r, advance } = newRendererWithFence();
+  r._fenceFrame();
+  advance(1000);
+  assert.equal(r.frameDone(), false, 'a slow frame is waited for');
+  advance(5000);
+  assert.equal(r.frameDone(), true, 'but not for ever');
+});
+
+test('a lost graphics context does not leave the loop waiting on its fence', () => {
+  const { r, gl } = newRendererWithFence();
+  r._fenceFrame();
+  gl.lost = true;
+  assert.equal(r.frameDone(), true);
+});
+
+test('drawing again in one go keeps one fence, timed from the first draw', () => {
+  const { r, fences, advance, signal } = newRendererWithFence();
+  r._fenceFrame();
+  advance(5);
+  r._fenceFrame(); // rest mode: the scene and its first fade frame are one piece of work
+  assert.deepEqual(fences, ['deleted', 'live']);
+  advance(25);
+  signal(true);
+  assert.equal(r.frameDone(), true);
+  near(r.gpuBusyMs, 22, 0.01);
 });
 
 test('falling leaves travel with the wind, at about its speed', () => {
@@ -802,4 +1281,96 @@ test('in still air only a few leaves let go, and they fall nearly straight', () 
   for (const L of fg.drift) assert.ok(Math.hypot(L.v[0], L.v[2]) < 1.2, 'drifting gently');
   const windy = newForeground().run(30, 40, [1, 0]);
   assert.ok(windy.drift.length > fg.drift.length + 10, 'many more in a strong wind');
+});
+
+// ---------------------------------------------------------------- the test panel (?debug=1)
+function panelWeather(base, fields) {
+  const h = load(['config.js', 'services/astronomy.js', 'engine/environment.js', 'ui/debugpanel.js']);
+  const env = new h.LE.Environment(h.LE.config);
+  const rec = h.LE.testWeather(typeof base === 'string' ? h.LE.weatherPresets[base] : base, fields);
+  env.setWeather(rec, 'preview');
+  env.update(new Date('2026-11-03T06:00:00Z'), 1, 1);
+  return { rec, w: env.state.weather, deck: [env.w.deckE, env.w.deckN] };
+}
+
+test('the panel leaves a preset as it is until a slider that decides the weather moves', () => {
+  assert.equal(panelWeather('rain', {}).rec.code, 63);
+  const humid = panelWeather('rain', { humidity: 40 }).rec;
+  assert.equal(humid.code, 63, 'humidity alone does not change what kind of weather it is');
+  assert.equal(humid.exactCloud, undefined);
+  assert.equal(panelWeather('rain', { windSpeed: 90 }).rec.code, 63, 'nor does the wind');
+});
+
+test('the cloud slider gives that cover, with no jumps as it passes the weather codes', () => {
+  for (const cloud of [0, 10, 11, 12, 20, 34, 35, 50, 61, 62, 63, 75, 89, 90, 100]) {
+    near(panelWeather('clear', { cloud }).w.coverage, cloud / 100, 1e-9, `cover at ${cloud}%`);
+  }
+});
+
+test('the rain slider never jumps as it passes the weather codes', () => {
+  let last = panelWeather('overcast', { precip: 0.1 }).w.rain;
+  for (let precip = 0.2; precip <= 10; precip += 0.1) {
+    const { rain } = panelWeather('overcast', { precip }).w;
+    assert.ok(rain >= last - 1e-9 && rain - last < 0.03, `rain ${last} to ${rain} at ${precip.toFixed(1)} mm/h`);
+    last = rain;
+  }
+  assert.ok(last > 0.9, 'and reaches heavy rain');
+});
+
+test('temperature decides rain or snow, and thunder and visibility do what they say', () => {
+  const warm = panelWeather('overcast', { precip: 3, temp: 10 }).w;
+  assert.ok(warm.rain > 0.3 && warm.snow === 0, 'rain when warm');
+  const cold = panelWeather('overcast', { precip: 3, temp: -5 }).w;
+  assert.ok(cold.snow > 0.3 && cold.rain === 0, 'snow when cold');
+  assert.ok(panelWeather('rain', { temp: -5 }).w.snow > 0.3, 'a rain preset turned cold snows');
+  assert.equal(panelWeather('clear', { thunder: 1 }).w.storm, 1, 'thunder on');
+  assert.equal(panelWeather('storm', { thunder: 0 }).w.storm, 0, 'thunder off in a storm');
+  near(panelWeather('clear', { visibility: 300 }).w.fog, 0.9, 1e-9, 'thick fog');
+  near(panelWeather('clear', { visibility: 800 }).w.fog, 0.7, 1e-9, 'fog');
+  near(panelWeather('clear', { visibility: 2000 }).w.fog, 0.3, 1e-9, 'thin fog');
+  assert.equal(panelWeather('fog', { visibility: 30000 }).w.fog, 0, 'and it clears');
+});
+
+test('on real weather, the sliders win over the data they would otherwise lose to', () => {
+  const real = { code: 3, cloud: 80, cloudLow: 70, cloudMid: 40, windSpeed: 5, windDir: 90, wind850: 40, dir850: 10, wind700: 60, dir700: 20, wind300: 90, dir300: 30, temp: 20 };
+  near(panelWeather(real, { cloud: 20 }).w.coverage, 0.2, 1e-9, 'layers do not decide the cover');
+  const { deck } = panelWeather(real, { windSpeed: 50, windDir: 270 });
+  assert.ok(deck[0] > 100 && Math.abs(deck[1]) < 1e-6, `the clouds go with this wind, not the upper winds: ${deck}`);
+  assert.equal(panelWeather(real, {}).rec.wind850, 40, 'untouched, the real data stays');
+});
+
+test('the panel clock keeps what is not changing and goes back to live', () => {
+  const h = load(['config.js', 'services/clock.js', 'ui/debugpanel.js']);
+  h.ctx.performance = performance;
+  const { LE } = h;
+  const set = (change) => LE.testClock(LE.config, LE.clock, change);
+  set({ time: '06:20' });
+  assert.equal(LE.clock.isLive(), false);
+  assert.equal(LE.clock.now().getHours(), 6);
+  set({ date: '2026-07-15' });
+  let d = LE.clock.now();
+  assert.deepEqual([d.getMonth(), d.getDate(), d.getHours(), d.getMinutes()], [6, 15, 6, 20], 'a new day keeps the time');
+  set({ timelapse: 720 });
+  d = LE.clock.now();
+  assert.deepEqual([d.getMonth(), d.getHours()], [6, 6], 'the time-lapse starts from what is showing');
+  assert.equal(LE.clock.modeLabel(), 'Time-lapse ×720');
+  set({ timelapse: 0 });
+  assert.equal(LE.clock.modeLabel(), 'Preview time');
+  set({ time: null });
+  assert.equal(LE.clock.now().getMonth(), 6, 'the day stays when only the time goes back');
+  assert.equal(LE.clock.now().getHours(), new Date().getHours());
+  set({ date: null });
+  assert.equal(LE.clock.isLive(), true, 'and with nothing set it is live');
+});
+
+test('every place that names the version agrees, and the download links point at that file', () => {
+  const read = (f) => readFileSync(new URL('../' + f, import.meta.url), 'utf8');
+  const { version } = JSON.parse(read('package.json'));
+  assert.ok(read('src/config.js').includes(`version: '${version}'`), 'config.js');
+  assert.ok(read('host/LivingEarthHost.cs').includes(`AssemblyFileVersion("${version}.0")`), 'the exe');
+  for (const page of ['README.md', 'docs/index.html']) {
+    const text = read(page);
+    assert.ok(text.includes(`releases/download/v${version}/LivingEarthHimalaya-${version}.exe`), page + ' links to this version');
+    assert.ok(!text.includes('LivingEarthHimalaya.exe'), page + ' has no name without a version');
+  }
 });

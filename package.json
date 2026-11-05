@@ -1,13 +1,30 @@
 {
-  "name": "living-earth-3840",
+  "name": "living-earth-himalaya",
   "version": "2.0.0",
-  "description": "Real-time, weather- and time-synchronised Himalayan panorama wallpaper for Lively Wallpaper (dual 1920x1080 = 3840x1080).",
+  "description": "Free live wallpaper for Windows: a real-time Himalayan panorama whose sun, moon, clouds, wind, rain and snow follow the real sky and your local weather. For one monitor or dual monitors (3840x1080).",
   "private": true,
+  "author": "Khan Rafaat Abtahe <rafaatabtahe@gmail.com> (https://februne.com)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper.git"
+  },
+  "homepage": "https://khanrafaat.github.io/living-earth-himalaya-windows-live-wallpaper/",
+  "keywords": [
+    "live wallpaper",
+    "windows live wallpaper",
+    "animated wallpaper",
+    "desktop wallpaper",
+    "windows 11 wallpaper",
+    "dual monitor wallpaper",
+    "himalaya",
+    "lively wallpaper",
+    "webgl2"
+  ],
   "scripts": {
     "start": "npx --yes http-server -c-1 -p 8080 .",
     "test": "node --test tests/logic.test.mjs",
     "test:browser": "node tests/browser/scenes.mjs .test-output",
-    "zip": "powershell -NoProfile -Command \"Compress-Archive -Force -Path index.html,LivelyInfo.json,LivelyProperties.json,thumbnail.jpg,src -DestinationPath LivingEarth3840.zip\""
+    "zip": "powershell -NoProfile -Command \"Compress-Archive -Force -Path index.html,LivelyInfo.json,LivelyProperties.json,thumbnail.jpg,src -DestinationPath LivingEarthHimalaya-Lively.zip\""
   },
-  "license": "UNLICENSED"
+  "license": "MIT"
 }

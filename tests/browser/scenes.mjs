@@ -33,6 +33,93 @@ async function open(query, beforeLoad = '') {
 }
 const noErrors = (page) => check(page.errors.length === 0, `no console errors${page.errors.length ? ': ' + page.errors.join(' | ') : ''}`);
 
+// ---------------------------------------------------------------- the test panel
+if (want('panel')) {
+  console.log('--- the test panel moves what it says');
+  const page = await open(`${COMMON}&debug=1`);
+  try {
+    const say = (expr) => page.evaluate(expr);
+    await say(`(() => {
+      window.__row = (name) => [...document.querySelectorAll('#test-panel .tp-row')].find((n) => n.querySelector('label').textContent === name);
+      window.__move = (name, value) => { const i = __row(name).querySelector('input'); i.value = value; i.dispatchEvent(new Event('input')); i.dispatchEvent(new Event('change')); };
+      window.__stop = (name, text) => { const i = __row(name).querySelector('input'); for (let s = +i.min; s <= +i.max; s++) { i.value = s; i.dispatchEvent(new Event('input')); i.dispatchEvent(new Event('change')); if (__row(name).querySelector('.tp-value').textContent === text) return true; } throw new Error('no stop ' + text + ' on ' + name); };
+      window.__draws = 0;
+      const r = __le.renderer, o = r.render;
+      r.render = function (...a) { const d = o.apply(r, a); if (d) __draws++; return d; };
+    })()`);
+    const count = await say(`document.querySelectorAll('#test-panel input[type=range]').length`);
+    check(count >= 30, `${count} sliders`);
+
+    await say(`(__move('Time of day', 1320), T.frames(2))`);
+    check((await say(`__le.env.state.astro.sunAltDeg`)) < -10, 'time: night at 22:00');
+    check(/Preview time/.test(await say(`document.querySelector('[data-k=status]').textContent`)), 'time: the clock and weather panel says so');
+    await say(`(__move('Time of day', 780), T.frames(2))`);
+    check((await say(`__le.env.state.astro.sunAltDeg`)) > 10, 'time: day at 13:00');
+    await say(`(__move('Day of the year', 196), T.frames(2))`);
+    const season = await say(`Array.from(__le.env.state.season)`);
+    check(season[0] > 0.5, 'day of the year: 15 July is summer');
+
+    await say(`(__stop('Weather', 'Storm'), T.frames(2))`);
+    check((await say(`__le.env.w.storm`)) === 1, 'weather: storm at once');
+    check((await say(`__row('Thunder').querySelector('.tp-value').textContent`)) === 'On', 'weather: moves the sliders below it');
+    await say(`(__stop('Weather', 'Snow'), T.frames(2))`);
+    check((await say(`__le.env.w.snow`)) > 0.3, 'weather: snow');
+    await say(`(__stop('Weather', 'Clear'), T.frames(2))`);
+    await say(`(__move('Cloud cover', 75), T.frames(2))`);
+    const cover = await say(`__le.env.w.coverage`);
+    check(Math.abs(cover - 0.75) < 0.001, `cloud slider: ${cover}`);
+    check(/Clear \+/.test(await say(`__row('Weather').querySelector('.tp-value').textContent`)), 'weather: shows it has been changed');
+    await say(`(__stop('Weather', 'No data'), T.frames(2))`);
+    check(/No weather data/.test(await say(`document.querySelector('[data-k=cond]').textContent`)), 'weather: no data');
+
+    await say(`(__stop('Weather', 'Clear'), __move('Wind speed', 100), __move('Gusts', 100), T.frames(3))`);
+    const kmh = await say(`__le.env.state.treeKmh`);
+    check(Math.abs(kmh - 100) < 0.5, `wind: the tree feels ${kmh} km/h`);
+    await say(`(__move('Wind from', 90), T.frames(2))`);
+    const east = await say(`__le.env.state.treeDir[0]`);
+    await say(`(__move('Wind from', 270), T.frames(2))`);
+    const west = await say(`__le.env.state.treeDir[0]`);
+    check(east * west < 0, `wind from: turns the air around (${east.toFixed(2)}, ${west.toFixed(2)})`);
+
+    await say(`__stop('Quality', 'Ultra')`);
+    check((await say(`__le.governor.name()`)) === 'ultra', 'quality: ultra');
+    await say(`__stop('Quality', 'Eco')`);
+    check((await say(`__le.governor.name()`)) === 'eco', 'quality: eco');
+    await say(`__stop('Tree on the rock', 'Off')`);
+    check((await say(`__le.renderer.fg.enabled`)) === false, 'tree: off');
+    await say(`(__stop('Tree on the rock', 'On'), __stop('Layer', 'Shadow'), T.frames(1))`);
+    check((await say(`__le.cfg.debugView`)) === 3, 'layer: shadow');
+    await say(`__stop('Layer', 'Picture')`);
+
+    await say(`(__stop('Wallpaper state', 'Paused'), new Promise((r) => setTimeout(r, 2500)))`);
+    const stopped = await say(`__draws`);
+    await sleep(3000);
+    check((await say(`__draws`)) === stopped, 'state: paused draws nothing');
+    await say(`__stop('Wallpaper state', 'Rest, you work')`);
+    await sleep(3000);
+    check((await say(`__le.renderer._rest`)) === true, 'state: rest');
+    await say(`__stop('Wallpaper state', 'Live')`);
+    await say(`T.frames(2)`);
+    check((await say(`__draws`)) > stopped, 'state: live again');
+
+    // every other slider, end to end, then back
+    await say(`(() => { for (const n of document.querySelectorAll('#test-panel .tp-row')) { const name = n.querySelector('label').textContent; if (name === 'Picture size' || name === 'Landscape' || name === 'Wallpaper state') continue; const i = n.querySelector('input'); __move(name, i.min); __move(name, i.max); } })()`);
+    await say(`T.frames(3)`);
+    await say(`[...document.querySelectorAll('#test-panel .tp-buttons button')].filter((b) => b.textContent !== 'Graphics reset').forEach((b) => b.click())`);
+    await say(`T.frames(3)`);
+    await say(`[...document.querySelectorAll('#test-panel .tp-head button')].find((b) => b.textContent === 'Reset all').click()`);
+    await say(`T.frames(2)`);
+    check((await say(`LE.clock.isLive()`)) === true, 'reset all: the clock is live');
+    check((await say(`__le.cfg.overrides.weather`)) === null, 'reset all: the weather is real');
+    check((await say(`[...document.querySelectorAll('#test-panel .tp-reset')].filter((b) => b.style.visibility === 'visible').length`)) === 0, 'reset all: nothing is left changed');
+    const gl = await say(`__le.renderer.gl.getError()`);
+    check(gl === 0, `no GL error (${gl})`);
+    noErrors(page);
+  } finally {
+    await page.close();
+  }
+}
+
 // ---------------------------------------------------------------- stability
 if (want('stability')) {
   console.log('--- pause, settings, exposure, debug views, context loss');
@@ -69,6 +156,26 @@ if (want('stability')) {
     await page.evaluate(`window.livelyWallpaperPlaybackChanged(JSON.stringify({ IsPaused: false }))`);
     await page.evaluate(`Promise.race([T.frames(2), new Promise((r) => setTimeout(r, 60000))])`);
     check((await page.evaluate(`__draws`)) > d1[0], 'resumes when Lively says so');
+
+    // The brake: however slow the graphics chip is, frames never pile up on it
+    const held = await page.evaluate(`(async () => {
+      const r = __le.renderer;
+      const real = r.frameDone;
+      r.frameDone = () => false;
+      await new Promise((d) => setTimeout(d, 3000)); // a frame already under way may still finish
+      const a = __draws;
+      await new Promise((d) => setTimeout(d, 6000));
+      const b = __draws;
+      r.frameDone = real;
+      return b - a;
+    })()`);
+    check(held === 0, `nothing is drawn while the graphics chip is still busy (${held} draws)`);
+    const beforeRelease = await page.evaluate(`__draws`);
+    await page.evaluate(`Promise.race([T.frames(2), new Promise((r) => setTimeout(r, 60000))])`);
+    check((await page.evaluate(`__draws`)) > beforeRelease, 'drawing resumes when the graphics chip has caught up');
+
+    const probe = await page.evaluate(`(() => { const f = __le.renderer.fg; return { light: Array.from(f.light), gust: f.gust, err: __le.renderer.gl.getError() }; })()`);
+    check(probe.err === 0 && probe.light.every(Number.isFinite) && probe.light.some((v) => v > 0) && Math.abs(probe.gust) <= 1, 'the tree gets its light and gust from the probe without waiting for the GPU');
 
     const debugLine = `document.getElementById('debug').textContent.split('\\n')[0]`;
     const waitFor = async (test) => {
@@ -179,7 +286,8 @@ if (want('resize')) {
 // ---------------------------------------------------------------- cloud wrap
 if (want('wrap')) {
   console.log('--- wrap: the same sky with cloud offsets moved by a whole period');
-  const page = await open(`${COMMON}&panel=0&smartfps=0`);
+  // No tree: its leaves keep moving, and only the sky should differ between these frames
+  const page = await open(`${COMMON}&panel=0&smartfps=0&tree=0`);
   try {
     await page.evaluate(`T.weather({ code: 2, cloud: 45, cloudLow: 40, cloudMid: 20, cloudHigh: 60, humidity: 70, visibility: 25000, temp: 20, windSpeed: 0, gusts: 0, windDir: 0, wind850: 0, dir850: 0, wind700: 0, dir700: 0, wind300: 0, dir300: 0 })`);
     await page.evaluate(`T.frames(2)`);
@@ -209,7 +317,8 @@ if (want('wrap')) {
     console.log(`moved by the new periods:    mean change ${wrapped.mean.toFixed(3)}, 2+ levels ${(wrapped.share * 100).toFixed(3)}%`);
     console.log(`moved by the old 6000 km:    mean change ${old.mean.toFixed(3)}, 2+ levels ${(old.share * 100).toFixed(3)}%`);
     check(wrapped.mean < same.mean * 1.5 + 0.1, 'wrapping at the new periods is within noise');
-    check(old.mean > wrapped.mean * 3, 'the old 6000 km period shows a jump, so this test can see one');
+    // By pixels changed, not the mean: a jump moves the clouds and leaves the land and most of the sky as they are
+    check(old.share > wrapped.share * 3, 'the old 6000 km period shows a jump, so this test can see one');
     noErrors(page);
   } finally {
     await page.close();

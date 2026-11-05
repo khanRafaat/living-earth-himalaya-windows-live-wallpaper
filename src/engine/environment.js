@@ -91,7 +91,9 @@
 
     // Weather codes describe total cloud, high cloud included. So with layer data their lower limits
     // can't apply to the deck: "overcast" under thin high cloud must not draw a heavy low overcast.
-    if (c === 0) cover = Math.min(cover, 0.12);
+    // The test panel's cloud slider means the number itself.
+    if (rec.exactCloud) cover = deck;
+    else if (c === 0) cover = Math.min(cover, 0.12);
     else if (c === 1) cover = layered ? Math.min(cover, 0.35) : clamp(cover, 0.12, 0.35);
     else if (c === 2) cover = layered ? Math.min(cover, 0.62) : clamp(cover, 0.3, 0.62);
     else if (c === 3) cover = Math.max(cover, layered ? 0.9 * smooth(0.35, 0.75, deck) : 0.9);
@@ -205,6 +207,7 @@
       this.detailOffset = [0, 0, 0];
       this.cirrusOffset = [0, 0];
       this.treeWind = null; // long-smoothed surface wind (east, north) that sets the gust direction
+      this.treeAir = null; // the same wind smoothed over seconds: what the tree itself feels
       this.gustTravel = [0, 0];
       this.treeSway = [0, 0];
       this.flash = 0;
@@ -243,6 +246,7 @@
         coverFront: new Float32Array(2),
         windVel: new Float32Array(3),
         gustDir: new Float32Array([0, 1]),
+        treeDir: new Float32Array([0, 1]),
         gustTravel: new Float32Array(2),
         treeSway: new Float32Array(2),
         windAmt: 0,
@@ -398,6 +402,16 @@
       if (treeLen > 0.01) {
         s.gustDir[0] = (this.treeWind[0] * cosH - this.treeWind[1] * sinH) / treeLen;
         s.gustDir[1] = (this.treeWind[0] * sinH + this.treeWind[1] * cosH) / treeLen;
+      }
+      // The tree is one thing close by, so nothing sweeps when it turns: it follows the real direction in seconds
+      if (snap || !this.treeAir) this.treeAir = [windE, windN];
+      const fAir = 1 - Math.exp(-dtSec / 12);
+      this.treeAir[0] += (windE - this.treeAir[0]) * fAir;
+      this.treeAir[1] += (windN - this.treeAir[1]) * fAir;
+      const airLen = Math.hypot(this.treeAir[0], this.treeAir[1]);
+      if (airLen > 0.01) {
+        s.treeDir[0] = (this.treeAir[0] * cosH - this.treeAir[1] * sinH) / airLen;
+        s.treeDir[1] = (this.treeAir[0] * sinH + this.treeAir[1] * cosH) / airLen;
       }
       // Gust fronts run a little faster than the mean wind. 5 km is a whole number of tiles of
       // every band frequency along the wind, so wrapping doesn't show.

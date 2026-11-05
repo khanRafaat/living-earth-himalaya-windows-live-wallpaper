@@ -1,5 +1,7 @@
-// Living Earth for Windows. Runs the wallpaper using only what ships with Windows: the Edge browser and
-// this small app, built by the C# compiler in the .NET Framework (see build.cmd). No install, no admin.
+// Living Earth Himalaya for Windows. Runs the wallpaper using only what ships with Windows: the Edge browser
+// and this small app, built by the C# compiler in the .NET Framework (see build.cmd). No install, no admin.
+// The page travels inside the exe, so this one file is a complete download. Next to the source code, the app
+// uses the page in the folder above it instead.
 //
 //   1. Opening the app shows the setup window: location (found automatically or chosen by hand), when to
 //      animate, quality and Start with Windows. "Set wallpaper" starts the wallpaper. When Windows starts
@@ -21,8 +23,11 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.Globalization;
 using System.IO;
+using System.IO.Compression;
 using System.Net;
+using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -30,6 +35,12 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
+
+[assembly: AssemblyTitle("Living Earth Himalaya")]
+[assembly: AssemblyProduct("Living Earth Himalaya")]
+[assembly: AssemblyCopyright("Khan Rafaat Abtahe. MIT licence")]
+[assembly: AssemblyVersion("2.0.0.0")]
+[assembly: AssemblyFileVersion("2.0.0.0")]
 
 namespace LivingEarth
 {
@@ -43,12 +54,19 @@ namespace LivingEarth
 
     public static class Program
     {
-        public const string ProjectUrl = "https://github.com/khanRafaat/windows-live-wallpaper-living-Earth";
+        public const string ProjectUrl = "https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper";
         internal const string ShowEventName = @"Local\LivingEarthHostShow";
 
         [STAThread]
         private static void Main(string[] args)
         {
+            // Unpacks the page into a folder and stops: no window and no wallpaper. For the tests.
+            if (args.Length == 2 && args[0] == "--unpack-to")
+            {
+                Directory.CreateDirectory(args[1]);
+                Host.UnpackPage(args[1]);
+                return;
+            }
             bool first;
             using (var mutex = new Mutex(true, @"Local\LivingEarthHost", out first))
             {
@@ -432,13 +450,61 @@ namespace LivingEarth
         private DateTime busyUntil = DateTime.MinValue;
         private string written;
 
+        /// <summary>
+        /// The page inside this exe, unpacked into a folder under dir named after its contents, so an updated exe
+        /// brings its own page. Returns that folder, or null if this build carries no page.
+        /// </summary>
+        internal static string UnpackPage(string dir)
+        {
+            using (Stream s = Assembly.GetExecutingAssembly().GetManifestResourceStream("page.zip"))
+            {
+                if (s == null) return null;
+                string tag;
+                using (var sha = SHA256.Create()) tag = BitConverter.ToString(sha.ComputeHash(s)).Replace("-", "").Substring(0, 12);
+                s.Position = 0;
+                string page = Path.Combine(dir, "page-" + tag);
+                string done = Path.Combine(page, "unpacked");
+                if (!File.Exists(done))
+                {
+                    if (Directory.Exists(page)) Directory.Delete(page, true);
+                    using (var zip = new ZipArchive(s, ZipArchiveMode.Read)) zip.ExtractToDirectory(page);
+                    File.WriteAllText(done, "");
+                }
+                foreach (string old in Directory.GetDirectories(dir, "page-*"))
+                {
+                    if (string.Equals(old, page, StringComparison.OrdinalIgnoreCase)) continue;
+                    try { Directory.Delete(old, true); }
+                    catch (IOException) { } // still in use by a running copy: next time
+                    catch (UnauthorizedAccessException) { }
+                }
+                return page;
+            }
+        }
+
         public Host(string[] args)
         {
-            hostDir = AppDomain.CurrentDomain.BaseDirectory;
-            pagePath = Path.GetFullPath(Path.Combine(hostDir, "..", "index.html"));
-            statePath = Path.Combine(hostDir, "state.js");
             dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LivingEarth");
             Directory.CreateDirectory(dataDir);
+            hostDir = AppDomain.CurrentDomain.BaseDirectory;
+            pagePath = Path.GetFullPath(Path.Combine(hostDir, "..", "index.html"));
+            if (!File.Exists(Path.GetFullPath(Path.Combine(hostDir, "..", "src", "main.js"))))
+            {
+                // Downloaded on its own: the page is inside this exe
+                string page = null;
+                try { page = UnpackPage(dataDir); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+                catch (InvalidDataException) { }
+                if (page == null)
+                {
+                    MessageBox.Show("Living Earth Himalaya could not unpack its files into\n" + dataDir + "\n\nCheck that the disk has free space, then try again.",
+                        "Living Earth Himalaya", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    Environment.Exit(1);
+                }
+                hostDir = Path.Combine(page, "host");
+                pagePath = Path.Combine(page, "index.html");
+            }
+            statePath = Path.Combine(hostDir, "state.js");
             settingsPath = Path.Combine(dataDir, "settings.ini");
             logPath = Path.Combine(dataDir, "host.log");
             File.WriteAllText(logPath, "");
@@ -470,7 +536,7 @@ namespace LivingEarth
                 statusItem, new ToolStripSeparator(), settingsItem, new ToolStripSeparator(), desktopItem, maximizedItem, pausedItem,
                 new ToolStripSeparator(), startupItem, new ToolStripMenuItem("Exit (back to the normal wallpaper)", null, delegate { Quit(); })
             });
-            tray = new NotifyIcon { Icon = AppIcon, Text = "Living Earth", ContextMenuStrip = menu, Visible = false };
+            tray = new NotifyIcon { Icon = AppIcon, Text = "Living Earth Himalaya", ContextMenuStrip = menu, Visible = false };
             tray.DoubleClick += delegate { ShowSetup(); };
             ShowMode();
 
@@ -560,10 +626,10 @@ namespace LivingEarth
             Log("desktop layout not recognized: this app needs Windows 11 24H2 or later");
             StopEdge();
             MessageBox.Show(
-                "Living Earth can only put itself behind the desktop icons on Windows 11 version 24H2 or later.\n\n" +
-                "On this version of Windows, use the free Lively Wallpaper app with this folder's index.html instead. " +
-                "The README on the project page explains how.",
-                "Living Earth", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                "Living Earth Himalaya can only put itself behind the desktop icons on Windows 11 version 24H2 or later.\n\n" +
+                "On this version of Windows, use the free Lively Wallpaper app with the Lively download instead. " +
+                "The project page on GitHub explains how.",
+                "Living Earth Himalaya", MessageBoxButtons.OK, MessageBoxIcon.Information);
             Quit();
         }
 
@@ -579,7 +645,7 @@ namespace LivingEarth
                 WriteState(pace);
                 if (settings.AutoLocation && !detecting && now >= nextDetect) DetectLocation();
                 string status = !attached ? "Starting..." : pace == Live ? "Animating" : pace == Rest ? "Slow updates" : "Paused";
-                if (statusItem.Text != "Living Earth: " + status) statusItem.Text = "Living Earth: " + status;
+                if (statusItem.Text != "Living Earth Himalaya: " + status) statusItem.Text = "Living Earth Himalaya: " + status;
             }
             catch (Exception ex)
             {
@@ -779,7 +845,7 @@ namespace LivingEarth
             {
                 Log("Edge not found");
                 if (nextLaunch == DateTime.MinValue)
-                    tray.ShowBalloonTip(10000, "Living Earth", "Microsoft Edge was not found. Living Earth uses it to draw the wallpaper.", ToolTipIcon.Warning);
+                    tray.ShowBalloonTip(10000, "Living Earth Himalaya", "Microsoft Edge was not found. Living Earth Himalaya uses it to draw the wallpaper.", ToolTipIcon.Warning);
                 nextLaunch = now.AddMinutes(5);
                 return;
             }
@@ -1152,7 +1218,7 @@ namespace LivingEarth
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
-            Text = "Living Earth - live wallpaper";
+            Text = "Living Earth Himalaya - live wallpaper";
             Icon = Host.AppIcon;
 
             var top = new PictureBox { Location = new Point(0, 0), Size = new Size(W, BannerH) };
@@ -1427,7 +1493,7 @@ namespace LivingEarth
             using (var soft = new SolidBrush(Color.FromArgb(230, 255, 255, 255)))
             {
                 float x = r.Width * 0.04f;
-                g.DrawString("Living Earth", title, white, x - 3, r.Height * 0.42f);
+                g.DrawString("Living Earth Himalaya", title, white, x - 3, r.Height * 0.42f);
                 g.DrawString("A live wallpaper with the real sun, moon, stars and weather", sub, soft, x, r.Height * 0.74f);
             }
         }

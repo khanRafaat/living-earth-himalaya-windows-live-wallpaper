@@ -11,10 +11,11 @@
   LE.QUALITY_LEVELS = [
     // cloudSteps search for a cloud, cloudFine march through its visible surface. Clouds move far less
     // than a pixel per frame, so volEvery above 1 saves GPU time without any visible cost.
-    { name: 'eco', volScale: 0.3, cloudSteps: 10, cloudFine: 5, lightSteps: 2, mistSteps: 3, volEvery: 3, volBlend: 0.25, rainLayers: 2 },
-    { name: 'balanced', volScale: 0.4, cloudSteps: 14, cloudFine: 7, lightSteps: 2, mistSteps: 4, volEvery: 2, volBlend: 0.2, rainLayers: 3 },
-    { name: 'high', volScale: 0.5, cloudSteps: 18, cloudFine: 9, lightSteps: 3, mistSteps: 5, volEvery: 2, volBlend: 0.16, rainLayers: 3 },
-    { name: 'ultra', volScale: 0.5, cloudSteps: 24, cloudFine: 14, lightSteps: 3, mistSteps: 8, volEvery: 1, volBlend: 0.1, rainLayers: 4 },
+    // treeHz: how often the tree in the wind is drawn anew. Its leaves move at 1 to 2 cycles a second.
+    { name: 'eco', volScale: 0.3, cloudSteps: 10, cloudFine: 5, lightSteps: 2, mistSteps: 3, volEvery: 3, volBlend: 0.25, rainLayers: 2, treeHz: 15 },
+    { name: 'balanced', volScale: 0.4, cloudSteps: 14, cloudFine: 7, lightSteps: 2, mistSteps: 4, volEvery: 2, volBlend: 0.2, rainLayers: 3, treeHz: 24 },
+    { name: 'high', volScale: 0.5, cloudSteps: 18, cloudFine: 9, lightSteps: 3, mistSteps: 5, volEvery: 2, volBlend: 0.16, rainLayers: 3, treeHz: 30 },
+    { name: 'ultra', volScale: 0.5, cloudSteps: 24, cloudFine: 14, lightSteps: 3, mistSteps: 8, volEvery: 1, volBlend: 0.1, rainLayers: 4, treeHz: 60 },
   ];
   const INDEX = { eco: 0, balanced: 1, high: 2, ultra: 3 };
   const RETRY_MS = 5 * 60e3;

@@ -21,8 +21,12 @@
   const METER_W = 64;
   const METER_H = 18;
   const BAND = 16; // rows per tile band for chunked bake / shadow work
+  const FENCE_NOTICED_MS = 8; // a finished frame is only noticed at the next screen refresh, half of one late on average
+  const FENCE_GIVE_UP_MS = 5000; // a driver that never signals must not freeze the wallpaper for good
   // the tree on the rock at the left: direction as a share of half the view, distance and ground height (m)
-  const TREE = { u: -0.88, r: 13.5, y: -2.15, patch: 2.4 };
+  const HILL_TIP_M = 2.6; // how far past the tree the rock reaches (ledge.js)
+  const GRASS_WRAP_M = 50; // a whole number of noise tiles at the grass's wind scales (composite.js)
+  const TREE = { u: -0.672, r: 28, y: -3.6, patch: 1.4 }; // near the tip of the rock, below the eye and well off, so the view stays open
 
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 
@@ -144,6 +148,42 @@
       this._frameQuery = null;
       this._frameQueryAt = -1e9;
       this.gpuFrameMs = 0; // latest measured GPU time of a frame (0 = not known)
+      this._frameFence = null; // the frame last sent to the GPU, until it has finished there
+      this._frameFenceAt = 0;
+      this.gpuBusyMs = 0; // how long a frame takes on the GPU, smoothed (0 = not known yet)
+      this.pictureBands = 8; // slow mode: how many parts a new picture is drawn in
+      this.pictureAt = 0; // slow mode: when the picture now fading in was ready
+      this._pictureJob = null; // slow mode: the picture being drawn
+      this._grassAt = null; // the wind in the grass: when it last moved on, and uGrassWind
+      this._grassWind = [0, 0, 0, 0];
+    }
+
+    /**
+     * The browser's own window and all its tabs draw through the same GPU queue as this page, as does the
+     * rest of the desktop. Frames queuing up behind each other are what makes a whole browser seem hung, on a
+     * GPU that can't finish a frame in time. So only one frame is ever in flight: the main loop asks
+     * frameDone() and sends nothing new until the last frame has finished.
+     */
+    _fenceFrame() {
+      const gl = this.gl;
+      if (this._frameFence !== null) gl.deleteSync(this._frameFence);
+      else this._frameFenceAt = performance.now();
+      this._frameFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+      gl.flush();
+    }
+
+    /** Non-blocking. False while the last frame is still on the GPU. */
+    frameDone() {
+      const f = this._frameFence;
+      if (f === null) return true;
+      const gl = this.gl;
+      const waited = performance.now() - this._frameFenceAt;
+      if (!gl.isContextLost() && gl.getSyncParameter(f, gl.SYNC_STATUS) !== gl.SIGNALED && waited < FENCE_GIVE_UP_MS) return false;
+      gl.deleteSync(f);
+      this._frameFence = null;
+      const ms = Math.max(waited - FENCE_NOTICED_MS, 0);
+      this.gpuBusyMs = this.gpuBusyMs ? this.gpuBusyMs + (ms - this.gpuBusyMs) * 0.2 : ms;
+      return true;
     }
 
     // ---------------------------------------------------------------- setup
@@ -155,7 +195,7 @@
         stencil: false,
         premultipliedAlpha: false,
         preserveDrawingBuffer: false,
-        powerPreference: 'default',
+        powerPreference: 'high-performance', // a dedicated GPU where the PC has one
       });
       if (!gl) throw new Error('WebGL 2 is not available on this system.');
       if (!gl.getExtension('EXT_color_buffer_float') && !gl.getExtension('EXT_color_buffer_half_float')) {
@@ -191,10 +231,11 @@
         treeDrift: new Program(gl, S.treeDriftVertex(), S.treeDriftFragment(), 'treeDrift', X),
         treeComp: new Program(gl, S.treeCompVertex, S.treeComp(), 'treeComp', X),
       };
-      // chunks of about one frame of GPU work, so the desktop stays smooth while the scene is prepared
+      // Chunks well under a screen refresh, so the desktop and the browser's own window get a turn on the GPU
+      // in every refresh while the scene is prepared
       const T = this.timerExt;
-      this._bakePacer = new GpuPacer(gl, { px: 4096, minPx: 1024, maxPx: 262144, targetMs: 16 }, T);
-      this._shadowPacer = new GpuPacer(gl, { px: 16384, minPx: 2048, maxPx: 524288, targetMs: 16 }, T);
+      this._bakePacer = new GpuPacer(gl, { px: 4096, minPx: 1024, maxPx: 262144, targetMs: 12 }, T);
+      this._shadowPacer = new GpuPacer(gl, { px: 16384, minPx: 2048, maxPx: 524288, targetMs: 12 }, T);
       // background shadow refreshes while running: ~4 ms of GPU per frame
       this._bgPacer = new GpuPacer(gl, { px: 8192, minPx: 1024, maxPx: 131072, targetMs: 4, grow: false }, T);
       this._bgStartPx = 8192;
@@ -279,8 +320,10 @@
       deleteTarget(gl, this.shadowB);
       deleteTarget(gl, this.pictureA);
       deleteTarget(gl, this.pictureB);
-      this.pictureA = this.pictureB = null;
+      deleteTarget(gl, this.pictureNext);
+      this.pictureA = this.pictureB = this.pictureNext = null;
       this._pictureReady = false;
+      this._pictureJob = null;
       this.gbuf = createTarget(gl, w, h, [
         { fmt: 'rgba16f', filter: gl.NEAREST },
         { fmt: 'rgba8', filter: gl.NEAREST },
@@ -355,6 +398,8 @@
     }
 
     _startBake() {
+      this._pictureReady = false;
+      this._pictureJob = null;
       this._bakeJob = this._newJob();
       this._shadow = null;
       this._shadowMix = 0;
@@ -592,7 +637,7 @@
       p.set('uVolRes', [this.vw, this.vh]);
       p.set('uFrame', this.frame % 64);
       const warm = this._volWarm < 2;
-      p.set('uBlend', warm ? 1.0 : this._slow ? Math.max(q.volBlend, 0.4) : q.volBlend);
+      p.set('uBlend', warm ? 1.0 : this._slow ? Math.max(q.volBlend, this._rest ? 0.4 : 0.3) : q.volBlend);
       p.set('uDetailDrift', state.detailDrift);
       p.set('uLightMarchDir', state.lightMarchDir);
       p.set('uCloudDark', w.cloudDark);
@@ -621,15 +666,22 @@
       this._volWarm++;
     }
 
-    _compositePass(state, meter) {
+    /**
+     * The scene: to the screen in flushed bands, or to the meter. With a band { x, y, w, h, grass }: only that
+     * rectangle, of the next kept picture, or (grass) on the screen and only the grass in it.
+     */
+    _compositePass(state, meter, band = null) {
       const gl = this.gl;
       const p = this.prog.composite;
       const w = state.weather;
       if (meter) this._target(this.meter, METER_W, METER_H);
-      else this._target(null, this.w, this.h);
+      else this._target(band && !band.grass ? this.pictureNext : null, this.w, this.h);
       gl.useProgram(p.p);
       this._camera(p, this.w, this.h);
       p.set('uMeter', meter ? 1 : 0);
+      p.set('uGrassOnly', band && band.grass ? 1 : 0);
+      p.set('uGrassWind', this._grassWind);
+      p.set('uTreeSite', this.treeSite());
       p.set('uOutScale', meter ? [this.w / METER_W, this.h / METER_H] : [1, 1]);
       this._weatherUniforms(p, state);
       p.set('uVolRes', [this.vw, this.vh]);
@@ -667,7 +719,6 @@
       const tree = fg && fg.enabled ? fg.tree : null;
       p.set('uTreeOn', tree ? 1 : 0);
       if (tree) {
-        p.set('uTreeSite', this.treeSite());
         p.set('uCrownC', tree.crownC);
         p.set('uCrownR', tree.crownR);
         p.set('uTrunkTop', tree.trunkTop);
@@ -688,7 +739,16 @@
         uAdapt: this.adaptA.tex[0],
       });
       if (meter) this._draw();
-      else this._drawBands(this.w, this.h, 4);
+      else if (band) {
+        const r = this._band || (this._band = [0, 0, 0, 0]);
+        r[0] = band.x;
+        r[1] = band.y;
+        r[2] = band.w;
+        r[3] = band.h;
+        this._scissor(r);
+        this._draw();
+        this._scissor(null);
+      } else this._drawBands(this.w, this.h, 4);
     }
 
     _meterAndAdapt(dtSec) {
@@ -850,57 +910,142 @@
 
     // ---------------------------------------------------------------- frame
     /**
-     * Slow mode: a frame only every few seconds, so each one must do more. A shadow pass advances one
-     * chunk per frame, so chunks grow to keep up with the sun. Clouds update every frame and count for
-     * more against their history, or they would trail behind the wind.
+     * Slow mode: the scene is drawn rarely, so each time must do more. A shadow pass advances one chunk per
+     * scene, so chunks grow to keep up with the sun. Clouds update each scene and count for more against their
+     * history, or they would trail behind the wind. rest = the Windows app's rest mode, far slower than a calm spell.
      */
-    setSlowMode(on) {
+    setSlowMode(on, rest = on) {
       this._slow = on;
-      if (!on) this._pictureReady = false;
-      const ms = on ? 25 : 4;
+      this._rest = on && rest;
+      if (!on) {
+        this._pictureReady = false;
+        this._pictureJob = null;
+      }
+      const ms = !on ? 4 : rest ? 25 : 12;
       this._bgPacer.targetMs = ms;
       this._bgPacer.maxPx = 32768 * ms;
     }
 
-    /** Slow mode: keeps the scene just drawn. It is shown by drawFade(), so birds go on there. */
+    /** Slow mode starts: keeps the scene just drawn on the screen, with nothing to fade from yet. */
     _keepPicture() {
       const gl = this.gl;
       const { w, h } = this;
       if (!this.pictureA) {
-        this.pictureA = createTarget(gl, w, h, [{ fmt: 'rgba8', filter: gl.NEAREST }]);
-        this.pictureB = createTarget(gl, w, h, [{ fmt: 'rgba8', filter: gl.NEAREST }]);
+        const make = () => createTarget(gl, w, h, [{ fmt: 'rgba8', filter: gl.NEAREST }]);
+        this.pictureA = make();
+        this.pictureB = make();
+        this.pictureNext = make();
       }
-      const older = this.pictureA;
-      this.pictureA = this.pictureB;
-      this.pictureB = older;
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
       gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.pictureB.fbo);
       gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
-      if (!this._pictureReady) {
-        // the first one has nothing to fade from
-        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.pictureB.fbo);
-        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.pictureA.fbo);
-        gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
-        this._pictureReady = true;
-      }
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.pictureB.fbo);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.pictureA.fbo);
+      gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      this._pictureReady = true;
+      this.pictureAt = performance.now();
+    }
+
+    /** The wind in the grass moves on: the same air the tree feels, so the two always agree. Called every frame. */
+    _grassStep(state) {
+      const dt = this._grassAt === null ? 0 : Math.min(Math.max(state.time - this._grassAt, 0), 0.25);
+      this._grassAt = state.time;
+      const x = state.treeDir[0];
+      const z = state.treeDir[1];
+      const gw = this._grassWind;
+      // Gusts cross grass slower than the wind blows, and light air still moves through it at a walking pace
+      const speed = state.treeKmh > 0.5 ? Math.max((state.treeKmh / 3.6) * 0.6, 0.6) : 0;
+      gw[0] = (gw[0] + x * speed * dt) % GRASS_WRAP_M;
+      gw[1] = (gw[1] + z * speed * dt * 0.3) % GRASS_WRAP_M; // far along the ground is only a little way up the picture
+      // Grass answers the lightest air, which hardly moves a tree. The weather state only changes with each scene, so ease.
+      const amount = state.windAmt > 0 ? Math.sqrt(state.windAmt / 0.6) : 0;
+      const ease = Math.min(dt * 2, 1);
+      gw[3] += (amount - gw[3]) * ease;
+      gw[2] += (x * amount - gw[2]) * ease;
+    }
+
+    /** The part of the picture that can hold the grass, in pixels from the bottom left. */
+    _grassBox() {
+      const v = this.viewInfo();
+      const rowAt = (r) => v.horizonY * v.h + TREE.y / r / v.pxAng;
+      const y = Math.max(Math.floor(rowAt(TREE.r * 0.55)), 0);
+      const top = Math.min(Math.ceil(rowAt(TREE.r * 2.2)) + 4, v.h);
+      const right = ((TREE.u + 1) / 2) * v.w + (HILL_TIP_M + 2) / TREE.r / v.pxAng;
+      return { x: 0, y, w: Math.min(Math.ceil(right), v.w), h: Math.max(top - y, 0), grass: true };
+    }
+
+    /** Between scenes: the grass alone, in the wind. It is a small part of the picture, so a small part of a frame. */
+    _grassPass(state) {
+      if (!this.grassMoving()) return;
+      this._compositePass(state, false, this._grassBox());
+    }
+
+    /** True while the grass is being drawn again between scenes. */
+    grassMoving() {
+      return !this._rest && this._grassWind[3] >= 0.002;
+    }
+
+    /** True while the next kept picture is being drawn or waits for its turn. */
+    pictureBusy() {
+      return this._pictureJob !== null;
+    }
+
+    /** One more band of the next picture. Waits a frame after it is begun: that frame has the clouds to draw. */
+    _pictureStep() {
+      const job = this._pictureJob;
+      if (job.fresh) {
+        job.fresh = false;
+        return;
+      }
+      if (job.y >= this.h) return;
+      const n = Math.min(Math.ceil(this.h / this.pictureBands), this.h - job.y);
+      const now = job.state.time;
+      job.state.time = job.time; // the fade moves the clock on, and the bands must match each other
+      this._compositePass(job.state, false, { x: 0, y: job.y, w: this.w, h: n });
+      job.state.time = now;
+      job.y += n;
+    }
+
+    /** Every frame should fit one screen refresh: a slow GPU gets more, thinner bands. Only the scene comes later. */
+    _tunePictureBands() {
+      if (this.gpuBusyMs > 14) this.pictureBands = Math.min(this.pictureBands + 2, 32);
+      else if (this.gpuBusyMs < 10) this.pictureBands = Math.max(this.pictureBands - 1, 4);
     }
 
     /**
-     * Slow mode, between scene frames: fades from the previous picture to the latest one (f = 0 to 1)
-     * and draws the birds where they are now. Returns false when there is nothing to show yet.
+     * Slow mode, between scene frames: fades from the previous picture to the latest one (f = 0 to 1) and draws
+     * the birds and the tree where they are now. On the way it draws a band of the next picture, which takes over
+     * once it is whole and this fade has ended, so nothing jumps. Returns false when there is nothing to show yet.
      */
     drawFade(f, state) {
       const gl = this.gl;
       if (!gl || gl.isContextLost() || this.status !== 'running' || !this._pictureReady) return false;
+      this._grassStep(state);
+      const job = this._pictureJob;
+      if (job) {
+        this._pictureStep();
+        if (job.y >= this.h && f >= 1) {
+          const older = this.pictureA;
+          this.pictureA = this.pictureB;
+          this.pictureB = this.pictureNext;
+          this.pictureNext = older;
+          this._pictureJob = null;
+          this.pictureAt = performance.now();
+          this._tunePictureBands();
+          f = 0;
+        }
+      }
       this._target(null, this.w, this.h);
       const p = this.prog.fade;
       gl.useProgram(p.p);
       p.set('uMix', f);
       this._bind(p, { uFrom: this.pictureA.tex[0], uTo: this.pictureB.tex[0] });
       this._draw();
+      this._grassPass(state);
       this._spritePass(state);
       this.fg.draw(state);
+      this._fenceFrame();
       return true;
     }
 
@@ -965,6 +1110,7 @@
       }
 
       const timing = this._beginFrameTimer(state.time);
+      this._grassStep(state);
 
       // volumetrics
       const every = this._slow ? 1 : this.quality.volEvery;
@@ -983,14 +1129,19 @@
         this._meterAndAdapt(this._meterDt);
         this._meterDt = 0;
       }
-      this._compositePass(state, false);
-      // In slow mode the kept picture has no birds and no tree: drawFade() draws them where they are now
-      if (this._slow) this._keepPicture();
-      else {
-        this._spritePass(state);
-        this.fg.draw(state);
+      // In slow mode a kept picture has no birds and no tree: drawFade() draws them where they are now
+      if (this._slow && this._pictureReady) {
+        this._pictureJob = { state, time: state.time, y: 0, fresh: true };
+      } else {
+        this._compositePass(state, false);
+        if (this._slow) this._keepPicture();
+        else {
+          this._spritePass(state);
+          this.fg.draw(state);
+        }
       }
       if (timing) gl.endQuery(this.timerExt.TIME_ELAPSED_EXT);
+      this._fenceFrame();
       return true;
     }
 
@@ -1033,6 +1184,8 @@
       if (this.fg) this.fg.dispose();
       [this._bakePacer, this._shadowPacer, this._bgPacer].forEach((pc) => pc && pc.dispose());
       if (this._frameQuery) gl.deleteQuery(this._frameQuery);
+      if (this._frameFence !== null) gl.deleteSync(this._frameFence);
+      this._frameFence = null;
       Object.values(this.prog || {}).forEach((p) => gl.deleteProgram(p.p));
     }
   }
