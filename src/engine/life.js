@@ -83,6 +83,16 @@
       }
     }
 
+    /** Brings one on now, whatever the hour and the weather (the test panel). They then behave as any other would. */
+    summon(kind) {
+      if (!this._view || !this.state) return;
+      if (kind === 'raptor') this.raptors.push(this._newRaptor(true));
+      else if (kind === 'flock') this.flock = this._newFlock(true);
+      else if (kind === 'geese') this.geese = this._newGeese(this.state, true);
+      else if (kind === 'meteor') this.meteors.push(this._newMeteor(null, this.state));
+      else if (kind === 'satellite') this.sats.push({ az: rand(-0.4, 0.4), el: 0.25, heading: 0.4, speed: 0.0005, age: 5, life: 600, bright: 0.45 });
+    }
+
     // ------------------------------------------------------------ geometry helpers
     _project(x, y, z) {
       const v = this._view;

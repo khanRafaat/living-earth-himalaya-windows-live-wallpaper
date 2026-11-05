@@ -1,14 +1,13 @@
 /*
- * The rock we stand on, and the mountainside it belongs to, on the left of the view.
+ * The point of rock at the left of the view, with the tree standing near its tip.
  *
- * A height field in metres around the eye (x right, y up, z ahead), shaped by direction: u is the
- * azimuth as a share of half the view, so -1 is the left edge of the screen at any width. Right of
- * u ≈ -0.45 it is only the platform under our feet, out of sight below the bottom of the screen;
- * the middle and the right of the view stay open.
+ * A solid, not a height field, because its face is cut back under the top: a ray can pass beneath the rock. It is
+ * written in the frame of the tree: X across the view, Y up from the foot of the trunk, D away from the eye. The eye is
+ * out in the air, higher than the rock, so it looks down a little onto the top.
  *
- * Toward the left: our platform reaches further out, then a gully, then the mountainside rising
- * across it, which joins our rock near the left edge. Everything ends in steep walls, so past the
- * lip the view drops away to the valley more than half a kilometre below.
+ * It is built the way a real cliff is. The rock lies in tilted beds, thick and thin. Each bed is broken by joints into
+ * blocks that stand out or sit back, so there are sharp ledges with shadow under them, and the point ends in steps.
+ * Flat broken faces on the blocks keep them from looking cut.
  *
  * Baked once into the G-buffer like the rest of the land, so the composite lights it with the same
  * sun, moon, sky, shadows, snow, rain and lightning. Its distance t < LEDGE_T_KM tells it apart:
@@ -21,116 +20,156 @@
   S.ledge = `
 uniform vec4 uTreeSite; // where the tree stands: x, y, z in metres from the eye; w = radius of its level patch
 const float LEDGE_T_KM = 0.4;
+const float HILL_TIP = 2.6; // how far past the tree the point of rock reaches (m)
 
-float ledgeU(vec2 m) { return atan(m.x, m.y) / (0.5 * uHFov); }
-vec2 diffOffsetL(int k, float eps) {
-  return k == 0 ? vec2(-eps, 0.0) : (k == 1 ? vec2(eps, 0.0) : (k == 2 ? vec2(0.0, -eps) : vec2(0.0, eps)));
-}
-// past an edge: a rounded lip, then a wall about 76° steep that keeps getting steeper
-float ledgeDrop(float d) { return d <= 0.0 ? 0.0 : d * d * 6.0 / (0.6 + d * 1.5) + d * d * 0.15; }
-
-// slabs, knobs and cracks (m). lod = pixel footprint in metres: fine detail fades out where sub-pixel
-float ledgeRelief(vec2 m, float lod) {
-  float h = noise2(m * 0.09) * 0.9 + noise2(m * 0.27 + 3.1) * 0.45 + noise2(m * 0.8 + 9.4) * 0.16;
-  float f1 = 1.0 - smoothstep(0.25, 0.9, lod);
-  float f2 = 1.0 - smoothstep(0.08, 0.3, lod);
-  h += f1 * (noise2(m * 2.3 + 7.7) * 0.06 + abs(noise2(m * 1.1 + 2.2)) * -0.12);
-  h += f2 * noise2(m * 7.0 + 1.3) * 0.018;
-  return h;
+// The rock's own frame: X across the view, Y up from the foot of the trunk, D away from the eye
+vec3 hillFrame(vec3 p) {
+  vec2 a = normalize(uTreeSite.xz);
+  vec2 q = p.xz - uTreeSite.xz;
+  return vec3(q.x * a.y - q.y * a.x, p.y - uTreeSite.y, dot(q, a));
 }
 
-// Rock walls break into steps: bands of harder rock make small ledges every few metres. The ledges slope
-// outward a little: dead flat, each one is a sliver under a pixel high seen from across the gully, and
-// breaks up into a dotted line of light.
-float ledgeStair(float q) { float f = fract(q); return floor(q) + mix(f, smoothstep(0.12, 0.88, f), 0.6); }
-float ledgeSteps(float d, float u) {
-  if (d <= 0.0) return 0.0;
-  const float s = 4.2;
-  float q0 = noise2(vec2(u * 7.0, 0.5)) * 0.35 + 0.5; // where along a step the edge falls
-  return (ledgeStair(d / s + q0) - ledgeStair(q0)) * s;   // zero at the edge, so the lip has no fence
-}
-
-float ledgeHeight(vec2 m, float lod) {
-  float r = length(m);
-  float u = ledgeU(m);
-  float rel = ledgeRelief(m, lod);
-  // the platform under our feet, reaching further out toward the left; a broken, uneven lip
-  float k = smoothstep(-0.42, -1.0, u);
-  float r1 = 6.4 + 15.0 * k * k + (1.8 * noise2(vec2(u * 21.0, 0.3)) + 0.6 * noise2(vec2(u * 64.0, 2.1))) * (0.25 + k);
-  float top = -1.75 - 0.03 * r + rel * (0.22 + 0.3 * k);
-  // a tor of piled blocks on our side, at the very left
-  float kt = smoothstep(-0.92, -1.15, u) * smoothstep(12.0, 19.0, r) * (1.0 - smoothstep(28.0, 38.0, r));
-  // (its piled blocks rise in rounded steps, not sheer jumps: a jump shows as a dark seam)
-  float tb = noise2(m * 0.6 + 3.0) * 2.0 + 1.0;
-  top += kt * (3.5 + 2.5 * noise2(m * 0.11 + 1.7) + 2.0 * abs(noise2(m * 0.35)) + 0.8 * (floor(tb) + smoothstep(0.55, 1.0, fract(tb))));
-  float h = top - ledgeSteps(ledgeDrop(r - r1), u);
-  // across a gully: a buttress of the mountainside, its face turned toward us, joining our rock at the left
-  float kb = smoothstep(-0.5, -0.95, u);
-  if (kb > 0.0) {
-    float r2 = mix(60.0, 43.0, kb) + 2.5 * noise2(vec2(u * 9.0, 5.0)) + 0.35 * noise2(vec2(u * 31.0, 7.0));
-    float r3 = r2 + 45.0 + 15.0 * kb;
-    float crag = max(noise2(m * 0.05 + 4.0), 0.0);
-    float b = -7.0 + 11.0 * kb + 0.035 * max(r - r2, 0.0) + rel * 1.8 + crag * crag * 4.0 * kb;
-    float wall = ledgeSteps(ledgeDrop((r2 - r) * 0.62), u + 0.37) + ledgeDrop(r - r3);
-    float hw = b - wall - 30.0 * (1.0 - smoothstep(0.0, 0.12, kb));
-    // the face: jointed blocks that stand out or sit back. Offsets go up and down, not in and out: the
-    // height must keep rising toward the face, or the field would fold back over itself. Blocks are
-    // flat-topped (whole-block jumps), the smooth part changes slower with height than the wall rises.
-    float onFace = smoothstep(0.3, 2.0, wall) * (1.0 - smoothstep(-1.0, 0.0, r - r2)) * (1.0 - smoothstep(0.0, 1.0, r - r3));
-    if (onFace > 0.0) {
-      float lat = u * 0.5 * uHFov * r2; // metres along the face
-      vec2 bc = vec2(lat / 3.4, hw / 2.9 + noise2(vec2(lat * 0.2, 1.0)) * 0.6);
-      // Blocks with rounded edges on all four sides, so nothing jumps: an edge that jumped faced away from
-      // us for a pixel's width and showed as a dotted dark line across the face. The rounding is gentle
-      // enough (offset slope under 1 against the wall's height) that the face never folds over itself.
-      vec2 bf = fract(bc);
-      float bevel = smoothstep(0.0, 0.18, bf.x) * smoothstep(1.0, 0.82, bf.x) * smoothstep(0.0, 0.32, bf.y) * smoothstep(1.0, 0.68, bf.y);
-      float blocks = (hash12(floor(bc)) - 0.5) * 0.9 * bevel + noise2(vec2(lat, hw) * 0.22) * 1.0 + noise2(vec2(lat, hw) * 0.9) * 0.18;
-      hw += blocks * onFace;
+// Flat broken faces, with cells of size 1: the height here (about -0.4 to 1). The surface is the highest of a few
+// three-sided pyramids, so it is all flat faces and hard edges.
+float rockShards(vec2 q) {
+  vec2 c = floor(q);
+  float best = -9.0;
+  for (int y = uZero - 1; y <= uZero + 1; y++) {
+    for (int x = uZero - 1; x <= uZero + 1; x++) {
+      vec2 cell = c + vec2(float(x), float(y));
+      vec2 h = hash22(cell);
+      float h3 = hash12(cell + 19.0);
+      vec2 d = q - (cell + 0.2 + 0.6 * h);
+      float ang = h3 * 2.094;
+      vec2 a1 = vec2(cos(ang), sin(ang));
+      vec2 a2 = vec2(-0.5 * a1.x - 0.866 * a1.y, 0.866 * a1.x - 0.5 * a1.y);
+      vec2 a3 = -a1 - a2;
+      best = max(best, 0.4 + 0.6 * fract(h3 * 7.3) - 1.05 * max(max(dot(d, a1), dot(d, a2)), dot(d, a3)));
     }
-    h = max(h, hw);
   }
-  // level ground where the tree's roots hold the soil
-  vec2 dt = m - uTreeSite.xz;
-  float w = 1.0 - smoothstep(uTreeSite.w * 0.45, uTreeSite.w, length(dt));
-  h = mix(h, uTreeSite.y + rel * 0.08, w);
-  return h;
+  return best;
 }
 
-// First hit with the rock along rd, as a distance in km, or -1. Horizontal metres r: the ray is at
-// height slope * r there. Steps are sized from the clearance over the rock, small enough for walls.
+float rockJoint; // set by rockBeds: how far it is across the rock to the nearest joint (m)
+
+// The beds of the rock, at w across the view and y up. x = how far this block stands out (about 0 to 1.25),
+// y = how far up its bed (0 to 1), z = a number for this block, w = a number for this bed.
+vec4 rockBeds(float w, float y) {
+  // beds dip across the view and wander a little
+  float v = y + w * 0.2 + 0.2 * noise2(vec2(w * 0.4, y * 0.25 + 3.0)) + 0.06 * noise2(vec2(w * 1.6, y * 0.7 + 8.0)) + 0.018 * noise2(vec2(w * 6.0, y * 6.0 + 2.0));
+  float c = v * 1.55 + 0.4 * sin(v * 1.7) + 0.2 * sin(v * 4.3 + 1.0); // thick beds and thin ones
+  float bed = floor(c);
+  float up = c - bed;
+  float hb = hash12(vec2(bed, 3.7));
+  float len = 0.8 + 1.7 * fract(hb * 5.3); // each bed breaks up at its own spacing, along joints that lean a little
+  float cut = w / len + hb * 17.0 + (up - 0.5) * (fract(hb * 11.0) - 0.5) * 0.7
+            + 0.05 * noise2(vec2(w * 1.7, y * 2.1 + 4.0)) + 0.02 * noise2(vec2(w * 9.0, y * 11.0 + 1.0));
+  float block = floor(cut);
+  rockJoint = min(cut - block, block + 1.0 - cut) * len;
+  float hk = hash12(vec2(block, bed + 11.0));
+  // most blocks are near flush with their bed, a few stand well out; each bed's face slopes its own way
+  float stand = 0.55 * hb + 0.42 * hk * hk + (fract(hb * 3.1) - 0.5) * 0.35 * (up - 0.5);
+  return vec4(stand, up, hk, hb);
+}
+
+// How much bare rock the top shows: all of it along the rim, and in patches further in. m = (X, D).
+float hillRocky(vec2 m) {
+  float left = HILL_TIP - m.x;
+  float inFromRim = min(min(m.y + 1.0 + left * 0.75, 1.6 + left * 0.6 - m.y), left);
+  float rim = 1.0 - smoothstep(0.1, 1.2, inFromRim + 0.5 * noise2(m * 0.8 + 2.0));
+  float patches = smoothstep(0.1, 0.45, noise2(m * 0.25 + 7.0) * 0.7 + noise2(m * 0.9 + 1.0) * 0.3);
+  return max(rim, patches * 0.85);
+}
+
+// The height of the top: nearly flat, as a bedding plane is, with rock breaking through. Level at the tree's roots.
+float hillTop(vec2 m) {
+  float rel = noise2(m * 0.3) * 0.1 + noise2(m * 0.85 + 3.1) * 0.05 + noise2(m * 2.7 + 1.3) * 0.015;
+  float rocky = hillRocky(m);
+  float top = rel - 0.015 * max(-m.x, 0.0) + (rockShards(m * 0.75 + 13.0) - 0.35) * 0.45 * rocky
+            + (1.0 - rocky) * (0.045 * noise2(m * vec2(9.0, 5.0)) + 0.025 * noise2(m * vec2(21.0, 13.0) + 4.0));
+  float w = 1.0 - smoothstep(uTreeSite.w * 0.45, uTreeSite.w, length(m));
+  return mix(top, rel * 0.1, w);
+}
+
+// The broad form, for shadows from far off and for the trunk. Negative inside, otherwise about the distance (m).
+float hillBroad(vec3 p) {
+  vec3 L = hillFrame(p);
+  float below = max(-L.y, 0.0);
+  float left = HILL_TIP - L.x;
+  return max(max(-1.6 - left * 0.75 + below * 0.32 - L.z, L.z - 1.6 - left * 0.6), max(L.x - HILL_TIP + below * 0.75, L.y - 0.1));
+}
+
+// The rock in full. Negative inside, otherwise about the distance to it (m). p = metres from the eye.
+float hillSolid(vec3 p) {
+  vec3 L = hillFrame(p);
+  float below = max(-L.y, 0.0);
+  float left = HILL_TIP - L.x;
+  float nearD = -1.0 - left * 0.75 + below * 0.32; // the face, cut back as it goes down
+  float farD = 1.6 + left * 0.6;
+  float tipX = HILL_TIP - below * 0.75 + 0.6 * noise2(vec2(L.y * 0.55, 1.7)); // the point, cut back faster
+  // The planes the detail can't reach past: while they are far off, there's no need to work out the detail
+  float rough = max(max(nearD - 1.3 - L.z, L.z - farD), max(L.x - tipX - 1.0, L.y - 0.6));
+  if (rough > 0.5) return rough;
+  vec4 bed = rockBeds(L.x, L.y);
+  float front = nearD - 0.7 * bed.x - 0.055 * rockShards(L.xy * vec2(3.1, 3.9) + bed.w * 31.0)
+              - 0.1 * noise2(L.xy * vec2(1.1, 1.7) + bed.w * 17.0) - L.z;
+  float tip = L.x - tipX - (bed.w - 0.5) * 1.1 - 0.3 * (rockShards(L.zy * 1.4 + 7.0) - 0.4); // each bed ends at its own place
+  return max(max(front, L.z - farD), max(tip, L.y - hillTop(L.xz)));
+}
+
+// A field of blades, in picture pixels: columns w wide, broken into strokes about h tall. Each stroke has its own brightness
+// and is lightest at its tip, so the edges stay sharp where soft noise would look out of focus. lean moves the tips that
+// many pixels to the right, and the roots stay where they are.
+float grassStroke(vec2 g, float w, float h, float seed, float lean) {
+  float x = (g.x - lean * fract(g.y / h + seed * 1.3)) / w + seed * 3.7;
+  float c = floor(x);
+  float r = hash12(vec2(c, seed + 3.1));
+  float y = g.y / (h * (0.7 + 0.6 * r)) + r * 31.0;
+  float k = floor(y);
+  float across = 1.0 - abs(x - c - 0.5) * 2.0;
+  return hash12(vec2(c, k + seed)) * (y - k) * smoothstep(0.0, 0.5, across);
+}
+
+// All the blades, combed the same way within a clump. gx, gy: where this is in the picture, in pixels.
+float grassBlades(float gx, float gy, float lean) {
+  float comb = 0.35 * noise2(vec2(gx / 60.0, gy / 30.0));
+  return max(max(grassStroke(vec2(gx + gy * comb, gy), 1.5, 4.0, 0.0, lean),
+                 grassStroke(vec2(gx + gy * (comb + 0.15), gy), 2.6, 6.0, 7.0, lean) * 0.85),
+             grassStroke(vec2(gx + gy * (comb - 0.1), gy), 4.0, 9.0, 13.0, lean) * 0.7);
+}
+
+// How much light a pixel of grass gives back, for what blade is on it
+float grassTone(float blade) {
+  return mix(0.3, 1.25, clamp(0.16 + 0.75 * blade, 0.0, 1.0));
+}
+
+// First hit with the rock along rd, as a distance in km, or -1
 float ledgeMarch(vec3 rd) {
   float hz = length(rd.xz);
-  float u = atan(rd.x, rd.z) / (0.5 * uHFov);
-  float slope = rd.y / max(hz, 1e-4);
-  if (u > -0.40 || slope > 0.8) return -1.0;
-  vec2 dir = rd.xz / hz;
+  if (rd.y / max(hz, 1e-4) > -0.045) return -1.0; // the rock never comes this high in the view
+  vec2 a = normalize(uTreeSite.xz);
+  float along = dot(rd.xz, a);
+  if (along <= 0.0) return -1.0;
+  float r0 = length(uTreeSite.xz);
+  if ((rd.x * a.y - rd.z * a.x) / along > (HILL_TIP + 1.6) / (r0 - 6.0)) return -1.0; // right of the point
   float pa = pixelAngle();
-  float r = 0.6;
-  float rPrev = r;
-  for (int i = uZero; i < 420; i++) {
-    float lod = r * pa / hz;
-    float dh = slope * r - ledgeHeight(dir * r, lod);
-    if (dh < 0.0) {
-      float a = rPrev, b = r;
-      for (int k = uZero; k < 10; k++) {
-        float mid = 0.5 * (a + b);
-        if (slope * mid - ledgeHeight(dir * mid, mid * pa / hz) < 0.0) b = mid; else a = mid;
-      }
-      return b / hz * 0.001;
-    }
-    rPrev = r;
-    r += clamp(dh * 0.2, 0.015 + r * 0.0025, 2.5);
-    if (r > 300.0) break;
+  float t = r0 * 0.35;
+  float f = 1.0;
+  for (int i = uZero; i < 140; i++) {
+    f = hillSolid(rd * t);
+    float hit = t * pa * 0.35;
+    if (f < hit) return t * 0.001;
+    t += max(f * 0.62, hit);
+    if (t > r0 * 2.2) return -1.0;
   }
-  return -1.0;
+  return f < 0.15 ? t * 0.001 : -1.0;
 }
 
-// The height in km at a world position, for shadow rays (-1e3 where there is no rock)
+// For shadow rays: a height that leaves a point at km position pKm as far above it as it is from the rock
 float ledgeHeightKm(vec3 pKm) {
-  vec2 m = (pKm.xz - uCamPos.xz) * 1000.0;
-  if (dot(m, m) > 300.0 * 300.0) return -1e3;
-  return uCamPos.y + ledgeHeight(m, 0.5) * 0.001;
+  vec3 p = (pKm - uCamPos) * 1000.0;
+  if (dot(p.xz, p.xz) > 60.0 * 60.0) return -1e3;
+  return pKm.y - hillBroad(p) * 0.001;
 }
 `;
 })();

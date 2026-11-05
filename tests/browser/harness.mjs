@@ -4,7 +4,7 @@
 //
 // This checks behaviour: shaders compile, pause works, wind direction, no jumps. It can't say how
 // fast the wallpaper runs on a real graphics chip.
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import os from 'node:os';
@@ -16,8 +16,14 @@ export const WIDTH = 960; // same 32:9 shape as the real 3840×1080, a quarter o
 export const HEIGHT = 270;
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Windows passes a below-normal priority on to child processes, so Edge inherits it
+// Windows passes a below-normal priority on to child processes, so Edge inherits it. But Chromium raises its own
+// GPU process above normal, and software rendering there uses every core, enough to slow a browser in real use.
+// So this also keeps the tests on half of the logical processors. Child processes inherit that and can't undo it.
 os.setPriority(0, os.constants.priority.PRIORITY_BELOW_NORMAL);
+if (process.platform === 'win32') {
+  const half = 2 ** Math.max(1, os.cpus().length >> 1) - 1;
+  execFileSync('powershell', ['-NoProfile', '-Command', `(Get-Process -Id ${process.pid}).ProcessorAffinity = ${half}`]);
+}
 
 class Cdp {
   constructor(ws) {
@@ -52,6 +58,7 @@ class Cdp {
 
 /** Opens the wallpaper in headless Edge with software rendering. */
 export async function openWallpaper({ query = '', profile, beforeLoad = '' }) {
+  profile = path.resolve(profile); // Edge takes a relative folder here for its default one, and refuses the debug port
   mkdirSync(profile, { recursive: true });
   const edge = spawn(
     EDGE,

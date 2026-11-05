@@ -215,6 +215,115 @@ body {
   letter-spacing: 0.02em;
 }
 
+/* ---------- test panel (?debug=1) ---------- */
+#test-panel {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 50;
+  width: 392px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  padding: 10px 12px;
+  background: rgba(10, 16, 24, 0.86);
+  color: #eef3f8;
+  border-radius: 10px;
+  font: 12.5px/1.4 var(--font);
+  scrollbar-width: thin;
+}
+#test-panel.left {
+  right: auto;
+  left: 12px;
+  top: 120px; /* under the numbers at the top left */
+  max-height: calc(100vh - 132px);
+}
+#test-panel.hidden {
+  width: auto;
+}
+#test-panel.hidden > :not(.tp-head) {
+  display: none;
+}
+#test-panel button {
+  padding: 2px 8px;
+  border: 1px solid #3a4f68;
+  border-radius: 5px;
+  background: #1c2c3f;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+#test-panel button:hover {
+  background: #2a3f58;
+}
+.tp-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tp-head b {
+  flex: 1;
+  font-size: 14px;
+}
+#test-panel details {
+  margin-top: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+}
+#test-panel summary {
+  font-weight: 600;
+  cursor: pointer;
+}
+.tp-row {
+  display: grid;
+  grid-template-columns: 122px 1fr 92px 20px;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.tp-row input {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  accent-color: #7fb4e8;
+  cursor: pointer;
+}
+.tp-row label[title] {
+  cursor: help;
+}
+.tp-value {
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#test-panel .tp-reset {
+  padding: 0;
+  width: 20px;
+  height: 18px;
+  line-height: 1;
+  font-size: 12px;
+}
+.tp-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.tp-note {
+  margin-top: 5px;
+  color: #b4c3d3;
+  font-size: 11.5px;
+}
+.tp-arrow {
+  display: inline-block;
+  width: 16px;
+  margin-right: 4px;
+  font-size: 15px;
+  line-height: 1;
+  text-align: center;
+}
+
 #debug {
   display: none;
   position: fixed;

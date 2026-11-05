@@ -28,91 +28,109 @@ layout(location = 2) out vec4 o2;
 layout(location = 3) out vec4 o3;
 
 // ---------------- the rock we stand on (see ledge.js) ----------------
-vec3 ledgeNormal(vec2 m, float eps, float lod) {
-  float hL = 0.0, hR = 0.0, hD = 0.0, hU = 0.0;
-  for (int k = uZero; k < 4; k++) {
-    float h = ledgeHeight(m + diffOffsetL(k, eps), lod);
-    if (k == 0) hL = h; else if (k == 1) hR = h; else if (k == 2) hD = h; else hU = h;
-  }
-  return normalize(vec3(hL - hR, 2.0 * eps, hD - hU));
-}
-
 // noise that keeps its grain on a surface of any steepness: seen from above on flat rock, from the side on walls
 float triNoise(vec3 p, vec3 w, float f, float seed) {
   return noise2(p.xz * f + seed) * w.y + noise2(p.zy * f + seed + 5.1) * w.x + noise2(p.xy * f + seed + 9.3) * w.z;
 }
 
+// One call site in a loop: each call is inlined in full by the shader compiler
+vec3 hillNormal(vec3 p, float e) {
+  vec3 n = vec3(0.0);
+  for (int i = uZero; i < 4; i++) {
+    vec3 k = i == 0 ? vec3(1.0, -1.0, -1.0) : (i == 1 ? vec3(-1.0, -1.0, 1.0) : (i == 2 ? vec3(-1.0, 1.0, -1.0) : vec3(1.0)));
+    n += k * hillSolid(p + k * e);
+  }
+  return normalize(n);
+}
+
 void shadeLedge(vec3 rd, float t) {
   vec3 p = rd * t * 1000.0; // metres from the eye
-  vec2 q = p.xz;
-  float fp = t * 1000.0 * pixelAngle();
-  vec3 N = ledgeNormal(q, max(fp * 0.8, 0.006), fp);
-  // Seen at a grazing angle (the far rim of the platform), a pixel's averaged normal can point away from
-  // us although what we see is the near side of each bump: turn it back toward the eye.
+  float pa = pixelAngle();
+  float fp = t * 1000.0 * pa;
+  vec3 L = hillFrame(p);
+  vec3 N = hillNormal(p, max(fp * 1.1, 0.012));
   float facing = dot(N, rd);
   if (facing > -0.08) N = normalize(N - rd * (facing + 0.08));
-  // the broad form, and how far each point sits below its surroundings (hollows and cracks)
-  float e2 = max(fp * 4.0, 0.8);
-  float hc = ledgeHeight(q, fp);
-  float hL = 0.0, hR = 0.0, hD = 0.0, hU = 0.0;
-  for (int k = uZero; k < 4; k++) {
-    float h = ledgeHeight(q + diffOffsetL(k, e2), 0.5);
-    if (k == 0) hL = h; else if (k == 1) hR = h; else if (k == 2) hD = h; else hU = h;
-  }
-  vec3 Ns = normalize(vec3(hL - hR, 2.0 * e2, hD - hU));
-  // hollows and cracks on the flatter rock (on walls this measure mostly sees the wall's own steps)
-  float cav = clamp(((hL + hR + hD + hU) * 0.25 - hc) / e2 * 2.0, -1.0, 1.0) * (1.0 - smoothstep(0.25, 0.55, 1.0 - Ns.y));
+  // the broad form, for snow and for where soil can lie
+  vec3 Ns = hillNormal(p, max(fp * 4.0, 0.3));
   float slope = 1.0 - N.y;
-  float level = 1.0 - smoothstep(0.18, 0.42, 1.0 - Ns.y); // flat enough to hold soil
-  float u = ledgeU(q);
 
   vec3 tw = pow(abs(N), vec3(4.0));
   tw /= tw.x + tw.y + tw.z;
   float n1 = triNoise(p, tw, 0.31, 3.0);
   float n2 = triNoise(p, tw, 1.6, 1.0);
   float n3 = triNoise(p, tw, 5.5, 4.0);
-  float n4 = triNoise(p, tw, 0.07, 9.0);
+  float n4 = triNoise(p, tw, 17.0, 9.0);
 
-  // gneiss: grey with warm and dark bands, lichen crusts, dark streaks where water runs down the walls
-  vec3 rock = mix(vec3(0.125, 0.118, 0.106), vec3(0.235, 0.222, 0.196), smoothstep(-0.55, 0.6, n1 * 0.55 + n2 * 0.25 + n4 * 0.35));
-  rock *= 0.88 + 0.14 * sin(p.y * 1.9 + n1 * 2.5 + n2 * 1.2);
-  float streak = smoothstep(0.1, 0.75, noise2(vec2(u * 240.0, p.y * 0.035 + n4))) * smoothstep(0.45, 0.8, slope);
+  // Which surface this is: the top of the rock, or its face
+  vec2 m = L.xz;
+  float onTop = step(hillTop(m) - 0.14, L.y);
+  float rocky = onTop > 0.5 ? hillRocky(m) : 1.0;
+
+  // ---- rock: dark gneiss. Each bed and block has its own tone, fine layers run along the bed, pale veins cross it, and
+  // water and lichen have marked it
+  vec4 bed = onTop > 0.5 ? rockBeds(m.x, m.y * 0.7) : rockBeds(L.x, L.y);
+  float joint = (1.0 - onTop) * (1.0 - smoothstep(0.0, max(fp * 1.7, 0.04), rockJoint));
+  float tone = clamp(0.12 + 0.42 * bed.w + 0.26 * bed.z + 0.28 * n1 + 0.14 * n2, 0.0, 1.0);
+  vec3 rock = mix(vec3(0.042, 0.04, 0.039), vec3(0.15, 0.14, 0.125), tone);
+  rock = mix(rock, rock * vec3(1.2, 1.02, 0.84), smoothstep(-0.2, 0.5, n2 * 0.6 + n1 * 0.4)); // iron stain, warm
+  rock *= 0.8 + 0.34 * noise2(vec2(L.x * 0.9, (bed.y + bed.w * 9.0) * 6.0)) + 0.12 * noise2(vec2(L.x * 2.2, (bed.y + bed.w * 9.0) * 15.0)); // the layers inside a bed
+  rock *= 0.66 + 0.3 * (n3 * 0.5 + 0.5) + 0.42 * (n4 * 0.5 + 0.5); // grit
+  float vein = 1.0 - smoothstep(0.0, 0.035, abs(noise2(vec2(L.x * 0.8 + L.y * 0.5, L.y * 1.7 + 9.0)) - 0.15));
+  rock = mix(rock, vec3(0.25, 0.24, 0.22), vein * 0.3 * smoothstep(-0.1, 0.4, n2));
+  float streak = smoothstep(0.1, 0.7, noise2(vec2(L.x * 3.1, L.y * 0.2 + n1 * 0.2))) * (1.0 - onTop);
   rock *= 1.0 - 0.3 * streak;
-  float lichen = smoothstep(0.3, 0.75, triNoise(p, tw, 2.3, 6.0) * 0.6 + n3 * 0.4) * (1.0 - streak);
-  rock = mix(rock, vec3(0.30, 0.315, 0.27), lichen * 0.5);
-  float orange = smoothstep(0.6, 0.82, triNoise(p, tw, 3.7, 11.0)) * (0.35 + 0.65 * smoothstep(0.3, 0.7, slope));
-  rock = mix(rock, vec3(0.36, 0.2, 0.07), orange * 0.45);
-  rock *= 0.82 + 0.36 * (n3 * 0.5 + 0.5);
+  float lichen = smoothstep(0.3, 0.72, triNoise(p, tw, 2.3, 6.0) * 0.6 + n3 * 0.4) * (1.0 - streak);
+  rock = mix(rock, vec3(0.2, 0.21, 0.17), lichen * lichen * 0.45 * smoothstep(-0.2, 0.3, n4));
 
-  // grass where soil collects; dry tufts, more of them in the cold months
-  vec3 grass = uSeason.x * vec3(0.050, 0.084, 0.028)
-             + uSeason.y * vec3(0.072, 0.082, 0.036)
-             + uSeason.z * vec3(0.090, 0.086, 0.054)
-             + uSeason.w * vec3(0.058, 0.088, 0.030);
-  grass *= 0.75 + 0.5 * (n2 * 0.5 + 0.5);
-  // straw-coloured dry blades among the green, more of them in the cold months
-  vec3 dry = vec3(0.19, 0.17, 0.115) * (0.85 + 0.3 * (n3 * 0.5 + 0.5));
-  grass = mix(grass, dry, clamp((n3 * 0.5 + 0.5) * 0.3 + uSeason.z * 0.25 + uSeason.y * 0.12, 0.0, 0.7));
-  float soil = level * smoothstep(-0.55, 0.05, n1 * 0.5 + n4 * 0.4 + cav * 0.9 - smoothstep(-2.5, 6.0, p.y) * 0.5);
-  vec3 alb = mix(rock, grass, soil);
-  // moss in damp hollows, and grass and moss on the small steps of the walls
-  float stepTop = smoothstep(0.62, 0.86, N.y) * (1.0 - level);
-  alb = mix(alb, vec3(0.04, 0.064, 0.024) * (0.8 + 0.4 * n2), clamp(smoothstep(0.05, 0.45, cav) * 0.65 + stepTop * 0.5, 0.0, 1.0) * (1.0 - soil));
-  alb = mix(alb, grass, stepTop * smoothstep(-0.2, 0.4, n2) * 0.6);
-  // under the tree: dark soil and its fallen leaves
-  float dT = length(q - uTreeSite.xz);
-  float under = (1.0 - smoothstep(1.0, 3.4, dT + n2 * 0.7)) * level;
-  // dark humus, brown leaves on it, and grass and moss creeping in between
-  vec3 litter = mix(vec3(0.045, 0.036, 0.027), vec3(0.105, 0.075, 0.048), smoothstep(-0.2, 0.7, n3));
-  litter = mix(litter, mix(grass, vec3(0.035, 0.055, 0.022), 0.4), smoothstep(0.1, 0.7, n2 * 0.6 + n4 * 0.4) * 0.6);
-  alb = mix(alb, litter, under * 0.8);
+  rock *= 1.0 - 0.58 * joint; // a joint is narrow and deep, and the sun doesn't reach in
+  // Light from the sky. A block that sits back or lies under one standing out gets less, and is damp and darker.
+  float below = max(-L.y, 0.0);
+  float ao = 1.0;
+  if (onTop < 0.5) {
+    vec4 upper = rockBeds(L.x, L.y + 0.22);
+    float over = clamp((upper.x - bed.x) * 1.5, 0.0, 1.0);
+    ao = (1.0 - 0.45 * over) * mix(0.8, 1.0, smoothstep(0.1, 0.9, bed.x)) * (1.0 - 0.15 * smoothstep(0.0, 3.5, below)) * (1.0 - 0.5 * joint);
+    rock *= 1.0 - 0.28 * over;
+  }
+  // moss on the ledges, broken up
+  float moss = smoothstep(0.5, 0.88, N.y) * smoothstep(0.0, 0.55, n2 * 0.5 + n3 * 0.5 + n4 * 0.45);
+  rock = mix(rock, vec3(0.05, 0.075, 0.028) * (0.7 + 0.7 * (n4 * 0.5 + 0.5)), moss * 0.7);
+  // a roughness finer than the blocks
+  N = normalize(N + vec3(n3, n4, n2 * 0.5) * 0.22);
 
-  // light from the sky: hollows and wall feet get less, and the crown shades the ground beneath it
-  float ao = clamp(0.8 + 0.2 * N.y - cav * 0.5, 0.35, 1.0);
-  ao *= 1.0 - 0.45 * (1.0 - smoothstep(0.8, 4.5, dT));
+  // ---- the top: grass in the soil between the rocks. The camera never moves, so it is drawn in picture pixels: sharp
+  // blades a pixel or two wide, narrow and upright the way grass looks from this far off, combed the same way within a
+  // clump. Grass stands up, so the low view must not flatten it, as it would anything laid on the ground.
+  float gx = atan(rd.x, rd.z) / pa;
+  float gy = rd.y / length(rd.xz) / pa;
+  float blade = grassBlades(gx, gy, 0.0);
+  float tuft = noise2(vec2(gx / 7.0 + 1.7, gy / 4.5 + 5.0)) * 0.6 + noise2(vec2(gx / 16.0 + 9.0, gy / 8.0 + 2.0)) * 0.5;
+  float bright = clamp(0.16 + 0.75 * blade + 0.35 * tuft, 0.0, 1.0);
+  // its edge against the rock is made of blades too
+  float soil = onTop * smoothstep(0.42, 0.58, smoothstep(0.7, 0.35, rocky + 0.3 * n2 + 0.15 * n3) * smoothstep(0.5, 0.8, Ns.y) + (blade - 0.4) * 0.4);
+  vec3 grass = uSeason.x * vec3(0.046, 0.082, 0.026)
+             + uSeason.y * vec3(0.058, 0.078, 0.030)
+             + uSeason.z * vec3(0.088, 0.084, 0.052)
+             + uSeason.w * vec3(0.052, 0.090, 0.028);
+  vec3 dry = vec3(0.14, 0.12, 0.075);
+  float lush = smoothstep(-0.7, 0.7, noise2(vec2(gx / 90.0 + 3.0, gy / 30.0 + 8.0)) + tuft * 0.25);
+  float isDry = smoothstep(0.25, 0.6, noise2(vec2(gx / 4.0 + 11.0, gy / 9.0)) * 0.7 + uSeason.z * 0.4 + uSeason.y * 0.12 - lush * 0.15);
+  vec3 sward = mix(mix(grass * 0.8, grass * 1.15, lush), dry, isDry * 0.4) * mix(0.3, 1.25, bright);
+  sward = mix(vec3(0.018, 0.016, 0.012), sward, smoothstep(0.06, 0.28, bright)); // dark earth in the gaps
+  // dark soil and moss at the foot of the tree, where the grass gives out
+  float dT = length(m);
+  float under = 1.0 - smoothstep(0.45, 1.5, dT + n2 * 0.35);
+  sward = mix(sward, mix(vec3(0.04, 0.032, 0.024), vec3(0.035, 0.055, 0.022), smoothstep(-0.1, 0.5, n2)), under * 0.85);
+  vec3 alb = mix(rock, sward, soil);
+  ao *= mix(1.0, 0.6 + 0.4 * bright, soil);
+  // blades stand up from the ground, each facing its own way
+  vec3 right = normalize(vec3(rd.z, 0.0, -rd.x));
+  vec3 nBlade = normalize(vec3(0.0, 0.85, 0.0) - rd * 0.45 + right * (blade - 0.4) * 1.2);
+  N = normalize(mix(N, nBlade, soil * 0.8));
 
-  float snowAlt = uCamPos.y + p.y * 0.001 + 0.06 * n4 + 0.02 * n1;
-  float suit = (1.0 - smoothstep(0.25, 0.55, slope)) * (0.6 + 0.4 * level);
+  float snowAlt = uCamPos.y + p.y * 0.001 + 0.06 * n1 + 0.02 * n2;
+  float suit = (1.0 - smoothstep(0.25, 0.55, slope)) * (0.5 + 0.5 * onTop);
   o0 = vec4(octEncodeY(N), t, ao);
   o1 = vec4(sqrt(clamp(alb, 0.0, 1.0)), 0.0);
   o2 = vec4(octEncodeY(Ns), snowAlt, suit);

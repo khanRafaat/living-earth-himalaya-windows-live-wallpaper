@@ -90,13 +90,15 @@
           gl.uniform1f(u.loc, v);
           break;
         case gl.FLOAT_VEC2:
-          gl.uniform2f(u.loc, v[0], v[1]);
+          if (v.length > 2) gl.uniform2fv(u.loc, v); // an array of vec2
+          else gl.uniform2f(u.loc, v[0], v[1]);
           break;
         case gl.FLOAT_VEC3:
           gl.uniform3f(u.loc, v[0], v[1], v[2]);
           break;
         case gl.FLOAT_VEC4:
-          gl.uniform4f(u.loc, v[0], v[1], v[2], v[3]);
+          if (v.length > 4) gl.uniform4fv(u.loc, v); // an array of vec4
+          else gl.uniform4f(u.loc, v[0], v[1], v[2], v[3]);
           break;
         case gl.INT:
         case gl.BOOL:

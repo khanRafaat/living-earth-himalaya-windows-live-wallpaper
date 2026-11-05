@@ -1,4 +1,4 @@
-# Living Earth 3840 — architecture
+# Living Earth Himalaya — architecture
 
 ## Why not Three.js / a mesh terrain
 The handoff suggested Three.js. It was evaluated against a custom WebGL 2 pipeline:
@@ -22,6 +22,8 @@ every frame (40–50% res)    volume        clouds + valley mist/fog, temporally
 10 Hz (64×18)               meter/adapt   camera-like auto exposure
 every frame (full res)      composite     relight, aerial perspective, sky, moon, stars, cirrus, rain, snow, village lights, wind in the trees, tone map
 every frame (instanced)     sprites       birds, chimney smoke, meteors, satellites — depth-tested against the bake
+when due (4–30 Hz)          tree          bark and leaves into their own multisampled target, moved by the wind
+every frame                 tree overlay  that target laid over the picture, with falling leaves before and after it
 ```
 
 ### Life (`engine/life.js` + `shaders/sprites.js`)
@@ -41,6 +43,9 @@ every frame (instanced)     sprites       birds, chimney smoke, meteors, satelli
 - Earth curvature is applied, so distant ranges sink naturally.
 - Conifers are real geometry within ~6.5 km: one cone per jittered 7.5 m cell, so ridgelines have tree silhouettes.
 - Materials: strata-banded rock, seasonal grass colour (monsoon green → November gold → winter brown), forests with a few autumn trees, snow suitability by slope/aspect plus fluting on steep high faces.
+
+### The rock (`shaders/ledge.js`)
+A solid marched in the bake, not part of the height field, because its face is cut back under its top and a ray can pass beneath it. `rockBeds` gives tilted beds, each broken by joints into blocks that stand out or sit back; the ledges they make throw real shadows in the lighting pass. It is baked once like the land, so it adds nothing per frame. The grass on top is measured in screen pixels and not on the ground, because grass stands up: anything laid on the ground would be flattened into stripes by the low view.
 
 ### Light and sky
 - The sky is physically based (Hillaire-style coefficients): blue noon, orange sunsets, deep ozone blue hour, purple twilight and the Earth's shadow all come from the same equations — no colour keyframes.
@@ -82,11 +87,15 @@ The `cloudSpeed` setting multiplies all drift: 1 is the real wind speed. Offsets
 - `clock.js` — the only source of "now"; preview/time-lapse modes are labelled in the panel.
 
 ## Performance safeguards
+- The brake: at most one frame in flight on the GPU. A fence ends every frame, and the next one waits until it signals, or 5 s if a driver never signals it. Frames are also spaced so the wallpaper takes at most `render.maxGpuShare` (75%) of the chip, whatever its speed. Every tab and the browser's own interface draw through the same GPU queue, so a queue that stays full feels like a hang with no crash and no error. `?debug=1` shows the measured time as "gpu N ms a frame", beside the test panel (`src/ui/debugpanel.js`), which has a slider for every scenario.
+- `render.maxPixels` (4.2 million) caps the drawn size. A desktop larger than that is drawn smaller and scaled up.
+- The tree costs as much as the landscape if drawn naively. The camera never moves, so `shellOfTree` leaves out every leaf and thin twig with six leaves in front of it, keeps the rest nearest first (the depth test then rejects what is behind before it is shaded), and leaves go before bark. It is redrawn only as often as something on it changes (`treeHz`), and the last picture is reused in between. Lighting that is the same for the whole tree is read back from a 7-pixel probe into uniforms, asynchronously, so nothing waits for the GPU.
 - Frame cap (default 30 fps). Rendering pauses when hidden or when Lively reports playback paused. These are separate flags and a resume needs both to agree. While paused no animation frames are requested, and a 5 s timer keeps the panel current.
 - Smart frame rate: 20 fps while only clouds, mist and light drift, full cap while birds, rain, snow, lightning, meteors or satellites are on screen (3 s hysteresis).
+- Calm scene (`render.calmSceneMs`, 500 ms): with no rain, snow, lightning or time-lapse, the clouds and the composite run twice a second, into a kept picture, a band at a time. The screen shows a fade between the last two pictures, with the birds and the tree drawn over it at the full frame rate. A frame that takes too long on the GPU means more, thinner bands next time, so a new picture comes later and no single frame gets longer. A finished picture waits for the running fade to end, so nothing jumps. The Windows app's rest mode is the same thing with a scene every 2 s.
 - Quality governor drops a level after sustained late frames, and climbs back when a frame's measured GPU time shows headroom. Without a GPU timer it retries the default level after 5 calm minutes, waiting longer each time a try fails. Levels change volumetric resolution, step counts and update rate. A quality change doesn't reset the exposure.
 - Shaders compile in the background (`KHR_parallel_shader_compile`), so compiling itself doesn't block the page. A 1.8 s freeze was once measured during a cold start, cause not confirmed. Bake-shader loops start at `n + uZero` (a uniform that is always 0), which stops the Direct3D compiler from unrolling them. Cold compile on a UHD 730 dropped from ~5 min to ~20 s, with the same output (verified per pixel: at most one half-float step in normals/AO).
-- Bake and shadow work run as tiles through `GpuPacer`: one tile in flight (fence), each sized to ~16 ms of GPU from timer queries (fallback: fence wall time). Daytime shadow refreshes use ~4 ms per frame. Never `gl.finish()`: in Chromium it is only a flush.
+- Bake and shadow work run as tiles through `GpuPacer`: one tile in flight (fence), each sized to ~12 ms of GPU from timer queries (fallback: fence wall time). Daytime shadow refreshes use ~4 ms per frame. Never `gl.finish()`: in Chromium it is only a flush.
 - The full-screen composite (4 bands) and volume (2 bands) passes are flushed band by band, so Windows can schedule the desktop's GPU work between them. Exposure metering runs at 10 Hz.
 - All buffers are allocated once per resolution; no per-frame allocations. WebGL context loss is handled by rebuilding.
 - Memory at 3840 × 1080: ≈ 120 MB of GPU buffers (G-buffer 100 MB, shadows 8 MB, volumetrics ~11 MB, look-up tables < 1 MB).

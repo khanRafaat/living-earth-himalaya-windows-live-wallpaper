@@ -21,3 +21,7 @@ node_modules/
 
 # internal working notes, not documentation
 HANDOVER.md
+
+# build leftovers: the page packed for the exe, and the Lively download
+host/page.zip
+LivingEarthHimalaya-Lively.zip

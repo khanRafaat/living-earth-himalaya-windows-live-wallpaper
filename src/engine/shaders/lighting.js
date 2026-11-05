@@ -52,6 +52,18 @@ void main() {
     s += clamp(d * 0.55, max(0.0015, s * 0.01), 2.0);
     if (s > 80.0) break;
   }
+  // The rock's own ledges and blocks throw sharp shadows close up, too fine for the steps above
+  if (t < LEDGE_T_KM && res > 0.0) {
+    vec3 pm = rd * (t * 1000.0 - 0.1) + ns * 0.03;
+    float sF = 0.1 + 0.05 * hash12(gl_FragCoord.xy);
+    for (int i = uZero; i < 24; i++) {
+      float dF = hillSolid(pm + uLightDir * sF);
+      res = min(res, 7.0 * dF / sF);
+      if (res < 0.0) break;
+      sF += clamp(dF, 0.035, 0.4);
+      if (sF > 5.0) break;
+    }
+  }
   res = clamp(res, 0.0, 1.0);
   o = vec4(res * res * (3.0 - 2.0 * res));
 }
