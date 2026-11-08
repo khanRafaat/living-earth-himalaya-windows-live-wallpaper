@@ -445,7 +445,7 @@ namespace LivingEarth
         private DateTime startedAt, nextLaunch = DateTime.MinValue;
         private TimeSpan backoff = TimeSpan.FromSeconds(5);
         private bool attached, handedOver, locked, desktopInFront = true;
-        private int placeTick, quickDeaths;
+        private int placeTick, quickDeaths, reorders;
 
         private long lastIdle, lastKernel, lastUser;
         private int busyFor;
@@ -1074,9 +1074,14 @@ namespace LivingEarth
             // Asks Explorer to create the wallpaper layer. It ignores the request if the layer exists.
             Native.SendMessageTimeout(progman, 0x052C, new IntPtr(0xD), new IntPtr(1), 0, 1000, out r);
             Native.SendMessageTimeout(progman, 0x052C, IntPtr.Zero, IntPtr.Zero, 0, 1000, out r);
+            FindLayers();
+            return iconView != IntPtr.Zero;
+        }
+
+        private void FindLayers()
+        {
             iconView = Native.FindWindowEx(progman, IntPtr.Zero, "SHELLDLL_DefView", null);
             workerW = Native.FindWindowEx(progman, IntPtr.Zero, "WorkerW", null);
-            return iconView != IntPtr.Zero;
         }
 
         private enum Layout { Ready, NotYet, Unsupported }
@@ -1122,11 +1127,17 @@ namespace LivingEarth
         private void Place(bool force)
         {
             if (wallpaper == IntPtr.Zero || !Native.IsWindow(wallpaper)) return;
+            // Explorer can make a new wallpaper layer after this app has attached: at sign-in, or whenever an app such as
+            // Bing Wallpaper sets a new picture. It goes in front of this window, so look the layers up again every time.
+            FindLayers();
+            if (iconView == IntPtr.Zero) return; // Explorer is restarting: KeepEdgeRunning starts over once it is back
             Rectangle vs = SystemInformation.VirtualScreen;
             Native.RECT cur;
             bool sameRect = Native.GetWindowRect(wallpaper, out cur) && cur.Left == vs.Left && cur.Top == vs.Top &&
                             cur.Right == vs.Right && cur.Bottom == vs.Bottom;
-            if (!force && sameRect && IsAboveWorkerW()) return;
+            bool inFront = IsAboveWorkerW();
+            if (!force && sameRect && inFront) return;
+            if (!force && !inFront && ++reorders <= 20) Log("the desktop's own wallpaper layer was in front: moved back above it");
 
             var p = new Native.POINT { X = vs.X, Y = vs.Y };
             Native.ScreenToClient(progman, ref p);
@@ -1137,13 +1148,14 @@ namespace LivingEarth
         }
 
         // Other apps may add their own layers here (Bing Wallpaper does). Only the order against
-        // the icons and the WorkerW matters, so don't fight over the exact spot.
+        // the icons and the WorkerW matters, so don't fight over the exact spot. Any WorkerW counts, not only
+        // the one found when attaching, which may since have been replaced.
         private bool IsAboveWorkerW()
         {
             for (IntPtr w = Native.GetWindow(iconView, Native.GW_HWNDNEXT); w != IntPtr.Zero; w = Native.GetWindow(w, Native.GW_HWNDNEXT))
             {
                 if (w == wallpaper) return true;
-                if (w == workerW) return false;
+                if (ClassOf(w) == "WorkerW") return false;
             }
             return false;
         }

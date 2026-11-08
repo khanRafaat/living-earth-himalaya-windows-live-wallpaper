@@ -1393,3 +1393,18 @@ test('the app follows Edge by its job, because the process it starts can hand ov
   // With this switch Edge opens a console window of its own when, as here, nothing it was started from has one
   assert.ok(!method('private void StartEdge(').includes('cmd.Append(" --enable-logging'), 'no terminal window on the desktop');
 });
+
+test('the app finds the desktop\'s wallpaper layer again each time, since Explorer can replace it after the start', () => {
+  const host = readFileSync(new URL('../host/LivingEarthHost.cs', import.meta.url), 'utf8');
+  const method = (signature) => {
+    const at = host.indexOf(signature);
+    assert.ok(at >= 0, signature);
+    return host.slice(at, host.indexOf('\n        private ', at + signature.length));
+  };
+  // At sign-in on 2026-11-08 a new WorkerW came in front of the wallpaper and stayed there: the check compared
+  // the order against the handle found at the start, which no longer existed
+  assert.ok(method('private void Place(').includes('FindLayers()'), 'looks the layers up again');
+  const order = method('private bool IsAboveWorkerW(');
+  assert.ok(order.includes('ClassOf(w) == "WorkerW"'), 'any wallpaper layer counts');
+  assert.ok(!order.includes('w == workerW'), 'not only the one seen first');
+});
