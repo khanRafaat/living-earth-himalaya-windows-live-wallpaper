@@ -109,18 +109,29 @@ body {
 .pos-right-bottom {
   right: 44px;
   bottom: 86px;
+  transform-origin: right bottom;
 }
 .pos-right-top {
   right: 44px;
   top: 40px;
+  transform-origin: right top;
 }
 .pos-left-bottom {
   left: 44px;
   bottom: 86px;
+  transform-origin: left bottom;
 }
 .pos-left-top {
   left: 44px;
   top: 40px;
+  transform-origin: left top;
+}
+/* sizes: grown or shrunk from the corner it sits in, so it keeps its distance from the screen's edges */
+.size-small {
+  transform: scale(0.78);
+}
+.size-large {
+  transform: scale(1.3);
 }
 
 .p-time {

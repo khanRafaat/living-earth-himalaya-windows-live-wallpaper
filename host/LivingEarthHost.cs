@@ -4,14 +4,18 @@
 // uses the page in the folder above it instead.
 //
 //   1. Opening the app shows the setup window: location (found automatically or chosen by hand), when to
-//      animate, what is in the scene (road and traffic, birds, flying leaves), the corner for the clock and
-//      weather panel, quality and Start with Windows. "Set wallpaper" starts the wallpaper. When Windows starts
-//      the app at sign-in (--startup), it goes straight to the wallpaper with the saved settings.
+//      animate, what is in the scene (each part can be turned off: road and how much traffic, the tree and its flying
+//      leaves, birds, shooting stars, village lights, forest mist, village smoke, burning fields), whether the clock
+//      and weather panel shows, its corner and size, quality, Start with Windows, and whether Windows' own background shows the scene too.
+//      "Set wallpaper" starts the wallpaper. When Windows starts the app at sign-in (--startup), it goes
+//      straight to the wallpaper with the saved settings.
 //   2. Starts Edge on index.html with its own profile, at below-normal priority.
 //   3. Moves the Edge window behind the desktop icons.
 //   4. Tells the page its pace and settings through host/state.js, so the graphics chip is nearly idle
 //      while you work and setting changes apply without a restart.
 //   5. Keeps Edge in a job object, so Edge can never outlive this app.
+//   6. Sets the Windows desktop background to a still of the scene for the part of the day, so Settings >
+//      Personalization shows this wallpaper too, and puts the old background back on Exit.
 //
 // C# 5 on purpose: that is the language level of the compiler that comes with Windows.
 using System;
@@ -40,8 +44,8 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Living Earth Himalaya")]
 [assembly: AssemblyProduct("Living Earth Himalaya")]
 [assembly: AssemblyCopyright("Khan Rafaat Abtahe. MIT licence")]
-[assembly: AssemblyVersion("2.0.1.0")]
-[assembly: AssemblyFileVersion("2.0.1.0")]
+[assembly: AssemblyVersion("2.1.0.0")]
+[assembly: AssemblyFileVersion("2.1.0.0")]
 
 namespace LivingEarth
 {
@@ -134,6 +138,10 @@ namespace LivingEarth
         public static readonly string[] Qualities = { "auto", "eco", "balanced", "high", "ultra" };
         // Where the clock and weather panel sits. The same order as PANEL_POS in src/main.js.
         public static readonly string[] Corners = { "right-bottom", "right-top", "left-bottom", "left-top" };
+        // Its size. The same order as PANEL_SIZE in src/main.js.
+        public static readonly string[] PanelSizes = { "small", "medium", "large" };
+        // How much traffic is on the road. The same order as TRAFFIC in src/main.js.
+        public static readonly string[] Traffics = { "light", "normal", "busy" };
 
         public RestMode Mode = RestMode.Desktop;
         public string Quality = "high";
@@ -141,7 +149,12 @@ namespace LivingEarth
         public Place Manual;   // the place chosen by hand
         public Place Detected; // the last place found automatically
         public bool Road = true, Birds = true, Leaves = true; // what is in the scene
+        public bool Tree = true, Mist = true, Smoke = true, Fires = true, Lights = true, Stars = true;
+        public bool Panel = true; // the clock and weather panel
         public string Corner = "right-bottom";
+        public string PanelSize = "medium";
+        public string Traffic = "normal";
+        public bool WindowsBackground = true; // Windows' own background shows a still of the scene
 
         /** The place the wallpaper uses, or null for the page's default. */
         public Place Current { get { return !AutoLocation && Manual != null ? Manual : Detected; } }
@@ -184,7 +197,17 @@ namespace LivingEarth
             s.Road = !(v.TryGetValue("road", out x) && x == "off");
             s.Birds = !(v.TryGetValue("birds", out x) && x == "off");
             s.Leaves = !(v.TryGetValue("leaves", out x) && x == "off");
+            s.Tree = !(v.TryGetValue("tree", out x) && x == "off");
+            s.Mist = !(v.TryGetValue("mist", out x) && x == "off");
+            s.Smoke = !(v.TryGetValue("smoke", out x) && x == "off");
+            s.Fires = !(v.TryGetValue("fires", out x) && x == "off");
+            s.Lights = !(v.TryGetValue("lights", out x) && x == "off");
+            s.Stars = !(v.TryGetValue("stars", out x) && x == "off");
+            s.Panel = !(v.TryGetValue("panel", out x) && x == "off");
             if (v.TryGetValue("corner", out x) && Array.IndexOf(Corners, x) >= 0) s.Corner = x;
+            if (v.TryGetValue("panelsize", out x) && Array.IndexOf(PanelSizes, x) >= 0) s.PanelSize = x;
+            if (v.TryGetValue("traffic", out x) && Array.IndexOf(Traffics, x) >= 0) s.Traffic = x;
+            s.WindowsBackground = !(v.TryGetValue("windowsbackground", out x) && x == "off");
             return s;
         }
 
@@ -197,7 +220,17 @@ namespace LivingEarth
             b.Append("road=").Append(Road ? "on" : "off").Append("\r\n");
             b.Append("birds=").Append(Birds ? "on" : "off").Append("\r\n");
             b.Append("leaves=").Append(Leaves ? "on" : "off").Append("\r\n");
+            b.Append("tree=").Append(Tree ? "on" : "off").Append("\r\n");
+            b.Append("mist=").Append(Mist ? "on" : "off").Append("\r\n");
+            b.Append("smoke=").Append(Smoke ? "on" : "off").Append("\r\n");
+            b.Append("fires=").Append(Fires ? "on" : "off").Append("\r\n");
+            b.Append("lights=").Append(Lights ? "on" : "off").Append("\r\n");
+            b.Append("stars=").Append(Stars ? "on" : "off").Append("\r\n");
+            b.Append("panel=").Append(Panel ? "on" : "off").Append("\r\n");
             b.Append("corner=").Append(Corner).Append("\r\n");
+            b.Append("panelsize=").Append(PanelSize).Append("\r\n");
+            b.Append("traffic=").Append(Traffic).Append("\r\n");
+            b.Append("windowsbackground=").Append(WindowsBackground ? "on" : "off").Append("\r\n");
             WritePlace(b, "manual", Manual);
             WritePlace(b, "detected", Detected);
             File.WriteAllText(path, b.ToString(), new UTF8Encoding(false));
@@ -459,7 +492,9 @@ namespace LivingEarth
         private DateTime startedAt, nextLaunch = DateTime.MinValue;
         private TimeSpan backoff = TimeSpan.FromSeconds(5);
         private bool attached, handedOver, locked, desktopInFront = true;
-        private int placeTick, quickDeaths, reorders;
+        private int placeTick, quickDeaths, reorders, placeEvery;
+        private readonly WindowsBackground background; // null in tests, which must never change the real one
+        private DateTime nextBackground = DateTime.MinValue;
 
         private long lastIdle, lastKernel, lastUser;
         private int busyFor;
@@ -539,6 +574,7 @@ namespace LivingEarth
                 else if (a.StartsWith("--query=")) { queryOverride = a.Substring(8); saveSettings = false; silent = true; }
                 else if (a.StartsWith("--edge-arg=")) { extraEdgeArgs += " " + a.Substring(11); }
             }
+            if (saveSettings) background = new WindowsBackground(Path.Combine(hostDir, "stills"), dataDir, Log);
 
             invoker = new Control();
             invoker.CreateControl();
@@ -612,6 +648,7 @@ namespace LivingEarth
                 if (!running) Quit(); // closed before the wallpaper was ever set
                 return;
             }
+            bool hadBackground = settings.WindowsBackground;
             settings = form.Result;
             if (form.DetectedNow) nextDetect = DateTime.UtcNow.AddMinutes(30);
             SaveSettings();
@@ -620,8 +657,15 @@ namespace LivingEarth
             Place p = settings.Current;
             Log("settings: " + settings.Mode + ", quality " + settings.Quality + ", " +
                 (p == null ? "default place" : p.Detail + (settings.AutoLocation ? " (automatic)" : " (chosen)")) +
-                ", road " + (settings.Road ? "on" : "off") + ", birds " + (settings.Birds ? "on" : "off") +
-                ", leaves " + (settings.Leaves ? "on" : "off") + ", panel " + settings.Corner);
+                ", road " + (settings.Road ? "on, " + settings.Traffic + " traffic" : "off") + ", birds " + (settings.Birds ? "on" : "off") +
+                ", leaves " + (settings.Leaves ? "on" : "off") + ", tree " + (settings.Tree ? "on" : "off") +
+                ", mist " + (settings.Mist ? "on" : "off") + ", smoke " + (settings.Smoke ? "on" : "off") +
+                ", fires " + (settings.Fires ? "on" : "off") + ", village lights " + (settings.Lights ? "on" : "off") +
+                ", shooting stars " + (settings.Stars ? "on" : "off") +
+                ", panel " + (settings.Panel ? settings.Corner + " " + settings.PanelSize : "hidden") +
+                ", Windows background " + (settings.WindowsBackground ? "on" : "off"));
+            if (background != null && hadBackground && !settings.WindowsBackground && background.Restore()) PlaceSoon();
+            nextBackground = DateTime.MinValue; // the place may have changed, and with it the sun
             if (!running) StartWallpaper(); // otherwise the page picks the change up from state.js within a second
         }
 
@@ -666,6 +710,7 @@ namespace LivingEarth
                 if (quitting) return;
                 string pace = DecidePace(now);
                 WriteState(pace);
+                if (now >= nextBackground) UpdateBackground(now);
                 if (settings.AutoLocation && !detecting && now >= nextDetect) DetectLocation();
                 string status = !attached ? "Starting..." : pace == Live ? "Animating" : pace == Rest ? "Slow updates" : "Paused";
                 if (statusItem.Text != "Living Earth Himalaya: " + status) statusItem.Text = "Living Earth Himalaya: " + status;
@@ -674,6 +719,23 @@ namespace LivingEarth
             {
                 Log("tick: " + ex.Message);
             }
+        }
+
+        // Windows' own background: the still for where the sun is now, checked every minute. Setting it makes Explorer
+        // put a new layer in front of this wallpaper, so the window goes back on top every second for a while after.
+        private void UpdateBackground(DateTime now)
+        {
+            nextBackground = now.AddMinutes(1);
+            if (background == null || !settings.WindowsBackground || locked) return;
+            Place p = settings.Current;
+            // with no place yet, the page's default: Dhaka
+            string still = WindowsBackground.StillFor(now, p != null ? p.Lat : 23.7104, p != null ? p.Lon : 90.4074);
+            if (background.Show(still, SystemInformation.MonitorCount > 1)) PlaceSoon();
+        }
+
+        private void PlaceSoon()
+        {
+            placeEvery = 15;
         }
 
         // Every 30 minutes, so a laptop that travels gets its own sky. No prompt: that only comes from the window.
@@ -770,9 +832,18 @@ namespace LivingEarth
             {
                 js.Append(", { quality: ").Append(Js(settings.Quality));
                 js.Append(", road: ").Append(settings.Road ? "true" : "false");
+                js.Append(", traffic: ").Append(Js(settings.Traffic));
                 js.Append(", birds: ").Append(settings.Birds ? "true" : "false");
                 js.Append(", leaves: ").Append(settings.Leaves ? "true" : "false");
+                js.Append(", tree: ").Append(settings.Tree ? "true" : "false");
+                js.Append(", mist: ").Append(settings.Mist ? "true" : "false");
+                js.Append(", smoke: ").Append(settings.Smoke ? "true" : "false");
+                js.Append(", fires: ").Append(settings.Fires ? "true" : "false");
+                js.Append(", lights: ").Append(settings.Lights ? "true" : "false");
+                js.Append(", stars: ").Append(settings.Stars ? "true" : "false");
+                js.Append(", panel: ").Append(settings.Panel ? "true" : "false");
                 js.Append(", corner: ").Append(Js(settings.Corner));
+                js.Append(", panelSize: ").Append(Js(settings.PanelSize));
                 Place p = settings.Current;
                 if (p != null)
                     js.Append(", place: { lat: ").Append(Locator.F(p.Lat)).Append(", lon: ").Append(Locator.F(p.Lon))
@@ -817,9 +888,18 @@ namespace LivingEarth
             if (queryOverride != null) return queryOverride;
             var q = new StringBuilder("quality=").Append(settings.Quality).Append("&fps=24&geo=0");
             if (!settings.Road) q.Append("&road=0");
+            q.Append("&traffic=").Append(settings.Traffic);
             if (!settings.Birds) q.Append("&birds=0");
             if (!settings.Leaves) q.Append("&leaves=0");
+            if (!settings.Tree) q.Append("&tree=0");
+            if (!settings.Mist) q.Append("&mist=0");
+            if (!settings.Smoke) q.Append("&smoke=0");
+            if (!settings.Fires) q.Append("&fires=0");
+            if (!settings.Lights) q.Append("&lights=0");
+            if (!settings.Stars) q.Append("&stars=0");
+            if (!settings.Panel) q.Append("&panel=0");
             q.Append("&corner=").Append(settings.Corner);
+            q.Append("&panelsize=").Append(settings.PanelSize);
             Place p = settings.Current;
             if (p != null)
                 q.Append("&lat=").Append(Locator.F(p.Lat)).Append("&lon=").Append(Locator.F(p.Lon))
@@ -856,7 +936,8 @@ namespace LivingEarth
                 return;
             }
 
-            if (++placeTick % 5 == 0) Place(false);
+            if (placeEvery > 0) placeEvery--;
+            if (++placeTick % 5 == 0 || placeEvery > 0) Place(false);
             if ((now - startedAt).TotalMinutes > 5) backoff = TimeSpan.FromSeconds(5);
         }
 
@@ -1289,6 +1370,7 @@ namespace LivingEarth
             quitting = true;
             if (setup != null && !setup.IsDisposed) setup.Close();
             timer.Stop();
+            if (background != null) background.Restore();
             showWait.Unregister(null);
             SystemEvents.SessionSwitch -= OnSessionSwitch;
             SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
@@ -1343,8 +1425,9 @@ namespace LivingEarth
         private readonly Button detectButton, searchButton, setButton, cancelButton;
         private readonly TextBox searchBox;
         private readonly ListBox results;
-        private readonly ComboBox qualityBox;
-        private readonly CheckBox startupBox, roadBox, birdsBox, leavesBox;
+        private readonly ComboBox qualityBox, sizeBox, trafficBox;
+        private readonly CheckBox startupBox, roadBox, birdsBox, leavesBox, windowsBox;
+        private readonly CheckBox treeBox, mistBox, smokeBox, firesBox, lightsBox, starsBox, panelBox;
         private readonly RadioButton topLeft, topRight, bottomLeft, bottomRight;
         private Place detected, manual;
         private int detectRun, searchRun;
@@ -1420,22 +1503,48 @@ namespace LivingEarth
             Controls.Add(modes);
             y += my + 12;
 
-            // ---- what is in the scene, and the corner for the panel, side by side to keep the window short
-            const int Col2 = W / 2 + 4;
-            HeadingAt("In the scene", Pad, y);
-            HeadingAt("Clock and weather panel", Col2, y);
-            y += 28;
-            roadBox = Check("Road and traffic", Pad, y, s.Road);
-            birdsBox = Check("Birds", Pad, y + 24, s.Birds);
-            leavesBox = Check("Flying leaves", Pad, y + 48, s.Leaves);
+            // ---- what is in the scene: everything can be turned off, in three columns to keep the window short
+            y = Heading("In the scene", y);
+            const int ColW = (W - 2 * Pad) / 3;
+            int c1 = Pad, c2 = Pad + ColW, c3 = Pad + 2 * ColW;
+            roadBox = Check("Road", c1, y, s.Road);
+            trafficBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(c1 + 62, y - 2), Width = 102 };
+            trafficBox.Items.AddRange(new object[] { "Light traffic", "Normal traffic", "Busy traffic" });
+            trafficBox.SelectedIndex = Math.Max(0, Array.IndexOf(Settings.Traffics, s.Traffic));
+            trafficBox.Enabled = s.Road;
+            Controls.Add(trafficBox);
+            roadBox.CheckedChanged += delegate { trafficBox.Enabled = roadBox.Checked; };
+            treeBox = Check("Tree on the rock", c2, y, s.Tree);
+            leavesBox = Check("Flying leaves", c3, y, s.Leaves);
+            leavesBox.Enabled = s.Tree; // the leaves come off the tree
+            treeBox.CheckedChanged += delegate { leavesBox.Enabled = treeBox.Checked; };
+            birdsBox = Check("Birds", c1, y + 24, s.Birds);
+            starsBox = Check("Shooting stars", c2, y + 24, s.Stars);
+            lightsBox = Check("Village lights", c3, y + 24, s.Lights);
+            mistBox = Check("Forest mist", c1, y + 48, s.Mist);
+            smokeBox = Check("Village smoke", c2, y + 48, s.Smoke);
+            firesBox = Check("Burning fields", c3, y + 48, s.Fires);
+            y += 76;
+
+            // ---- the clock and weather panel: whether it shows, its corner (laid out like the screen) and its size
+            y = Heading("Clock and weather panel", y);
+            panelBox = Check("Show it", Pad, y, s.Panel);
             // a panel of their own, or they would be one group with the radio buttons above
-            var corners = new Panel { Location = new Point(Col2, y), Size = new Size(W - Col2 - Pad, 48) };
+            var corners = new Panel { Location = new Point(Pad + 100, y), Size = new Size(240, 48) };
             topLeft = Radio(corners, "Top left", 0, 0);
-            topRight = Radio(corners, "Top right", 124, 0);
+            topRight = Radio(corners, "Top right", 116, 0);
             bottomLeft = Radio(corners, "Bottom left", 0, 24);
-            bottomRight = Radio(corners, "Bottom right", 124, 24);
+            bottomRight = Radio(corners, "Bottom right", 116, 24);
             Controls.Add(corners);
-            y += 74;
+            var sizeLabel = new Label { Text = "Size", Location = new Point(W - Pad - 104 - 38, y + 4), AutoSize = true };
+            Controls.Add(sizeLabel);
+            sizeBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(W - Pad - 104, y), Width = 104 };
+            sizeBox.Items.AddRange(new object[] { "Small", "Medium", "Large" });
+            sizeBox.SelectedIndex = Math.Max(0, Array.IndexOf(Settings.PanelSizes, s.PanelSize));
+            Controls.Add(sizeBox);
+            corners.Enabled = sizeBox.Enabled = sizeLabel.Enabled = s.Panel;
+            panelBox.CheckedChanged += delegate { corners.Enabled = sizeBox.Enabled = sizeLabel.Enabled = panelBox.Checked; };
+            y += 52;
             Note(this, "Turning the road on or off shapes the mountains again, which takes a few minutes. " +
                        "With two screens side by side, left and right mean the left and right screen.", Pad, y, W - 2 * Pad, 34);
             y += 36 + 12;
@@ -1450,7 +1559,11 @@ namespace LivingEarth
             Controls.Add(qualityBox);
             startupBox = new CheckBox { Text = "Start with Windows", Checked = startWithWindows, Location = new Point(Pad + 72 + 250 + 24, y + 3), AutoSize = true };
             Controls.Add(startupBox);
-            y += 36;
+            y += 34;
+            windowsBox = Check("Show the scene in Windows Settings too, as the desktop background picture", Pad, y, s.WindowsBackground);
+            y += 22;
+            Note(this, "A still for the time of day, so Personalization shows it. Exit puts your own picture back.", Pad + Indent - 3, y, W - 2 * Pad - Indent, 18);
+            y += 28;
 
             Controls.Add(new Panel { Location = new Point(0, y), Size = new Size(W, 1), BackColor = Color.FromArgb(228, 228, 228) });
             y += 16;
@@ -1622,7 +1735,17 @@ namespace LivingEarth
             s.Road = roadBox.Checked;
             s.Birds = birdsBox.Checked;
             s.Leaves = leavesBox.Checked;
+            s.Tree = treeBox.Checked;
+            s.Mist = mistBox.Checked;
+            s.Smoke = smokeBox.Checked;
+            s.Fires = firesBox.Checked;
+            s.Lights = lightsBox.Checked;
+            s.Stars = starsBox.Checked;
+            s.Panel = panelBox.Checked;
             s.Corner = topLeft.Checked ? "left-top" : topRight.Checked ? "right-top" : bottomLeft.Checked ? "left-bottom" : "right-bottom";
+            s.PanelSize = Settings.PanelSizes[Math.Max(0, sizeBox.SelectedIndex)];
+            s.Traffic = Settings.Traffics[Math.Max(0, trafficBox.SelectedIndex)];
+            s.WindowsBackground = windowsBox.Checked;
             DialogResult = DialogResult.OK;
             Close();
         }
@@ -1711,6 +1834,188 @@ namespace LivingEarth
         }
     }
 
+    // ====================================================================== Windows' own background
+    /// <summary>
+    /// Shows this wallpaper in Windows' own Settings > Personalization: sets the Windows desktop background to a still of
+    /// the scene for the part of the day, and puts back what was there before when asked to (Exit, or the option turned
+    /// off). Windows can't take a picture of the live wallpaper: Edge draws it with the graphics chip behind the desktop
+    /// icons, where PrintWindow sees only black. So the stills are rendered ahead of time (host/stills.mjs) and travel in
+    /// the exe. What was there before is kept in a file of its own, so a crash or a restart can't lose it.
+    /// </summary>
+    public sealed class WindowsBackground
+    {
+        // name: rendered with the sun at this altitude (see host/stills.mjs). StillFor chooses between them.
+        public static readonly string[] Names = { "night", "dawn", "morning", "day", "golden", "dusk" };
+        private const string DesktopKey = @"Control Panel\Desktop";
+
+        private readonly string stillsDir, dataDir, savedPath;
+        private readonly Action<string> log;
+
+        // Tests replace these, so they never touch the real background: (path, style, tile)
+        public Func<string[]> Read = ReadWindows;
+        public Action<string, string, string> Write = WriteWindows;
+
+        public WindowsBackground(string stillsDir, string dataDir, Action<string> log)
+        {
+            this.stillsDir = stillsDir;
+            this.dataDir = dataDir;
+            this.log = log;
+            savedPath = Path.Combine(dataDir, "windows-background.ini");
+        }
+
+        /// <summary>The still for where the sun is: the same bands as host/stills.mjs.</summary>
+        public static string StillFor(DateTime utc, double lat, double lon)
+        {
+            double alt, az;
+            Sun(utc, lat, lon, out alt, out az);
+            bool morning = az < 180;
+            if (alt < -10) return "night";
+            if (alt < 1) return morning ? "dawn" : "dusk";
+            if (alt < 15) return morning ? "morning" : "golden";
+            return "day";
+        }
+
+        /// <summary>The sun's altitude above the horizon and its compass bearing, in degrees, as src/services/astronomy.js has them.</summary>
+        public static void Sun(DateTime utc, double lat, double lon, out double altDeg, out double azDeg)
+        {
+            const double rad = Math.PI / 180;
+            double d = (utc.ToUniversalTime() - new DateTime(2000, 1, 1, 12, 0, 0, DateTimeKind.Utc)).TotalDays;
+            double M = rad * (357.5291 + 0.98560028 * d);
+            double C = rad * (1.9148 * Math.Sin(M) + 0.02 * Math.Sin(2 * M) + 0.0003 * Math.Sin(3 * M));
+            double L = M + C + rad * 102.9372 + Math.PI;
+            const double e = rad * 23.4397;
+            double dec = Math.Asin(Math.Sin(e) * Math.Sin(L));
+            double ra = Math.Atan2(Math.Sin(L) * Math.Cos(e), Math.Cos(L));
+            double H = rad * (280.16 + 360.9856235 * d) + rad * lon - ra;
+            double phi = rad * lat;
+            double alt = Math.Asin(Math.Sin(phi) * Math.Sin(dec) + Math.Cos(phi) * Math.Cos(dec) * Math.Cos(H));
+            double az = Math.Atan2(Math.Sin(H), Math.Cos(H) * Math.Sin(phi) - Math.Tan(dec) * Math.Cos(phi));
+            altDeg = alt / rad;
+            azDeg = ((az / rad + 180) % 360 + 360) % 360;
+        }
+
+        /// <summary>Puts this still up, unless it is up already. Returns true if it changed the background.</summary>
+        public bool Show(string name, bool span)
+        {
+            string src = Path.Combine(stillsDir, name + ".jpg");
+            if (!File.Exists(src)) return false; // a build without the stills
+            string[] now = Read();
+            Dictionary<string, string> saved = Load();
+            string shown;
+            if (IsOurs(now[0]) && saved.TryGetValue("shown", out shown) && shown == name) return false;
+            try
+            {
+                if (!IsOurs(now[0]))
+                {
+                    // someone's own picture, or one another app put there since: that is what goes back on Exit
+                    saved["previous.wallpaper"] = now[0];
+                    saved["previous.style"] = now[1];
+                    saved["previous.tile"] = now[2];
+                }
+                // two names in turn: given the same path again, Windows can keep showing the old picture
+                string file = Path.Combine(dataDir, "windows-background-" + (now[0].EndsWith("-a.jpg", StringComparison.OrdinalIgnoreCase) ? "b" : "a") + ".jpg");
+                File.Copy(src, file, true);
+                saved["shown"] = name;
+                Save(saved); // before the change, so what goes back is never lost
+                Write(file, span ? "22" : "10", "0"); // span across the screens, or fill the one
+                log("Windows background: the " + name + " still");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                log("Windows background: " + ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>Puts back what was there before. Returns true if it changed the background.</summary>
+        public bool Restore()
+        {
+            Dictionary<string, string> saved = Load();
+            string path, style, tile;
+            if (!saved.TryGetValue("previous.wallpaper", out path)) return false;
+            saved.TryGetValue("previous.style", out style);
+            saved.TryGetValue("previous.tile", out tile);
+            bool changed = false, keep = false;
+            try
+            {
+                if (!IsOurs(Read()[0]))
+                    log("Windows background: changed by something else meanwhile, left as it is");
+                else if (path.Length > 0 && !File.Exists(path))
+                {
+                    log("Windows background: the picture from before is gone (" + path + "), so the still stays");
+                    keep = true;
+                }
+                else
+                {
+                    Write(path, style ?? "10", tile ?? "0"); // an empty path is a plain colour
+                    log("Windows background: back to " + (path.Length > 0 ? path : "a plain colour"));
+                    changed = true;
+                }
+                File.Delete(savedPath);
+                if (!keep)
+                    foreach (string f in new[] { "a", "b" }) File.Delete(Path.Combine(dataDir, "windows-background-" + f + ".jpg"));
+            }
+            catch (Exception ex)
+            {
+                log("Windows background: " + ex.Message);
+            }
+            return changed;
+        }
+
+        public bool IsOurs(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            string name = Path.GetFileName(path);
+            return name.StartsWith("windows-background-", StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(Path.GetDirectoryName(Path.GetFullPath(path)).TrimEnd('\\'), Path.GetFullPath(dataDir).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private Dictionary<string, string> Load()
+        {
+            var v = new Dictionary<string, string>();
+            try
+            {
+                if (File.Exists(savedPath))
+                    foreach (string line in File.ReadAllLines(savedPath, Encoding.UTF8))
+                    {
+                        int eq = line.IndexOf('=');
+                        if (eq > 0) v[line.Substring(0, eq)] = line.Substring(eq + 1);
+                    }
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            return v;
+        }
+
+        private void Save(Dictionary<string, string> v)
+        {
+            var b = new StringBuilder();
+            foreach (KeyValuePair<string, string> kv in v) b.Append(kv.Key).Append('=').Append(kv.Value).Append("\r\n");
+            File.WriteAllText(savedPath, b.ToString(), new UTF8Encoding(false));
+        }
+
+        private static string[] ReadWindows()
+        {
+            using (RegistryKey k = Registry.CurrentUser.OpenSubKey(DesktopKey))
+            {
+                if (k == null) return new[] { "", "10", "0" };
+                return new[] { (k.GetValue("Wallpaper") as string) ?? "", (k.GetValue("WallpaperStyle") as string) ?? "10", (k.GetValue("TileWallpaper") as string) ?? "0" };
+            }
+        }
+
+        private static void WriteWindows(string path, string style, string tile)
+        {
+            using (RegistryKey k = Registry.CurrentUser.CreateSubKey(DesktopKey))
+            {
+                k.SetValue("WallpaperStyle", style);
+                k.SetValue("TileWallpaper", tile);
+            }
+            if (!Native.SystemParametersInfo(Native.SPI_SETDESKWALLPAPER, 0, path, Native.SPIF_UPDATEINIFILE | Native.SPIF_SENDCHANGE))
+                throw new IOException("Windows refused the picture (" + Marshal.GetLastWin32Error() + ")");
+        }
+    }
+
     internal static class Native
     {
         public const int GWL_STYLE = -16, GWL_EXSTYLE = -20;
@@ -1727,7 +2032,11 @@ namespace LivingEarth
         public const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000, JOB_OBJECT_LIMIT_PRIORITY_CLASS = 0x20;
         public const int JobObjectExtendedLimitInformation = 9;
 
+        public const uint SPI_SETDESKWALLPAPER = 0x14, SPIF_UPDATEINIFILE = 1, SPIF_SENDCHANGE = 2;
+
         public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool SystemParametersInfo(uint action, uint param, string value, uint winIni);
 
         [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
         [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }

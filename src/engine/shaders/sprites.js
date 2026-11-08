@@ -1,15 +1,15 @@
 /*
  * Sprites — the living layer drawn over the composite each frame:
  *   type 0 raptor · 1 chough · 2 goose/crane  (procedural flapping silhouettes)
- *   type 3 meteor · 4 satellite · 5 chimney smoke · 6 road vehicle
+ *   type 3 meteor · 4 satellite · 5 the glow of a fire on the hills by night · 6 road vehicle · 7 the light a vehicle throws ahead
  * Each instance is a rotated quad. Fragments are depth-tested against the baked
  * terrain, lit with the same sky/sun as the scene, hazed by distance, and
  * tone-mapped exactly like the composite so they sit naturally in the image.
  *
- * Instance layout (4 × vec4):
+ * Instance layout (5 × vec4):
  *   a0 = centre x, centre y (px), half width, half height (px)
  *   a1 = rotation (rad), type, alpha, distance (km)
- *   a2, a3 = per-type parameters (see life.js)
+ *   a2, a3, a4 = per-type parameters (see life.js)
  */
 (function () {
   'use strict';
@@ -20,12 +20,14 @@ layout(location = 0) in vec4 aA;
 layout(location = 1) in vec4 aB;
 layout(location = 2) in vec4 aC;
 layout(location = 3) in vec4 aD;
+layout(location = 4) in vec4 aE;
 uniform vec2 uRes;
 out vec2 vLocal;
 flat out vec4 vA;
 flat out vec4 vB;
 flat out vec4 vC;
 flat out vec4 vD;
+flat out vec4 vE;
 void main() {
   int id = gl_VertexID % 6;
   vec2 corner = vec2((id == 1 || id == 2 || id == 4) ? 1.0 : -1.0, (id == 2 || id == 4 || id == 5) ? 1.0 : -1.0);
@@ -34,7 +36,7 @@ void main() {
   vec2 px = aA.xy + vec2(c * local.x - s * local.y, s * local.x + c * local.y);
   gl_Position = vec4(px / uRes * 2.0 - 1.0, 0.0, 1.0);
   vLocal = local;
-  vA = aA; vB = aB; vC = aC; vD = aD;
+  vA = aA; vB = aB; vC = aC; vD = aD; vE = aE;
 }`;
 
   // Between two slow-mode pictures: far cheaper than drawing the scene, and clouds drift a few pixels
@@ -54,7 +56,9 @@ ${S.camera}
 ${S.noise}
 ${S.atmosphere}
 ${S.atmosphereLookup}
+${S.octahedral}
 uniform sampler2D uG0;
+uniform sampler2D uG1;
 uniform sampler2D uVol;
 uniform sampler2D uAdapt;
 uniform sampler2D uShadow;
@@ -67,11 +71,13 @@ uniform float uOvercast;
 uniform float uValleyHaze;
 uniform float uNight;
 uniform float uTime;
+uniform float uHeadE; // a vehicle's headlights, in the scene's light units at this exposure
 in vec2 vLocal;
 flat in vec4 vA;
 flat in vec4 vB;
 flat in vec4 vC;
 flat in vec4 vD;
+flat in vec4 vE;
 out vec4 fragColor;
 
 float sdSegment(vec2 p, vec2 a, vec2 b) {
@@ -120,6 +126,28 @@ vec3 grade(vec3 col) {
   return pow(col, vec3(1.0 / 2.2));
 }
 
+// The same, for lamplight: the eye keeps the colour of a lamp at night, which grade() would turn grey-blue
+vec3 gradeLamp(vec3 col) {
+  col *= texelFetch(uAdapt, ivec2(0), 0).r;
+  col *= 1.0 + uNight * (0.3 + 1.1 * uOvercast);
+  const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+  vec3 tone = clamp((col * (a * col + b)) / (col * (c * col + d) + e), 0.0, 1.0);
+  col = mix(tone, 1.0 - exp(-col * 1.4), uNight);
+  return pow(col, vec3(1.0 / 2.2));
+}
+
+// Is a lamp at this point of the picture in sight? Judged where the lamp is, against the ground the bake stored there.
+bool lampSeen(vec2 px, float dist) {
+  float lt = texelFetch(uG0, ivec2(px), 0).z;
+  return lt <= 0.0 || lt >= dist - 0.012;
+}
+
+// A small round lamp: a bright core and a soft halo, in pixels squared
+float lampGlow(vec2 d, float core, float halo, float haloAmt) {
+  float r = dot(d, d);
+  return exp(-r / core) + haloAmt * exp(-r / halo);
+}
+
 // A box seen from above is three segments added together, the sum of its length, width and height on the picture.
 // The distance to the outside of such a shape is the largest over those three directions.
 float boxEdge(vec2 q, vec2 e, vec2 A, vec2 B, vec2 U) {
@@ -131,6 +159,33 @@ float boxEdge(vec2 q, vec2 e, vec2 A, vec2 B, vec2 U) {
 
 float volT() {
   return texelFetch(uVol, ivec2(gl_FragCoord.xy * uVolRes / uRes), 0).a;
+}
+
+// A road vehicle at one point q of its picture (px from its middle): the colour of the face there, and how much sun
+// that face takes. Roof, sides, windows and wheels. (A, B, U: half its length, width and height on the picture.)
+vec4 vehicleFace(vec2 q, vec2 A, vec2 B, vec2 U, int kind, vec3 paint, float sideSun) {
+  // which face this point is on. The corner nearest the viewer is the lowest on the picture.
+  float sa = A.y <= 0.0 ? 1.0 : -1.0;
+  float sb = B.y <= 0.0 ? 1.0 : -1.0;
+  vec2 corner = A * sa + B * sb - U;
+  vec2 top = q - U;
+  float det = A.x * B.y - A.y * B.x;
+  float tu = abs(det) > 1e-3 ? (top.x * B.y - top.y * B.x) / det : 9.0;
+  float tv = abs(det) > 1e-3 ? (A.x * top.y - A.y * top.x) / det : 9.0;
+  if (max(abs(tu), abs(tv)) <= 1.0 && kind != 2)
+    return vec4(kind == 0 ? mix(paint, vec3(0.6), 0.5) : paint * 0.9, max(uSunDir.y, 0.0)); // a bus's pale roof
+  // up its side, 0 at the road, 1 at the roof
+  vec2 run = (q.x - corner.x) * A.x * sa <= 0.0 && abs(A.x) > 1e-3 ? -2.0 * sa * A : -2.0 * sb * B;
+  float along = abs(run.x) > 1e-3 ? clamp((q.x - corner.x) / run.x, 0.0, 1.0) : 0.0;
+  float up = clamp((q.y - corner.y - along * run.y) / max(2.0 * U.y, 1e-3), 0.0, 1.0);
+  vec3 alb;
+  if (kind == 2) alb = up > 0.48 ? paint : vec3(0.03);                         // the rider above the machine
+  else {
+    alb = paint;
+    if (up > 0.5 && up < 0.86) alb = vec3(0.035, 0.05, 0.06);                  // windows
+    if (up < 0.2) alb = vec3(0.02);                                             // wheels, and the dark under it
+  }
+  return vec4(alb, sideSun);
 }
 
 void main() {
@@ -171,15 +226,17 @@ void main() {
   if (type == 3) {
     // ---------------- meteor ----------------
     if (t > 0.0) discard;
-    float halfLen = vA.z - 4.0;
+    float halfLen = vA.z - 3.0;
     float x = vLocal.x;
     float y = vLocal.y;
     float u = clamp((x + halfLen) / (2.0 * halfLen), 0.0, 1.0); // 0 = tail end, 1 = head
     float w = vC.w;
-    float core = exp(-y * y / (w * w)) * step(x, halfLen + 0.5);
-    float head = exp(-((x - halfLen) * (x - halfLen) + y * y) / 1.8);
-    vec3 c = mix(vec3(1.0, 0.8, 0.55), vec3(0.75, 1.0, 0.85), u);      // trains glow green-white at the head
-    col = c * vC.y * (core * u * u * 1.2 + head * 0.8) * volT();
+    // a hair-thin line, its ends soft
+    float core = exp(-y * y / (w * w)) * smoothstep(-halfLen - 1.0, -halfLen + 1.0, x) * (1.0 - smoothstep(halfLen, halfLen + 1.0, x));
+    float trail = exp(-(1.0 - u) * 2.5);                         // brightest just behind the head, dimmer back along it
+    float head = exp(-((x - halfLen) * (x - halfLen) + y * y) / 0.7) * vC.x; // only while it still burns
+    vec3 c = mix(vec3(1.0, 0.78, 0.55), vec3(0.85, 1.0, 0.9), u * u); // the train warm, the head green-white
+    col = c * vC.y * (core * trail * 1.1 + head * 0.8) * volT();
     fragColor = vec4(grade(col) * alpha, 0.0);
     return;
   }
@@ -208,39 +265,33 @@ void main() {
     float pk = vD.y;
     vec3 paint = vec3(mod(pk, 32.0), mod(floor(pk / 32.0), 32.0), floor(pk / 1024.0)) / 31.0;
     paint *= paint;
-    // which face this pixel is on. The corner nearest the viewer is the lowest on the picture.
-    float sa = A.y <= 0.0 ? 1.0 : -1.0;
-    float sb = B.y <= 0.0 ? 1.0 : -1.0;
-    vec2 corner = A * sa + B * sb - U;
-    vec2 top = q - U;
-    float det = A.x * B.y - A.y * B.x;
-    float tu = abs(det) > 1e-3 ? (top.x * B.y - top.y * B.x) / det : 9.0;
-    float tv = abs(det) > 1e-3 ? (A.x * top.y - A.y * top.x) / det : 9.0;
-    vec3 alb;
-    float lit;
     vec3 toEye = normalize(vec3(-rd.x, 0.0, -rd.z));
     float sideSun = max(dot(toEye, uSunDir), 0.0) * 0.8 + 0.1;
-    if (max(abs(tu), abs(tv)) <= 1.0 && kind != 2) {
-      alb = kind == 0 ? mix(paint, vec3(0.6), 0.5) : paint * 0.9; // a bus's pale roof
-      lit = max(uSunDir.y, 0.0);
-    } else {
-      // up its side, 0 at the road, 1 at the roof
-      vec2 run = (q.x - corner.x) * A.x * sa <= 0.0 && abs(A.x) > 1e-3 ? -2.0 * sa * A : -2.0 * sb * B;
-      float along = abs(run.x) > 1e-3 ? clamp((q.x - corner.x) / run.x, 0.0, 1.0) : 0.0;
-      float up = clamp((q.y - corner.y - along * run.y) / max(2.0 * U.y, 1e-3), 0.0, 1.0);
-      vec3 glass = vec3(0.035, 0.05, 0.06);
-      if (kind == 2) alb = up > 0.48 ? paint : vec3(0.03);                        // the rider above the machine
-      else {
-        alb = paint;
-        if (up > 0.5 && up < 0.86) alb = glass;                                    // windows
-        if (up < 0.2) alb = vec3(0.02);                                            // wheels, and the dark under it
-      }
-      lit = sideSun;
+    // Its roof, windows and wheels are a pixel or two across: taken at four points in this pixel and averaged, so they
+    // stay still as it moves instead of flickering from pixel to pixel. Points outside it hardly count.
+    vec4 face = vec4(0.0);
+    float wsum = 0.0;
+    for (int k = 0; k < 4; k++) {
+      vec2 o = k == 0 ? vec2(0.125, 0.375) : k == 1 ? vec2(-0.375, 0.125) : k == 2 ? vec2(-0.125, -0.375) : vec2(0.375, -0.125);
+      vec2 qs = q + o;
+      float ws = max(boxEdge(qs, A, A, B, U), max(boxEdge(qs, B, A, B, U), boxEdge(qs, U, A, B, U))) <= 0.0 ? 1.0 : 0.02;
+      face += vehicleFace(qs, A, B, U, kind, paint, sideSun) * ws;
+      wsum += ws;
     }
+    face /= wsum;
+    vec3 alb = face.rgb;
+    float lit = face.a;
     vec3 here = uCamPos + rd * dist;
     vec3 Ts = transmittance(here.y, uSunDir.y);
     vec3 amb = skyLUT(vec3(0.0, 1.0, 0.0)) * PI * 0.5 + skyLUT(normalize(vec3(rd.x, 0.1, rd.z))) * PI * 0.25;
-    float sh = texelFetch(uShadow, ic, 0).r;      // the hills' shadow on the road under it
+    // The shadow on the road under it, one for the whole of it, read along its length. Not at its own pixels: there
+    // the map holds whatever lies behind it on the picture, often dappled forest beyond the road, and that pattern
+    // would slide across its roof as it moves.
+    ivec2 lim = ivec2(uRes) - 1;
+    vec2 foot = vA.xy - U;
+    float sh = (texelFetch(uShadow, clamp(ivec2(foot), ivec2(0), lim), 0).r
+              + texelFetch(uShadow, clamp(ivec2(foot + A * 0.6), ivec2(0), lim), 0).r
+              + texelFetch(uShadow, clamp(ivec2(foot - A * 0.6), ivec2(0), lim), 0).r) / 3.0;
     vec3 L = alb / PI * (amb + uSunE * Ts * lit * sh * (1.0 - 0.85 * uOvercast) + uMoonE * 0.3);
     float T = exp(-dist * (0.012 + 0.0084 * uValleyHaze * 0.3));
     vec3 skyH = skyLUT(normalize(vec3(rd.x, max(rd.y, 0.02), rd.z)));
@@ -248,58 +299,126 @@ void main() {
     float fog = volT();                           // cloud or mist between here and the road
     a *= fog;
 
-    // Headlights, the same for every kind of vehicle: one lamp on a motorcycle, a pair otherwise. Added to the picture
-    // as it is shown, so they read the same through the night's exposure.
+    // Its lamps: one of each on a motorcycle, a pair otherwise. Added to the picture as it is shown, so they read the
+    // same through the night's exposure. Whether a lamp is in sight is judged where the lamp is: its glow spreads over
+    // ground nearer than the vehicle, which must not cut it off, and a lamp behind a tree or the crest gives no glow.
     vec3 glow = vec3(0.0);
-    float lamp = vD.z;
-    vec2 at = A - U * 0.4;
-    // Whether the lamp is in sight is judged where the lamp is. Its glow spreads over ground nearer than the vehicle, which
-    // must not cut it off, and a lamp behind a tree or the crest gives no glow at all.
-    float lampT = lamp > 0.003 ? texelFetch(uG0, ivec2(vA.xy + at), 0).z : 0.0;
-    if (lamp > 0.003 && (lampT <= 0.0 || lampT >= dist - 0.012)) {
-      vec2 spread = kind == 2 ? vec2(0.0) : B * 0.8;
-      vec2 d1 = q - at - spread;
-      vec2 d2 = q - at + spread;
-      float r1 = dot(d1, d1);
-      float r2 = dot(d2, d2);
-      float core = exp(-r1 / 0.8);
-      float halo = exp(-r1 / 20.0);
-      if (kind != 2) {
-        core = max(core, exp(-r2 / 0.8));
-        halo = 0.5 * (halo + exp(-r2 / 20.0));
-      }
-      glow = vec3(1.0, 0.93, 0.78) * (core * 0.95 + halo * 0.2) * lamp * (0.25 + 0.75 * fog);
+    float lamp = vD.z;                           // headlights, by the way it faces
+    float tail = vE.x;                           // tail lights, brighter when braking
+    float beam = vE.y;                           // 1 main beam, 0 dipped
+    int blink = int(vE.z + 0.5);                 // indicators lit at this moment: 1 left, 2 right, 3 both
+    vec2 spread = kind == 2 ? vec2(0.0) : B * 0.8;
+    float seeThrough = 0.25 + 0.75 * fog;
+    // in daylight a lamp is a small point of colour: the glow round it belongs to the dark
+    float dark = uNight;
+    float haloBy = 0.08 + 0.92 * dark;
+    vec2 front = A - U * 0.4;
+    if (lamp > 0.003 && lampSeen(vA.xy + front, dist)) {
+      // main beam dazzles: a wider, brighter halo
+      float halo = mix(20.0, 44.0, beam);
+      float amt = mix(0.2, 0.45, beam);
+      float g = lampGlow(q - front - spread, 0.8, halo, amt);
+      if (kind != 2) g = 0.5 * (g + lampGlow(q - front + spread, 0.8, halo, amt)) + 0.5 * max(exp(-dot(q - front - spread, q - front - spread) / 0.8), exp(-dot(q - front + spread, q - front + spread) / 0.8));
+      glow += vec3(1.0, 0.93, 0.78) * g * lamp * (0.95 + 0.35 * beam) * seeThrough;
     }
+    vec2 back = -A - U * 0.45;
+    if (tail > 0.003 && lampSeen(vA.xy + back, dist)) {
+      // red, always on with the headlights; braking makes them brighter and their glow wider
+      float braking = vE.w;
+      float halo = mix(8.0, 16.0, braking * dark);
+      float amt = mix(0.22, 0.42, braking) * haloBy;
+      float g = lampGlow(q - back - spread * 0.95, 0.7, halo, amt);
+      if (kind != 2) g = max(g, lampGlow(q - back + spread * 0.95, 0.7, halo, amt));
+      glow += vec3(1.0, 0.06, 0.02) * g * tail * mix(0.55, 1.4, dark) * seeThrough;
+    }
+    if (blink > 0) {
+      // amber at the front and back corners of that side: B points to its right
+      float night = mix(0.35, 1.0, dark);
+      for (int side = 1; side <= 2; side++) {
+        if ((blink & side) == 0) continue;
+        vec2 sideV = (side == 2 ? B : -B) * (kind == 2 ? 1.6 : 0.95) - U * 0.4;
+        vec2 f1 = A * 0.95 + sideV;
+        vec2 b1 = -A * 0.95 + sideV;
+        float g = 0.0;
+        if (lampSeen(vA.xy + f1, dist)) g += lampGlow(q - f1, 0.45, 5.0, 0.12 * haloBy);
+        if (lampSeen(vA.xy + b1, dist)) g += lampGlow(q - b1, 0.45, 5.0, 0.12 * haloBy);
+        glow += vec3(1.0, 0.5, 0.06) * g * 0.75 * night * seeThrough;
+      }
+    }
+    // every glow fades out before the edge of the patch it is drawn on, so it never ends in a straight line
+    glow *= 1.0 - smoothstep(0.7, 1.0, max(abs(q.x) / vA.z, abs(q.y) / vA.w));
     if (a <= 0.002 && dot(glow, glow) < 1e-5) discard;
     fragColor = vec4(col * a + glow, a);
     return;
   }
 
-  // ---------------- chimney smoke ----------------
-  if (t > 0.0 && t < dist - 0.05) discard;   // behind a nearer slope
-  // local: x across, y from the chimney (0) to the top of the plume (1)
-  float yy = (vLocal.y + vA.w) / (2.0 * vA.w);
-  float xx = vLocal.x / vA.z;                // -1..1
-  float bend = vC.x;                         // crosswind lean (fraction of half width at the top)
-  float seed = vC.y;
-  float width0 = vC.z;                       // base width as fraction of half width
-  float cx = bend * yy * yy + 0.12 * sin(yy * 7.0 - uTime * 0.7 + seed * 40.0) * yy;
-  float wdt = width0 * (0.35 + 2.2 * yy);
-  float k = (xx - cx) / max(wdt, 1e-3);
-  float puff = noise2(vec2(xx * 3.0 + seed * 17.0, yy * 5.0 - uTime * 0.35)) * 0.5 + 0.5;
-  float dens = exp(-k * k) * pow(1.0 - yy, 1.6) * smoothstep(0.0, 0.06, yy) * (0.45 + 0.75 * puff);
-  a = clamp(dens * alpha, 0.0, 1.0);
-  if (a <= 0.003) discard;
-  vec3 amb = skyLUT(vec3(0.0, 1.0, 0.0)) * PI * 0.35 + skyLUT(normalize(vec3(rd.x, 0.1, rd.z))) * PI * 0.2;
-  vec3 here = uCamPos + rd * dist;
-  vec3 Ts = transmittance(here.y, uSunDir.y);
-  float ph = phaseHG(dot(rd, uSunDir), 0.6) * 4.0 * PI;
-  vec3 L = vec3(0.55, 0.57, 0.62) / PI * amb + vec3(0.6, 0.6, 0.62) * uSunE * Ts * ph * 0.05 * (1.0 - 0.85 * uOvercast);
-  L += uMoonE * 0.02;
-  float T = exp(-dist * (0.012 + 0.0084 * uValleyHaze * 0.3));
-  vec3 skyH = skyLUT(normalize(vec3(rd.x, max(rd.y, 0.02), rd.z)));
-  col = grade(L * T + skyH * (1.0 - T));
-  fragColor = vec4(col * a, a);
+  if (type == 7) {
+    // ---------------- the light a vehicle throws ahead of it ----------------
+    // Lights whatever the bake stored at this pixel, road or treetops or slope, by its own colour and the way it faces:
+    // brightest along the beam, falling off with distance, and none behind the lamp.
+    vec3 lampP = vC.xyz;
+    float range = vC.w;
+    vec3 fwd = vD.xyz;
+    float cone = vD.w;
+    float strength = alpha;
+    vec3 add = vec3(0.0);
+    if (t > 0.0) {
+      vec3 P = uCamPos + rd * t;
+      vec3 d = P - lampP;
+      float r = length(d);
+      vec3 l = d / max(r, 1e-6);
+      float ax = dot(l, fwd);
+      // brightest along its axis and softening all the way out to the edge of the cone, with no rim anywhere: the
+      // same outer angle as life.js uses for the patch it is drawn on
+      float outer = max(cone - 0.22, 0.35);
+      float across = smoothstep(outer, 1.0 - (1.0 - cone) * 0.3, ax);
+      float inBeam = across * across * (0.55 + 0.45 * across);
+      float rr = r / (range * 0.3);
+      float fall = (1.0 - smoothstep(range * 0.3, range, r)) / (1.0 + rr * rr);
+      vec4 g0 = texelFetch(uG0, ic, 0);
+      vec3 N = octDecodeY(g0.xy);
+      float nl = dot(N, -l);
+      float ndl = clamp(nl, 0.0, 1.0) * 0.75 + 0.25 * smoothstep(-0.6, 0.0, nl); // leaves catch it from any side
+      vec3 g1 = texelFetch(uG1, ic, 0).rgb;
+      vec3 alb = g1 * g1;
+      vec3 E = vec3(1.0, 0.88, 0.72) * strength * uHeadE * inBeam * fall * ndl;
+      add = gradeLamp(alb / PI * E);
+    }
+    // In rain, snow or mist the beam itself shows in the air, where the view passes closest to its axis
+    float haze = vE.x;
+    if (haze > 0.01) {
+      vec3 w0 = uCamPos - lampP;
+      float b = dot(rd, fwd);
+      float den = max(1.0 - b * b, 1e-5);
+      float u = clamp((dot(fwd, w0) - b * dot(rd, w0)) / den, 0.0, range * 0.7);
+      vec3 Q = lampP + fwd * u;
+      float along = dot(Q - uCamPos, rd);
+      float perp = length(uCamPos + rd * along - Q);
+      float radius = 0.0006 + u * sqrt(1.0 - cone * cone) / cone;
+      float air = exp(-(perp * perp) / (radius * radius)) * (1.0 - u / (range * 0.7));
+      if (t > 0.0 && along > t + 0.002) air = 0.0; // behind the ground seen here
+      add += vec3(1.0, 0.9, 0.76) * air * air * haze * strength * 0.16 * (0.2 + 0.8 * uNight);
+    }
+    add *= volT();
+    add *= 1.0 - smoothstep(0.75, 1.0, max(abs(vLocal.x) / vA.z, abs(vLocal.y) / vA.w)); // never a straight edge
+    if (dot(add, add) < 1e-7) discard;
+    fragColor = vec4(add, 0.0);
+    return;
+  }
+
+  // ---------------- a fire on the hills, by night ----------------
+  // The smoke itself, and the mist, are drawn in 3D by the volume pass (volume.js). This is the small orange glow where
+  // a burning field or a cooking fire burns, if that spot is in sight. kind 0: a house's fire · 2: a burning field.
+  int kind = int(vC.w + 0.5);
+  float fire = vD.x;
+  vec2 foot = vec2(0.0, -vA.w);
+  if (fire < 0.01 || uNight < 0.05 || !lampSeen(vA.xy + foot, dist)) discard;
+  vec2 q = vLocal - foot;
+  float r2 = dot(q, q);
+  vec3 glow = vec3(1.0, 0.42, 0.1) * (exp(-r2 / 3.0) + 0.22 * exp(-r2 / 40.0)) * fire * uNight * (kind == 2 ? 1.2 : 0.4);
+  glow *= alpha * volT() * (1.0 - smoothstep(0.7, 1.0, max(abs(vLocal.x) / vA.z, abs(vLocal.y) / vA.w)));
+  if (dot(glow, glow) < 1e-6) discard;
+  fragColor = vec4(glow, 0.0);
 }
 `;
 })();

@@ -1,6 +1,7 @@
 /*
  * Volumetrics (reduced resolution, temporally accumulated):
  *  • valley mist and weather fog — layered, drifting, lit by sun/moon, shadowed in valleys
+ *  • mist lifting off wet forest — billowing columns that rise from the canopy and spread into small clouds
  *  • cumulus / stratus cloud deck — 3D Perlin-Worley clouds with self-shadowing,
  *    powder effect and dual-lobe phase function; they pass in front of the peaks
  * Output: rgb = in-scattered light (pre-exposed), a = transmittance.
@@ -90,6 +91,13 @@ uniform float uAirExt;
 uniform float uKeyIsSun;
 uniform vec3 uDetailDrift;
 uniform int uZero; // always 0: stops the Direct3D compiler from unrolling these loops (see chunks.js)
+uniform int uPlumes;       // mist off the forest and smoke from houses and fires now, nearest first (life.js)
+uniform vec4 uPlumeA[16];  // its foot (km, scene axes), its height (km)
+uniform vec4 uPlumeB[16];  // its radius at the foot (km), how much of it there is, where the wind has carried its top (km)
+uniform vec4 uPlumeC[16];  // its own noise, its foot on the picture (px), which (0 mist, 1 house, 2 field) + half its fire
+uniform int uPlumeSteps;
+uniform float uTime;       // s, wrapped at 2400
+uniform float uHeadE;      // how bright a lamp's light is against this exposure (renderer.js): the glow of a fire
 out vec4 o;
 
 vec2 slab(float y0, float ry, float a, float b) {
@@ -154,6 +162,72 @@ float mistDensity(vec3 p) {
   return d;
 }
 
+// Mist lifting off a wet forest, as it looks from a hill: small clouds of it over the canopy, thickest a little above
+// the trees and settling into the dips below, in clumps of about 100 m with torn edges, drawn out downwind as it rises
+// (B.zw: where the wind has carried its top). Built as the cloud deck is: the billow noise shows only where it rises
+// above what the envelope allows, so its heart is whole and its edges break into fragments. The billows drift with the
+// valley mist (uMistWind); their scales times 5000 km are whole numbers of noise tiles, so that offset's wrap never shows.
+float plumeDensity(vec3 p, vec4 A, vec4 B, float seed) {
+  float h = (p.y - A.y) / A.w;
+  if (h < -0.3 || h > 1.0) return 0.0;
+  float hc = max(h, 0.0);
+  vec2 rel = p.xz - A.xz - B.zw * hc * hc;
+  float wl = length(B.zw);
+  vec2 wd = wl > 1e-4 ? B.zw / wl : vec2(1.0, 0.0);
+  vec2 d = vec2(dot(rel, wd) / (1.0 + 0.7 * hc), dot(rel, vec2(-wd.y, wd.x))) / (B.x * (1.0 + 0.6 * hc));
+  float env = exp(-dot(d, d) * 1.5) * smoothstep(-0.3, 0.05, h) * (1.0 - smoothstep(0.35, 1.0, h));
+  if (env < 0.04) return 0.0;
+  vec3 q = (p + uMistWind) * 2.5 + seed;
+  float c = clamp(remap(textureLod(uNoise3D, q, 0.0).r, 1.0 - env * 0.78, 1.0, 0.0, 1.0), 0.0, 1.0);
+  if (c <= 0.0) return 0.0;
+  float w = textureLod(uNoise3D, q * 3.0 + 0.2, 0.0).g;
+  c = clamp(remap(c, w * 0.55, 1.0, 0.0, 1.0), 0.0, 1.0);
+  return c * (0.5 + 0.5 * env) * 1.6;
+}
+
+// How wide smoke is at this height (h 0..1 of its rise), as a multiple of its radius at the foot: it widens as it draws
+// in air, and spreads out flat where it stops rising. field: a burning field's big plume (1) or a house's (0).
+float smokeRadius(float hc, float field) {
+  return mix(0.35, 0.6, field) + 2.2 * hc + mix(2.6, 1.8, field) * smoothstep(mix(0.45, 0.65, field), 1.0, hc);
+}
+
+// Smoke from a house or a burning field: a column rising from its fire, widening and thinning as it climbs, bent over
+// downwind (its top carried B.zw, along the curve a plume in a cross wind takes) and spreading where it stops rising.
+// Seen across, a bent plume's slice is drawn out along the wind, as a slanting tube's is. Billows the size of the
+// column pour up through it: whole low down, scattered puffs and wisps higher up. The noise scales times 5000 km are
+// whole numbers, as for the mist, and the climb is a whole number of noise tiles every 2400 s, so neither wrap shows.
+float smokeDensity(vec3 p, vec4 A, vec4 B, float seed, float field) {
+  float h = (p.y - A.y) / A.w;
+  if (h < -0.05 || h > 1.0) return 0.0;
+  float hc = max(h, 0.0);
+  float rk = smokeRadius(hc, field);
+  // it never rises quite straight: its axis wanders a little, more as it climbs, and the wander moves up it (periods
+  // of 100 and 75 s, whole numbers of them in 2400 s)
+  float ph = seed + hc * 7.0;
+  vec2 wander = vec2(sin(ph - uTime * 0.0628319), cos(ph * 0.8 - uTime * 0.0837758)) * B.x * rk * 0.35 * hc;
+  vec2 rel = p.xz - A.xz - B.zw * hc * sqrt(hc) - wander;
+  float wl = length(B.zw);
+  vec2 wd = wl > 1e-4 ? B.zw / wl : vec2(1.0, 0.0);
+  float slope = 1.5 * wl / A.w * sqrt(hc);      // how far it goes downwind per km it climbs, at this height
+  vec2 d = vec2(dot(rel, wd) / sqrt(1.0 + slope * slope), dot(rel, vec2(-wd.y, wd.x))) / (B.x * rk);
+  float env = exp(-dot(d, d) * 2.0) * smoothstep(-0.05, 0.03, h) * (1.0 - smoothstep(0.7, 1.0, h));
+  if (env < 0.04) return 0.0;
+  float s = mix(8.0, 4.0, field);                 // billows of about 30 m in a house's smoke, 60 m in a field's
+  vec3 q = (p + uMistWind) * s + seed;
+  q.y -= uTime * mix(0.03, 0.02, field);          // climbing, about 4 m/s
+  // a field's smoke pours up whole; a village's is a loose drift of wisps from many hearths, never a tube
+  float cover = field > 0.5 ? mix(0.82, 0.55, hc) : mix(0.62, 0.4, hc);
+  float c = clamp(remap(textureLod(uNoise3D, q, 0.0).r, 1.0 - env * cover, 1.0, 0.0, 1.0), 0.0, 1.0);
+  if (c <= 0.0) return 0.0;
+  float w = textureLod(uNoise3D, q * 2.7 + 0.4, 0.0).g;
+  c = clamp(remap(c, w * mix(0.35, 0.55, hc), 1.0, 0.0, 1.0), 0.0, 1.0);
+  return c * (mix(0.35, 0.6, field) / rk) * 2.0;  // thinning as it spreads
+}
+
+float plumeD(vec3 p, vec4 A, vec4 B, float seed, int kind) {
+  return kind == 0 ? plumeDensity(p, A, B, seed) : smokeDensity(p, A, B, seed, kind == 2 ? 1.0 : 0.0);
+}
+
 void main() {
   ivec2 vc = ivec2(gl_FragCoord.xy);
   vec2 fcf = (vec2(vc) + 0.5) * (uRes / uVolRes);
@@ -178,12 +252,9 @@ void main() {
   vec3 L = vec3(0.0);
   float T = 1.0;
 
-  // ---------------- mist & fog ----------------
-  if (uMist > 0.005 || uFog > 0.005) {
-    float top = max(uMistTop, uFog > 0.005 ? uFogTop : 0.0);
-    vec2 seg = slab(uCamPos.y, rd.y, uMistBottom - 1.0, top);
-    seg.y = min(seg.y, min(tEnd, 75.0));
-    if (seg.y > seg.x) {
+  // ---------------- mist & fog, and mist lifting off the forest ----------------
+  if (uPlumes > 0 || uMist > 0.005 || uFog > 0.005) {
+    {
       float shadowS = t < 0.0 ? 1.0 : texelFetch(uShadow, fci, 0).r;
       float phS = mix(phaseHG(cosS, 0.55), 1.0 / (4.0 * PI), 0.4) * 4.0 * PI;
       float phM = mix(phaseHG(cosM, 0.55), 1.0 / (4.0 * PI), 0.4) * 4.0 * PI;
@@ -195,9 +266,99 @@ void main() {
       vec3 mistHor = mix(skyHor, vec3(dot(skyHor, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.88, 0.93, 1.0), natural);
       // under dark storm cloud the mist is in the same gloom, so it must not glow brighter than the sky
       vec3 amb = mix(skyZen * 0.75 + mistHor * 0.55, greyAmb, uOvercast) * mix(1.0, 0.5, uCloudDark);
+
+      // Mist off the forest and smoke from houses and fires first: they rise from slopes a few km off, in front of the
+      // valley mist further out. Each is marched only inside the box it can fill, and only where the ground behind
+      // does not hide it.
+      vec3 inv = 1.0 / mix(rd, vec3(1e-6), lessThan(abs(rd), vec3(1e-6)));
+      // By night the eye's adaptation lifts the scene, and this close mist would glow white against the black forest;
+      // moonlit mist reads as a dim grey
+      float nightDim = mix(0.35, 1.0, smoothstep(-0.2, 0.02, uSunDir.y));
+      for (int i = uZero; i < 16; i++) {
+        if (i >= uPlumes || T < 0.02) break;
+        vec4 A = uPlumeA[i];
+        vec4 B = uPlumeB[i];
+        vec4 C = uPlumeC[i];
+        int kind = int(C.w);                        // 0 mist, 1 smoke from a house, 2 a burning field
+        float fire = fract(C.w) * 2.0;              // the glow of its fire, by night
+        float field = kind == 2 ? 1.0 : 0.0;
+        float wl = length(B.zw);
+        float stretchTop = sqrt(1.0 + (1.5 * wl / max(A.w, 1e-3)) * (1.5 * wl / max(A.w, 1e-3)));
+        float rMax = kind == 0 ? B.x * 4.0 : B.x * smokeRadius(1.0, field) * stretchTop * 1.3;
+        vec3 lo = vec3(min(A.x, A.x + B.z) - rMax, A.y - (kind == 0 ? 0.3 : 0.05) * A.w, min(A.z, A.z + B.w) - rMax);
+        vec3 hi = vec3(max(A.x, A.x + B.z) + rMax, A.y + A.w, max(A.z, A.z + B.w) + rMax);
+        vec3 ta = (lo - uCamPos) * inv;
+        vec3 tb = (hi - uCamPos) * inv;
+        vec3 tn = min(ta, tb);
+        vec3 tf = max(ta, tb);
+        float a0 = max(max(tn.x, tn.y), max(tn.z, 0.0));
+        float b0 = min(min(tf.x, tf.y), min(tf.z, tEnd));
+        if (b0 <= a0) continue;
+        // Nearly all of it lies close round its axis: march only through that, so every step counts and it is smooth
+        // instead of grainy. Where this ray passes closest to the axis, taken at the foot and again where the wind has
+        // carried the axis at that height.
+        vec2 rxz = rd.xz;
+        float rr = max(dot(rxz, rxz), 1e-6);
+        float sc = dot(A.xz - uCamPos.xz, rxz) / rr;
+        float hs = clamp((uCamPos.y + rd.y * sc - A.y) / A.w, 0.0, 1.0);
+        vec2 ax = A.xz + B.zw * (kind == 0 ? hs * hs : hs * sqrt(hs));
+        sc = dot(ax - uCamPos.xz, rxz) / rr;
+        hs = clamp((uCamPos.y + rd.y * sc - A.y) / A.w, 0.0, 1.0);
+        ax = A.xz + B.zw * (kind == 0 ? hs * hs : hs * sqrt(hs));
+        // how far out it reaches at that height, along its long axis (downwind)
+        float slope = 1.5 * wl / max(A.w, 1e-3) * sqrt(hs);
+        float rad = kind == 0 ? B.x * (1.0 + 0.6 * hs) * (1.0 + 0.7 * hs) * 1.4
+                              : B.x * smokeRadius(hs, field) * sqrt(1.0 + slope * slope) * 1.3;
+        vec2 off = uCamPos.xz + rxz * sc - ax;
+        float miss = rad * rad - dot(off, off);
+        if (miss <= 0.0) continue;
+        float chord = sqrt(miss / rr);
+        a0 = max(a0, sc - chord);
+        b0 = min(b0, sc + chord);
+        if (b0 <= a0) continue;
+        // in the hills' shadow where it rises from, out of it higher up
+        float footSh = texelFetch(uShadow, clamp(ivec2(C.yz), ivec2(0), ivec2(uRes) - 1), 0).r;
+        // per km. Mist: about two thirds of the light through its heart, little at its edges. A house's smoke is a thin
+        // grey thread; a field's is thick and brown low down, paler and thinner as it spreads.
+        float sigma = B.y * (kind == 0 ? 4.5 : kind == 1 ? 26.0 : 40.0);
+        // how far it shades itself: steps towards the light in proportion to its size there
+        float ls = kind == 0 ? 0.05 : rad * 0.3;
+        float dtp = (b0 - a0) / float(uPlumeSteps);
+        for (int k = uZero; k < 16; k++) {
+          if (k >= uPlumeSteps || T < 0.02) break;
+          float s = a0 + (float(k) + jit) * dtp;
+          vec3 p = uCamPos + rd * s;
+          float d = plumeD(p, A, B, C.x, kind);
+          if (d < 1e-3) continue;
+          // light reaching it through its own billows: bright tops and sunward sides, grey underneath; and the sky's
+          // light, which reaches its lower parts through what lies above them
+          float od = plumeD(p + uLightMarchDir * ls * 1.5, A, B, C.x, kind) * ls * 3.0 * sigma;
+          float odUp = plumeD(p + vec3(0.0, ls * 2.0, 0.0), A, B, C.x, kind) * ls * 2.0 * sigma;
+          float Tl = (exp(-od) + 0.35 * exp(-od * 0.3)) / 1.35;
+          float hh = clamp((p.y - A.y) / A.w, 0.0, 1.0);
+          float sh = mix(footSh, 1.0, smoothstep(0.15, 0.8, hh));
+          vec3 direct = uSunE * transmittance(p.y, uSunDir.y) * phS * 0.2 * (uKeyIsSun > 0.5 ? sh : 1.0)
+                      + uMoonE * transmittance(p.y, uMoonDir.y) * phM * 0.08 * (uKeyIsSun > 0.5 ? 1.0 : sh);
+          // what it is made of: mist white; wood smoke a little blue; a field's smoke brown where it is thick
+          vec3 alb = kind == 0 ? vec3(0.92) : kind == 1 ? vec3(0.6, 0.63, 0.7)
+                   : mix(vec3(0.34, 0.31, 0.28), vec3(0.62, 0.61, 0.6), smoothstep(0.05, 0.7, hh));
+          vec3 Sc = (direct * Tl * underCloud + amb * (0.55 + 0.45 * hh) * mix(0.45, 1.0, exp(-odUp))) * alb;
+          // lit from below by its fire, only just above it
+          Sc += vec3(1.0, 0.45, 0.15) * uHeadE * fire * (kind == 2 ? 0.08 : 0.02) * exp(-hh * 14.0);
+          Sc = mix(Sc, mistHor, (1.0 - exp(-s * uAirExt)) * 0.75) * nightDim;
+          float Ti = exp(-d * sigma * dtp);
+          L += T * Sc * (1.0 - Ti);
+          T *= Ti;
+        }
+      }
+
+      float top = max(uMistTop, uFog > 0.005 ? uFogTop : 0.0);
+      vec2 seg = slab(uCamPos.y, rd.y, uMistBottom - 1.0, top);
+      seg.y = min(seg.y, min(tEnd, 75.0));
+      if (uMist <= 0.005 && uFog <= 0.005) seg = vec2(0.0);
       float dt = (seg.y - seg.x) / float(uMistSteps);
       for (int i = 0; i < 16; i++) {
-        if (i >= uMistSteps) break;
+        if (i >= uMistSteps || seg.y <= seg.x) break;
         float s = seg.x + (float(i) + jit) * dt;
         vec3 p = uCamPos + rd * s;
         float sig = mistDensity(p);

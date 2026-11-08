@@ -1441,6 +1441,17 @@ function testLife(hour = 12, over = {}) {
   return { LE, life, road, state, view };
 }
 
+/** What life wrote for the picture, one entry per sprite. */
+function sprites(life) {
+  const F = life.constructor.FLOATS;
+  const out = [];
+  for (let k = 0; k < life.count; k++) {
+    const f = Array.from(life.data.slice(k * F, k * F + F));
+    out.push({ type: f[5], f });
+  }
+  return out;
+}
+
 test('the road is smooth, evenly spaced, and starts and ends outside the widest view', () => {
   const { line, road } = testRoad();
   const n = line.length / 2;
@@ -1487,9 +1498,15 @@ test('headlights show only towards the viewer, for every kind of vehicle, and ar
   assert.equal(R.headlight(0.4), 0, 'turned well away');
   assert.equal(R.headlight(0), 0, 'across the view');
   assert.equal(R.headlight(-1), 0, 'driving away');
+  // tail lights: from behind, over a wider angle, and never from the front
+  near(R.taillight(-1), 1, 1e-6, 'straight from behind');
+  assert.ok(R.taillight(-0.4) > 0.99, 'from behind and to the side');
+  assert.ok(R.taillight(0) > 0.5, 'most of it across the view: rear lamps wrap round the corners');
+  assert.equal(R.taillight(0.3), 0, 'none from ahead');
+  assert.equal(R.taillight(0.8), 0, 'from the front');
   // one rule: nothing in the vehicle's own data decides it
   const life = readFileSync(new URL('engine/life.js', SRC), 'utf8');
-  assert.ok(life.includes('const lamp = lights * R.headlight(facing);'), 'the same call for all kinds');
+  assert.ok(life.includes('const lamp = lampOn * R.headlight(facing);'), 'the same call for all kinds');
   assert.equal((life.match(/headlight\(/g) || []).length, 1, 'and only that one');
 });
 
@@ -1516,15 +1533,18 @@ test('vehicles pushed to the picture carry the headlight by the way they face', 
   assert.ok(toward > 0, 'the road has a stretch that heads towards the viewer');
   assert.ok(across > 0, 'and one that runs across the view');
   for (const kind of ['bus', 'jeep', 'motorcycle']) {
-    const lampAt = (i, dir) => {
+    const at = (i, dir) => {
       life.count = 0;
       life._pushVehicle(life._newVehicle(kind, dir, i * road.step), 1);
-      assert.equal(life.count, 1, kind + ' is in view');
-      return life.data[14];
+      const v = sprites(life).find((x) => x.type === 6);
+      assert.ok(v, kind + ' is in view');
+      return v;
     };
-    assert.ok(lampAt(toward, 1) > 0.5, kind + ' heading towards the viewer shows its light');
-    assert.equal(lampAt(toward, -1), 0, kind + ' driving away shows none');
-    assert.equal(lampAt(across, 1), 0, kind + ' going across the view shows none');
+    assert.ok(at(toward, 1).f[14] > 0.5, kind + ' heading towards the viewer shows its light');
+    assert.equal(at(toward, -1).f[14], 0, kind + ' driving away shows none');
+    assert.equal(at(across, 1).f[14], 0, kind + ' going across the view shows none');
+    assert.ok(at(toward, -1).f[16] > 0.3, kind + ' driving away shows its tail lights');
+    assert.equal(at(toward, 1).f[16], 0, kind + ' heading towards the viewer shows none');
   }
 });
 
@@ -1688,6 +1708,389 @@ test('the four corners are in the same order in the app, the page and Lively, an
   }
 });
 
+// ---- what rises from the hills: wood smoke, mist off the forest, a burning field --------------------------------------
+/** Life with places for smoke in the houses and on the forest, all in view, at this hour and weather. */
+function hills(hour, weather = {}) {
+  const h = testLife(hour, weather);
+  h.life._view = h.view;
+  h.life.state = h.state;
+  h.life.birds = false;
+  const at = (azDeg, km) => ({ x: Math.sin((azDeg * Math.PI) / 180) * km, y: h.view.camY - 0.4, z: Math.cos((azDeg * Math.PI) / 180) * km });
+  h.life.setSmokeSources([-40, -20, 0, 20, 40, 55, -55, 10].map((a, i) => at(a, 3 + i * 0.4)));
+  h.life.setForestSources([-50, -35, -25, -10, 5, 15, 30, 45, 60, -60].map((a, i) => at(a, 2 + i * 0.6)));
+  h.kinds = () => h.life.smoke.reduce((n, s) => ((n[s.kind] = (n[s.kind] || 0) + 1), n), {});
+  h.run = (seconds, each) => {
+    for (let t = 0; t < seconds; t += 1) {
+      h.life.update(1, h.state, h.view);
+      if (each) each(t);
+    }
+  };
+  return h;
+}
+
+test('mist lifts off the forest when the air is humid or it has rained, one wisp after another, and not in dry air', () => {
+  const humid = hills(8, { mist: 0.9, wet: 0.6 });
+  humid.life._nextFire = 1e9;
+  let firstAt = -1;
+  let most = 0;
+  humid.run(400, (t) => {
+    const n = humid.kinds()[1] || 0;
+    if (n > 0 && firstAt < 0) firstAt = t;
+    most = Math.max(most, n);
+  });
+  assert.ok(firstAt >= 0 && firstAt < 40, 'the first wisp soon: ' + firstAt);
+  assert.ok(most >= 4, 'several over the slopes: ' + most);
+  // they come and go: after their time each one dissolves and others rise in its place
+  const before = humid.life.smoke.filter((s) => s.kind === 1);
+  humid.run(1200);
+  const after = humid.life.smoke.filter((s) => s.kind === 1);
+  assert.ok(!before.some((s) => after.includes(s)), 'the first ones have dissolved');
+  assert.ok(after.length >= 3, 'and others have risen: ' + after.length);
+  const dry = hills(13, { mist: 0.1, wet: 0 });
+  dry.life._nextFire = 1e9;
+  dry.run(300);
+  assert.equal(dry.kinds()[1] || 0, 0, 'none in dry air');
+  const heavy = hills(8, { mist: 0.9, wet: 1, rain: 0.95 });
+  heavy.life._nextFire = 1e9;
+  heavy.run(300);
+  assert.equal(heavy.kinds()[1] || 0, 0, 'none in a downpour: it would not be seen');
+});
+
+test('village smoke rises through the day, most at cooking times, and a cooking fire glows at its foot after dark', () => {
+  const morning = hills(10, { mist: 0.2 });
+  morning.life._nextFire = 1e9;
+  morning.run(200);
+  const midMorning = morning.kinds()[0] || 0;
+  assert.ok(midMorning >= 1, 'some smoke outside cooking times too: ' + midMorning);
+  const cooking = hills(18, { mist: 0.2 });
+  cooking.life._nextFire = 1e9;
+  cooking.run(200);
+  assert.ok((cooking.kinds()[0] || 0) > midMorning, 'more at cooking time');
+  const dusk = hills(19, { mist: 0.2 });
+  dusk.state.astro.sunAltDeg = -10;
+  dusk.life._nextFire = 1e9;
+  dusk.run(200);
+  const lit = dusk.life.smoke.filter((s) => s.kind === 0);
+  assert.ok(lit.length && lit.every((s) => s.fire > 0.1), 'cooking fires glow after dark');
+});
+
+test('now and then a field burns on a hill: a tall plume, glowing by night, and put out by rain', () => {
+  const h = hills(14, { mist: 0.1, wet: 0 });
+  h.life._nextFire = 5;
+  let seen = null;
+  for (let tries = 0; tries < 20 && !seen; tries++) {
+    h.run(10);
+    seen = h.life.smoke.find((s) => s.kind === 2);
+    if (!seen) h.life._nextFire = 1;
+  }
+  assert.ok(seen, 'a fire started');
+  assert.ok(seen.rise >= 0.45 && seen.fire === 1, 'tall, with a fire at its foot');
+  assert.equal(h.life.smoke.filter((s) => s.kind === 2).length, 1, 'one at a time');
+  // drawn in 3D as smoke of its own kind, with its fire, and the glow where it burns as a small picture
+  h.life._write(h.state);
+  const codes = Array.from({ length: h.life.plumeCount }, (_, i) => h.life.plumeC[i * 4 + 3]);
+  assert.ok(codes.some((c) => Math.floor(c) === 2 && Math.abs((c % 1) * 2 - 1) < 1e-6), 'the volume pass is told it is a burning field, on fire: ' + codes);
+  const glow = sprites(h.life).find((x) => x.type === 5 && x.f[11] === 2);
+  assert.ok(glow && glow.f[12] === 1 && glow.f[2] <= 30, 'and a small patch for the glow of its fire');
+  h.state.weather.rain = 0.6;
+  h.run(400);
+  assert.ok(!h.life.smoke.some((s) => s.kind === 2), 'rain puts it out');
+});
+
+test('mist off the forest is drawn in 3D: low patches for the volume pass, nearest first, carried downwind, no pictures', () => {
+  const h = hills(8, { mist: 0.9, wet: 0.6 });
+  h.life._nextFire = 1e9;
+  const toward = 1; // radians from the view's axis
+  h.state.windVel = [(Math.sin(toward) * 7) / 3600, 0, (Math.cos(toward) * 7) / 3600];
+  h.life.summon('mist');
+  h.run(120);
+  h.life._write(h.state);
+  const L = h.life;
+  const isMist = (i) => L.plumeC[i * 4 + 3] === 0;
+  const mists = Array.from({ length: L.plumeCount }, (_, i) => i).filter(isMist);
+  assert.ok(mists.length >= 3 && mists.length <= 8 && L.plumeCount <= 16, 'patches: ' + mists.length + ' of ' + L.plumeCount);
+  assert.ok(!sprites(L).some((x) => x.type === 5 && x.f[11] === 1), 'no flat pictures of mist');
+  let last = 0;
+  for (let i = 0; i < L.plumeCount; i++) {
+    const [x, y, z, H] = L.plumeA.slice(i * 4, i * 4 + 4);
+    const [r, amt, sx, sz] = L.plumeB.slice(i * 4, i * 4 + 4);
+    const d = Math.hypot(x, y - h.view.camY, z);
+    assert.ok(d >= last - 0.02, 'nearest first'); // (mist's foot is set 15 m into the canopy)
+    last = d;
+    if (!isMist(i)) continue;
+    assert.ok(H > 0.03 && H <= 0.33, 'height ' + H);
+    assert.ok(r >= 0.15 && r <= 0.35, 'radius ' + r);
+    assert.ok(2 * r > H, 'wider than it is tall, as mist lies on a forest: ' + r + ', ' + H);
+    assert.ok(amt > 0 && amt <= 1, 'amount ' + amt);
+    assert.ok(sx * Math.sin(toward) + sz * Math.cos(toward) > 0, 'its top is carried downwind');
+    const [, fx, fy] = L.plumeC.slice(i * 4, i * 4 + 4);
+    assert.ok(Number.isFinite(fx) && Number.isFinite(fy), 'its foot on the picture');
+  }
+  // it forms low over the canopy, then rises: one place on the forest, so the one column is that one
+  const one = hills(8, { mist: 0.9, wet: 0.6 });
+  one.life._nextFire = 1e9;
+  one.life.setForestSources([one.life.forestSources[4]]);
+  one.life.villageSmoke = false; // smoke is drawn the same way: only the mist here
+  one.life.summon('mist');
+  for (const m of one.life.smoke) m.age = 0; // summoned ones are put up part way through their lives
+  one.life._write(one.state);
+  assert.equal(one.life.plumeCount, 1);
+  const low = one.life.plumeA[3];
+  one.run(200);
+  one.life._write(one.state);
+  assert.equal(one.life.plumeCount, 1);
+  assert.ok(one.life.plumeA[3] > low * 2.2, 'starts low and rises: ' + low + ' then ' + one.life.plumeA[3]);
+  h.life.enabled = false;
+  h.run(400);
+  h.life._write(h.state);
+  assert.equal(h.life.plumeCount, 0, 'gone when it has dissolved');
+});
+
+test('smoke is drawn in 3D and leans the way the weather blows, and a field fire is lit a few km off where it shows', () => {
+  for (const toward of [Math.PI / 2, -Math.PI / 2, 0, 2.5]) {
+    const h = hills(13, { mist: 0.1, wet: 0 });
+    h.life._nextFire = 1e9;
+    h.state.windVel = [(Math.sin(toward) * 12) / 3600, 0, (Math.cos(toward) * 12) / 3600];
+    h.life.summon('smoke');
+    h.life.summon('fire');
+    h.life._write(h.state);
+    const L = h.life;
+    let smoke = 0;
+    for (let i = 0; i < L.plumeCount; i++) {
+      const code = Math.floor(L.plumeC[i * 4 + 3]);
+      if (code === 0) continue;
+      smoke++;
+      const H = L.plumeA[i * 4 + 3];
+      const [r, amt, sx, sz] = L.plumeB.slice(i * 4, i * 4 + 4);
+      assert.ok(sx * Math.sin(toward) + sz * Math.cos(toward) > 0.5 * H, 'its top carried downwind: ' + [toward, sx, sz, H]);
+      assert.ok(r > 0.01 && r <= 0.1 && amt > 0 && H > 0.03, 'a column: ' + [r, amt, H]);
+    }
+    assert.ok(smoke >= 2, 'houses and the field: ' + smoke);
+    assert.ok(!sprites(L).some((x) => x.type === 5 && x.f[2] > 30), 'no flat pictures of smoke');
+  }
+  // the fire: on a slope 3 to 8 km off whenever there is forest there
+  for (let i = 0; i < 20; i++) {
+    const h = hills(13, { mist: 0.1, wet: 0 });
+    const near = h.life.forestSources.some((s) => {
+      const d = Math.hypot(s.x, s.y - h.view.camY, s.z);
+      return d > 3 && d < 8;
+    });
+    h.life.summon('fire');
+    const f = h.life.smoke.find((s) => s.kind === 2);
+    assert.ok(f, 'a fire');
+    const d = Math.hypot(f.src.x, f.src.y - h.view.camY, f.src.z);
+    if (near) assert.ok(d > 3 && d < 8, 'a few km off: ' + d);
+  }
+});
+
+test('mist, smoke and a fire put up from the debug panel stay in dry air for their time, then go', () => {
+  const h = hills(13, { mist: 0.1, wet: 0 });
+  h.life._nextFire = 1e9;
+  h.life.summon('mist');
+  h.life.summon('smoke');
+  for (const s of h.life.smoke) s.age = 0;
+  const kinds = h.kinds();
+  assert.ok((kinds[1] || 0) >= 3 && (kinds[0] || 0) >= 1, 'put up: ' + JSON.stringify(kinds));
+  h.run(60);
+  const still = h.kinds();
+  assert.equal(still[1] || 0, kinds[1], 'the mist is not taken away by the dry air');
+  assert.ok((still[0] || 0) >= kinds[0], 'nor the smoke by the hour');
+  h.life._write(h.state);
+  assert.ok(h.life.plumeCount >= 3, 'and the mist is drawn');
+  h.run(800);
+  assert.equal(h.kinds()[1] || 0, 0, 'gone at the end of its time');
+});
+
+test('mist, smoke and fire all go when life is turned off', () => {
+  const h = hills(8, { mist: 0.9, wet: 0.6 });
+  h.life.summon('mist');
+  h.life.summon('fire');
+  assert.ok((h.kinds()[1] || 0) > 0 && (h.kinds()[2] || 0) === 1, 'summoned for tests');
+  h.life.enabled = false;
+  h.run(400);
+  assert.equal(h.life.smoke.length, 0);
+});
+
+test('everything in the scene can be turned off, from the address, the app and Lively, and the scene follows', () => {
+  const on = load(['config.js']).LE.config;
+  for (const k of ['mist', 'smoke', 'fires', 'lights', 'shootingStars', 'road', 'birds', 'leaves']) assert.equal(on[k], true, k + ' on to start with');
+  assert.equal(on.render.tree, true);
+  assert.equal(on.ui.showPanel, true);
+  const off = load(['config.js'], { search: '?mist=0&smoke=0&fires=0&lights=0&stars=0&tree=0&panel=0' }).LE.config;
+  for (const k of ['mist', 'smoke', 'fires', 'lights', 'shootingStars']) assert.equal(off[k], false, k + ' off from the address');
+  assert.equal(off.render.tree, false);
+  assert.equal(off.ui.showPanel, false);
+
+  // from the app: each switch passed on once, on a change, under Lively's name for it
+  const a = load(['config.js', 'services/host.js'], { search: '?host=1' });
+  a.ctx.document.createElement = () => ({ remove() {} });
+  a.ctx.document.head = { appendChild: (x) => x.onload() };
+  const calls = [];
+  a.ctx.livelyPropertyListener = (name, v) => calls.push([name, v]);
+  const all = {
+    quality: 'auto', road: true, traffic: 'normal', birds: true, leaves: true, tree: true, mist: true, smoke: true, fires: true,
+    lights: true, stars: true, panel: true, corner: 'right-bottom', panelSize: 'medium',
+  };
+  a.ctx.leHostState('live', all);
+  a.tick();
+  assert.deepEqual(calls, []);
+  a.ctx.leHostState('live', { ...all, tree: false, mist: false, smoke: false, fires: false, lights: false, stars: false, panel: false });
+  a.tick();
+  const names = calls.map((c) => c[0]).sort();
+  assert.deepEqual(names, ['fires', 'lights', 'mist', 'showPanel', 'smoke', 'stars', 'tree']);
+  assert.ok(calls.every((c) => c[1] === false));
+
+  // Lively offers each one, on to start with, and the page knows each name
+  const read = (f) => readFileSync(new URL(f, new URL('../', import.meta.url)), 'utf8');
+  const lively = JSON.parse(read('LivelyProperties.json'));
+  const main = read('src/main.js');
+  for (const k of ['tree', 'mist', 'smoke', 'fires', 'lights', 'stars', 'birds', 'leaves', 'road', 'showPanel']) {
+    assert.equal(lively[k] && lively[k].type, 'checkbox', 'Lively has ' + k);
+    assert.equal(lively[k].value, true, k + ' on in Lively');
+    assert.ok(main.includes(`case '${k}':`), 'main.js handles ' + k);
+  }
+  // the app keeps each one, and passes it to the page at start and while running
+  const cs = read('host/LivingEarthHost.cs');
+  for (const k of ['tree', 'mist', 'smoke', 'fires', 'lights', 'stars', 'panel']) {
+    assert.ok(cs.includes(`"${k}="`), 'saved: ' + k);
+    assert.ok(cs.includes(`TryGetValue("${k}"`), 'read back: ' + k);
+    assert.ok(cs.includes(`"&${k}=0"`), 'in the address: ' + k);
+    assert.ok(cs.includes(`", ${k}: "`), 'in state.js: ' + k);
+  }
+  assert.ok(read('src/engine/renderer.js').includes('this.cfg.lights === false ? 0'), 'village lights off');
+
+  // life follows: nothing of a kind that is off, not even from the test panel
+  const h = hills(8, { mist: 0.9, wet: 0.6 });
+  h.life.mist = false;
+  h.life.villageSmoke = false;
+  h.life.fires = false;
+  h.life.shootingStars = false;
+  for (const k of ['mist', 'smoke', 'fire', 'meteor', 'satellite']) h.life.summon(k);
+  assert.equal(h.life.smoke.length, 0, 'nothing put up');
+  assert.equal(h.life.meteors.length + h.life.sats.length, 0, 'no meteor or satellite');
+  h.life._nextFire = 1;
+  h.run(300);
+  assert.equal(h.life.smoke.length, 0, 'nothing rises of itself');
+  // turning one off while it is up: it dissolves
+  h.life.mist = true;
+  h.life.summon('mist');
+  assert.ok(h.life.smoke.length > 0);
+  h.life.mist = false;
+  h.run(200);
+  assert.equal(h.life.smoke.length, 0, 'what was up has dissolved');
+  h.life._write(h.state);
+  assert.equal(h.life.plumeCount, 0);
+});
+
+test('how much traffic: light, normal or busy, from the address and from the app, and the road holds that much', () => {
+  assert.equal(load(['config.js']).LE.config.traffic, 'normal');
+  for (const t of ['light', 'normal', 'busy']) assert.equal(load(['config.js'], { search: `?traffic=${t}` }).LE.config.traffic, t);
+  assert.equal(load(['config.js'], { search: '?traffic=jam' }).LE.config.traffic, 'normal', 'an unknown amount is ignored');
+  // how many the road wants at midday, for each
+  const { life, state, view } = testLife(12);
+  const n = {};
+  for (const t of ['light', 'normal', 'busy']) {
+    life.traffic = t;
+    n[t] = life._trafficWanted(state);
+  }
+  assert.ok(n.light < n.normal * 0.6 && n.light >= 3, 'light: ' + JSON.stringify(n));
+  assert.ok(n.busy > n.normal * 1.5, 'busy: ' + JSON.stringify(n));
+  // a busy road fills up, and nothing drives through anything on it
+  life.traffic = 'busy';
+  const lanes = (c) => (c.side < 0.7 ? 1 : 0) | (c.side > 0.3 ? 2 : 0);
+  let most = 0;
+  for (let k = 0; k < 1500; k++) {
+    life.update(0.5, state, view);
+    most = Math.max(most, life.vehicles.length);
+    const vs = life.vehicles;
+    for (let a = 0; a < vs.length; a++)
+      for (let b = a + 1; b < vs.length; b++) {
+        const A = vs[a];
+        const B = vs[b];
+        const la = lanes(A);
+        const lb = A.dir === B.dir ? lanes(B) : ((lanes(B) & 1) << 1) | ((lanes(B) & 2) >> 1);
+        if (!(la & lb)) continue;
+        assert.ok((A.len + B.len) / 2 - Math.abs(A.s - B.s) < 0.0005, `busy road: ${A.kind} and ${B.kind} overlap at step ${k}`);
+      }
+  }
+  assert.ok(most > n.normal, 'more on the road than a normal day: ' + most);
+  // from the app: once, on a change
+  const a = load(['config.js', 'services/host.js'], { search: '?host=1' });
+  a.ctx.document.createElement = () => ({ remove() {} });
+  a.ctx.document.head = { appendChild: (x) => x.onload() };
+  const calls = [];
+  a.ctx.livelyPropertyListener = (name, v) => {
+    calls.push([name, v]);
+    if (name === 'traffic') a.LE.config.traffic = ['light', 'normal', 'busy'][v];
+  };
+  const all = { quality: 'auto', road: true, traffic: 'normal', birds: true, leaves: true, corner: 'right-bottom', panelSize: 'medium' };
+  a.ctx.leHostState('live', all);
+  a.tick();
+  assert.deepEqual(calls, []);
+  a.ctx.leHostState('live', { ...all, traffic: 'busy' });
+  a.tick();
+  a.tick();
+  assert.deepEqual(calls, [['traffic', 2]]);
+  // the same order in the app, the page and Lively
+  const read = (f) => readFileSync(new URL(f, new URL('../', import.meta.url)), 'utf8');
+  const words = (text, re) => text.match(re)[1].match(/[a-z]+/g);
+  const app = words(read('host/LivingEarthHost.cs'), /Traffics = \{([^}]*)\}/);
+  assert.deepEqual(app, ['light', 'normal', 'busy']);
+  assert.deepEqual(words(read('src/main.js'), /TRAFFIC = \[([^\]]*)\]/), app, 'main.js');
+  assert.deepEqual(words(read('src/services/host.js'), /TRAFFIC = \[([^\]]*)\]/), app, 'host.js');
+  const lively = JSON.parse(read('LivelyProperties.json')).traffic;
+  assert.deepEqual(lively.items.map((x) => x.toLowerCase()), app, 'Lively');
+  assert.equal(lively.value, 1, 'Lively starts on normal');
+});
+
+test('the panel comes in three sizes: from the address, from the app, and grown from its own corner', () => {
+  assert.equal(load(['config.js']).LE.config.ui.panelSize, 'medium', 'medium unless asked');
+  for (const z of ['small', 'medium', 'large']) assert.equal(load(['config.js'], { search: `?panelsize=${z}` }).LE.config.ui.panelSize, z);
+  assert.equal(load(['config.js'], { search: '?panelsize=huge' }).LE.config.ui.panelSize, 'medium', 'an unknown size is ignored');
+  // the class the panel gets
+  const h = load(['config.js', 'ui/overlay.js'], { search: '?panelsize=large&corner=left-top' });
+  const root = { style: {}, className: '', querySelectorAll: () => [] };
+  new h.LE.Overlay(root, h.LE.config);
+  assert.equal(root.className, 'panel pos-left-top size-large');
+  // from the app: once, on a change
+  const a = load(['config.js', 'services/host.js'], { search: '?host=1' });
+  a.ctx.document.createElement = () => ({ remove() {} });
+  a.ctx.document.head = { appendChild: (x) => x.onload() };
+  const calls = [];
+  a.ctx.livelyPropertyListener = (name, v) => {
+    calls.push([name, v]);
+    if (name === 'panelSize') a.LE.config.ui.panelSize = ['small', 'medium', 'large'][v];
+  };
+  const all = { quality: 'auto', road: true, birds: true, leaves: true, corner: 'right-bottom', panelSize: 'medium' };
+  a.ctx.leHostState('live', all);
+  a.tick();
+  assert.deepEqual(calls, []);
+  a.ctx.leHostState('live', { ...all, panelSize: 'small' });
+  a.tick();
+  a.tick();
+  assert.deepEqual(calls, [['panelSize', 0]]);
+  a.ctx.leHostState('live', { ...all, panelSize: 'giant' });
+  a.tick();
+  assert.equal(calls.length, 1, 'an unknown size changes nothing');
+  // the same order everywhere, and each corner scales towards itself so the panel never runs off the screen
+  const read = (f) => readFileSync(new URL(f, new URL('../', import.meta.url)), 'utf8');
+  const words = (text, re) => text.match(re)[1].match(/[a-z]+/g);
+  const app = words(read('host/LivingEarthHost.cs'), /PanelSizes = \{([^}]*)\}/);
+  assert.deepEqual(app, ['small', 'medium', 'large']);
+  assert.deepEqual(words(read('src/main.js'), /PANEL_SIZE = \[([^\]]*)\]/), app, 'main.js');
+  assert.deepEqual(words(read('src/services/host.js'), /PANEL_SIZE = \[([^\]]*)\]/), app, 'host.js');
+  const lively = JSON.parse(read('LivelyProperties.json')).panelSize;
+  assert.deepEqual(lively.items.map((x) => x.toLowerCase()), app, 'Lively');
+  assert.equal(lively.value, 1, 'Lively starts on medium');
+  const css = read('src/styles/main.css');
+  for (const c of ['right-bottom', 'right-top', 'left-bottom', 'left-top']) {
+    const rule = css.match(new RegExp(`\\.pos-${c} \\{([^}]*)\\}`))[1];
+    assert.ok(rule.includes(`transform-origin: ${c.replace('-', ' ')};`), c);
+  }
+  assert.match(css, /\.size-small \{\s*transform: scale\(0\.\d+\);/);
+  assert.match(css, /\.size-large \{\s*transform: scale\(1\.\d+\);/);
+});
+
 test('the app finds the desktop\'s wallpaper layer again each time, since Explorer can replace it after the start', () => {
   const host = readFileSync(new URL('../host/LivingEarthHost.cs', import.meta.url), 'utf8');
   const method = (signature) => {
@@ -1701,4 +2104,223 @@ test('the app finds the desktop\'s wallpaper layer again each time, since Explor
   const order = method('private bool IsAboveWorkerW(');
   assert.ok(order.includes('ClassOf(w) == "WorkerW"'), 'any wallpaper layer counts');
   assert.ok(!order.includes('w == workerW'), 'not only the one seen first');
+});
+
+// ---- life on the road: overtaking, stops, beams, brake lights and the light thrown ahead -----------------------------
+/** A quiet road with only the vehicles a test puts on it. */
+function quietRoad(hour) {
+  const h = testLife(hour);
+  h.life._view = h.view;
+  h.life.state = h.state;
+  h.life._trafficSeeded = true;
+  h.life._nextVehicle = 1e9;
+  h.life.birds = false; // only the road
+  h.put = (kind, dir, i, over = {}) => {
+    const c = Object.assign(h.life._newVehicle(kind, dir, i * h.road.step), over);
+    h.life.vehicles.push(c);
+    return c;
+  };
+  h.run = (seconds, each) => {
+    for (let t = 0; t < seconds; t += 0.25) {
+      h.life.update(0.25, h.state, h.view);
+      if (each) each(t);
+    }
+  };
+  return h;
+}
+const STRAIGHT = 740; // the start of a 0.9 km straight on the test road
+
+test('a faster vehicle overtakes a slow bus on a straight when nothing is coming, indicating out and back in', () => {
+  const h = quietRoad(12);
+  const bus = h.put('bus', 1, STRAIGHT + 4, { cruise: 0.005, stopIn: Infinity });
+  const bike = h.put('motorcycle', 1, STRAIGHT, { cool: 0, v: 0.005 });
+  const seen = { right: false, out: false, left: false };
+  h.run(60, () => {
+    if (bike.blink === 2) seen.right = true;
+    if (bike.side > 0.9) seen.out = true;
+    if (seen.out && bike.blink === 1) seen.left = true;
+    // never through the bus while both are in the same lane
+    if (bike.side < 0.5) assert.ok(Math.abs(bike.s - bus.s) >= (bike.len + bus.len) / 2 - 1e-4, 'no collision');
+  });
+  assert.ok(seen.right, 'indicated right before pulling out');
+  assert.ok(seen.out, 'went out into the other lane');
+  assert.ok(seen.left, 'indicated left to come back in');
+  assert.ok(bike.s > bus.s + (bike.len + bus.len) / 2, 'is now in front of the bus');
+  assert.ok(bike.side < 0.05 && !bike.pass, 'and back in its own lane');
+});
+
+test('nobody overtakes towards something coming the other way', () => {
+  const h = quietRoad(12);
+  h.put('bus', 1, STRAIGHT + 4, { cruise: 0.005, stopIn: Infinity });
+  const bike = h.put('motorcycle', 1, STRAIGHT, { cool: 0, v: 0.005 });
+  const jeep = h.put('jeep', -1, STRAIGHT + 40);
+  h.run(30, () => {
+    if ((jeep.s - bike.s) * bike.dir > 0) assert.ok(bike.side < 0.5, 'stays in its lane while the jeep is ahead');
+  });
+});
+
+test('a bus stops with its hazard lights on, then indicates right and pulls out', () => {
+  const h = quietRoad(12);
+  const bus = h.put('bus', 1, STRAIGHT, { stopIn: 0.001 });
+  let stopped = false;
+  let hazards = false;
+  let indicated = false;
+  h.run(80, () => {
+    if (bus.v < 0.0003 && bus.stopFor > 0) stopped = true;
+    if (stopped && bus.blink === 3) hazards = true;
+    if (hazards && bus.blink === 2) indicated = true;
+  });
+  assert.ok(stopped && hazards && indicated, `stopped ${stopped}, hazards ${hazards}, indicated ${indicated}`);
+  assert.ok(bus.v > 0.004 && Math.abs(bus.side) < 0.05, 'and is on its way again in its lane');
+});
+
+test('a busy day on the road: nothing ever drives through anything, and overtaking and stops happen', () => {
+  const { life, state, view } = testLife(12);
+  let passes = 0;
+  let stops = 0;
+  // lanes a vehicle takes up: its own, the other, or both while it moves across
+  const lanes = (c) => (c.side < 0.7 ? 1 : 0) | (c.side > 0.3 ? 2 : 0);
+  for (let k = 0; k < 4000; k++) {
+    life.update(0.5, state, view);
+    for (const c of life.vehicles) {
+      if (c.pass && c.pass.phase === 1 && c.side > 0.9 && !c.counted) {
+        c.counted = true;
+        passes++;
+      }
+      if (c.stopFor > 0 && !c.stopCounted) {
+        c.stopCounted = true;
+        stops++;
+      }
+    }
+    const vs = life.vehicles;
+    for (let a = 0; a < vs.length; a++) {
+      for (let b = a + 1; b < vs.length; b++) {
+        const A = vs[a];
+        const B = vs[b];
+        // the other lane for one direction is the own lane for the other
+        const la = lanes(A);
+        const lb = A.dir === B.dir ? lanes(B) : ((lanes(B) & 1) << 1) | ((lanes(B) & 2) >> 1);
+        if (!(la & lb)) continue;
+        const overlap = (A.len + B.len) / 2 - Math.abs(A.s - B.s);
+        assert.ok(overlap < 0.0005, `${A.kind} and ${B.kind} overlap by ${(overlap * 1000).toFixed(1)} m at step ${k}`);
+      }
+    }
+  }
+  assert.ok(passes > 0, 'someone overtook: ' + passes);
+  assert.ok(stops > 0, 'a bus stopped: ' + stops);
+});
+
+test('at night beams are dipped for oncoming traffic and go back up on an empty road', () => {
+  const h = quietRoad(22);
+  const a = h.put('jeep', 1, STRAIGHT);
+  const b = h.put('jeep', -1, STRAIGHT + 20); // 0.16 km away, coming towards it
+  h.run(1);
+  assert.ok(a.beam < 0.05 && b.beam < 0.05, 'both dipped');
+  h.run(30); // past each other and well apart
+  assert.ok((b.s - a.s) * a.dir < -0.3, 'they have passed');
+  assert.ok(a.beam > 0.95 && b.beam > 0.95, 'main beam again');
+});
+
+test('before a blind hairpin at night the main beam flashes twice', () => {
+  const h = quietRoad(22);
+  const { road } = h;
+  // a sharp bend on the straight, as tight as a hairpin
+  for (let i = STRAIGHT + 30; i < STRAIGHT + 37; i++) road.limit[i] = 0.0035;
+  assert.ok(road.limit[STRAIGHT + 12] > 0.0075, 'with faster road before it');
+  const c = h.put('jeep', 1, STRAIGHT + 12, { v: road.limit[STRAIGHT + 12] });
+  let flashes = 0;
+  let was = false;
+  h.run(12, () => {
+    h.life._write(h.state);
+    const v = sprites(h.life).find((x) => x.type === 6);
+    const on = c.flash > 0.85 || (c.flash > 0.25 && c.flash < 0.6);
+    if (on && !was) flashes++;
+    was = on;
+    if (on && v) assert.equal(v.f[17], 1, 'the picture gets the main beam while it flashes');
+  });
+  assert.equal(flashes, 2);
+});
+
+test('brake lights come on when slowing, by day as well, and tail lights glow at night', () => {
+  const day = quietRoad(12);
+  const c = day.put('jeep', 1, STRAIGHT, { v: 0.0115 });
+  day.put('bus', 1, STRAIGHT + 3, { cruise: 0.003, v: 0.003, stopIn: Infinity });
+  day.run(1.5);
+  assert.ok(c.brake > 0.9, 'braking behind the slow bus: ' + c.brake);
+  // by day the brake light is a small red point, well below the night's
+  day.life.count = 0;
+  day.life._pushVehicle(c, 0);
+  const dayV = sprites(day.life).find((x) => x.type === 6);
+  if (dayV) assert.ok(dayV.f[16] <= 0.31, 'dim by day: ' + dayV.f[16]);
+  // cruising along an empty road the brake lights stay off: no flicker from small changes of speed
+  const calm = quietRoad(12);
+  const e = calm.put('jeep', 1, STRAIGHT);
+  let most = 0;
+  calm.run(4);
+  calm.run(30, () => (most = Math.max(most, e.brake)));
+  assert.ok(most < 0.05, 'no brake lights while cruising: ' + most);
+  const night = quietRoad(22);
+  const d = night.put('jeep', 1, STRAIGHT);
+  night.run(0.5);
+  assert.ok(d.brake < 0.1, 'cruising');
+  // seen from behind: the level that goes to the picture
+  const R = night.LE.Road;
+  const lights = night.life._lightsLevel(night.state);
+  near(R.taillight(-1) * Math.max(lights * 0.5, d.brake * (0.3 + 0.7 * lights)), 0.5, 0.05, 'tail lights at night');
+  // and what goes to the picture: on with the headlights, brighter and wider when it brakes
+  const look = (dir, i, brake) => {
+    night.life.count = 0;
+    night.life._pushVehicle(Object.assign(night.life._newVehicle('jeep', dir, i * night.road.step), { brake }), lights);
+    return sprites(night.life).find((x) => x.type === 6);
+  };
+  // somewhere it drives straight away from the viewer: tail lights in full, no headlights
+  let spot = null;
+  for (const dir of [1, -1])
+    for (let i = 5; i < night.road.n - 5 && !spot; i++) {
+      const v = look(dir, i, 0);
+      if (v && v.f[14] === 0 && v.f[16] > 0.49) spot = [dir, i];
+    }
+  assert.ok(spot, 'somewhere on the road a vehicle drives away from the viewer');
+  const cruising = look(spot[0], spot[1], 0);
+  const braking = look(spot[0], spot[1], 1);
+  near(cruising.f[16], 0.5, 0.02, 'on with the headlights');
+  assert.equal(cruising.f[19], 0, 'not braking');
+  assert.ok(braking.f[16] > cruising.f[16] * 1.8, 'brighter when braking: ' + braking.f[16] + ' against ' + cruising.f[16]);
+  near(braking.f[19], 1, 0.02, 'and the picture is told it brakes, for the wider glow');
+});
+
+test('at night each vehicle lights the road ahead: further on main beam, and a motorcycle much less than a bus', () => {
+  const h = quietRoad(22);
+  const beamOf = (kind, beam) => {
+    h.life.count = 0;
+    h.life._pushVehicle(Object.assign(h.life._newVehicle(kind, 1, STRAIGHT * h.road.step), { beam }), 1);
+    const b = sprites(h.life).find((x) => x.type === 7);
+    assert.ok(b, kind + ' throws light');
+    return { strength: b.f[6], range: b.f[11], cone: b.f[15] };
+  };
+  const busHigh = beamOf('bus', 1);
+  const busLow = beamOf('bus', 0);
+  const bikeLow = beamOf('motorcycle', 0);
+  assert.ok(busHigh.range > busLow.range * 2, 'main beam reaches more than twice as far');
+  assert.ok(busHigh.cone > busLow.cone, 'and is narrower');
+  assert.ok(bikeLow.strength < busLow.strength * 0.5 && bikeLow.range < busLow.range, 'a motorcycle throws far less');
+  // by day, none
+  h.life.count = 0;
+  h.life._pushVehicle(h.life._newVehicle('bus', 1, STRAIGHT * h.road.step), 0);
+  assert.ok(!sprites(h.life).some((x) => x.type === 7), 'nothing by day');
+});
+
+test('indicators blink at about one and a half times a second, without raising the frame rate', () => {
+  const h = quietRoad(12);
+  const c = h.put('jeep', 1, STRAIGHT, { blink: 2, blinkFor: 99 });
+  const lit = [];
+  for (let k = 0; k < 40; k++) {
+    h.life.update(0.05, h.state, h.view);
+    const v = sprites(h.life).find((x) => x.type === 6);
+    lit.push(v && v.f[18] === 2 ? 1 : 0);
+  }
+  const changes = lit.slice(1).filter((x, k) => x !== lit[k]).length;
+  assert.ok(changes >= 4 && changes <= 8, 'on and off over two seconds: ' + lit.join(''));
+  assert.equal(h.life.movers, 0, 'it does not ask for more frames');
+  assert.ok(c.blink === 2);
 });

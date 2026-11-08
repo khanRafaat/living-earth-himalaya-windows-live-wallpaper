@@ -313,11 +313,17 @@
       if (!lifeSeeded) {
         lifeSeeded = true;
         life.setSmokeSources(renderer.smokeSources);
+        life.setForestSources(renderer.forestSources);
         life.setRoad(renderer.road);
         if (cfg.testMode && cfg.lifeTest) life.seedForTest(state, view);
       }
       life.enabled = cfg.life !== false;
       life.birds = cfg.birds !== false;
+      life.mist = cfg.mist !== false;
+      life.villageSmoke = cfg.smoke !== false;
+      life.fires = cfg.fires !== false;
+      life.shootingStars = cfg.shootingStars !== false;
+      life.traffic = cfg.traffic || 'normal';
       stepLife(state, nowReal);
     } else {
       lastLife = nowReal;
@@ -406,6 +412,8 @@
   // ---------------------------------------------------------------- Lively integration
   // Lively calls these globals. Dropdowns send an index, sliders a number, checkboxes a bool.
   const PANEL_POS = ['right-bottom', 'right-top', 'left-bottom', 'left-top'];
+  const PANEL_SIZE = ['small', 'medium', 'large'];
+  const TRAFFIC = ['light', 'normal', 'busy'];
   const FPS = [24, 30, 45, 60];
   const QUALITY = ['auto', 'eco', 'balanced', 'high', 'ultra'];
   const SCALE = [1, 0.85, 0.75, 0.67];
@@ -420,6 +428,10 @@
         break;
       case 'panelPosition':
         cfg.ui.panelPosition = PANEL_POS[val] || PANEL_POS[0];
+        overlay.apply();
+        break;
+      case 'panelSize':
+        cfg.ui.panelSize = PANEL_SIZE[val] || 'medium';
         overlay.apply();
         break;
       case 'clock24h':
@@ -477,8 +489,29 @@
       case 'birds':
         cfg.birds = !!val;
         break;
+      case 'traffic':
+        cfg.traffic = TRAFFIC[val] || 'normal';
+        break;
       case 'leaves':
         cfg.leaves = !!val;
+        break;
+      case 'tree':
+        cfg.render.tree = !!val;
+        break;
+      case 'mist':
+        cfg.mist = !!val;
+        break;
+      case 'smoke':
+        cfg.smoke = !!val;
+        break;
+      case 'fires':
+        cfg.fires = !!val;
+        break;
+      case 'lights':
+        cfg.lights = !!val;
+        break;
+      case 'stars':
+        cfg.shootingStars = !!val;
         break;
       case 'refreshWeather':
         weather.refreshNow();

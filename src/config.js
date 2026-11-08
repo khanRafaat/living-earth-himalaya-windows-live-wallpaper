@@ -8,7 +8,7 @@
   const LE = (window.LE = window.LE || {});
 
   LE.config = {
-    version: '2.0.1',
+    version: '2.1.0',
 
     location: {
       name: 'Dhaka',
@@ -54,6 +54,7 @@
     ui: {
       showPanel: true,
       panelPosition: 'right-bottom', // right-bottom | right-top | left-bottom | left-top
+      panelSize: 'medium', // small | medium | large
       clock24h: false,
       tempUnit: 'C',
     },
@@ -107,6 +108,13 @@
   c.lifeTest = q.get('lifetest') === '1'; // tests: start with birds already on screen
   c.road = q.get('road') !== '0'; // the road on the hillside and its traffic
   c.birds = q.get('birds') !== '0'; // birds alone, while smoke, meteors and lights stay
+  c.traffic = ['light', 'normal', 'busy'].includes(q.get('traffic')) ? q.get('traffic') : 'normal'; // how much is on the road
   c.leaves = q.get('leaves') !== '0'; // the leaves the wind carries past. The tree stays
+  c.mist = q.get('mist') !== '0'; // mist rising off the forest
+  c.smoke = q.get('smoke') !== '0'; // smoke from the villages, and their cooking fires after dark
+  c.fires = q.get('fires') !== '0'; // a field burning on a hill now and then
+  c.lights = q.get('lights') !== '0'; // lights in the villages at night
+  c.shootingStars = q.get('stars') !== '0'; // meteors and satellites. The stars themselves stay
   if (['right-bottom', 'right-top', 'left-bottom', 'left-top'].includes(q.get('corner'))) c.ui.panelPosition = q.get('corner');
+  if (['small', 'medium', 'large'].includes(q.get('panelsize'))) c.ui.panelSize = q.get('panelsize');
 })();

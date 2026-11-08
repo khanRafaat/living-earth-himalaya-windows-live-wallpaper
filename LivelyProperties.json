@@ -14,6 +14,12 @@
     "text": "Panel position",
     "items": ["Right monitor · bottom", "Right monitor · top", "Left monitor · bottom", "Left monitor · top"]
   },
+  "panelSize": {
+    "type": "dropdown",
+    "value": 1,
+    "text": "Panel size",
+    "items": ["Small", "Medium", "Large"]
+  },
   "clock24h": {
     "type": "checkbox",
     "value": false,
@@ -93,10 +99,46 @@
     "value": true,
     "text": "Flying leaves"
   },
+  "tree": {
+    "type": "checkbox",
+    "value": true,
+    "text": "The tree on the rock"
+  },
+  "stars": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Shooting stars and satellites"
+  },
+  "lights": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Village lights at night"
+  },
+  "mist": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Mist rising from the forest"
+  },
+  "smoke": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Smoke from the villages"
+  },
+  "fires": {
+    "type": "checkbox",
+    "value": true,
+    "text": "A field burning on a hill now and then"
+  },
   "road": {
     "type": "checkbox",
     "value": true,
     "text": "Road and traffic (changing it shapes the mountains again, which takes a few minutes)"
+  },
+  "traffic": {
+    "type": "dropdown",
+    "value": 1,
+    "text": "How much traffic",
+    "items": ["Light", "Normal", "Busy"]
   },
   "weatherMode": {
     "type": "dropdown",

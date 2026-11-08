@@ -23,6 +23,7 @@
   const BAND = 16; // rows per tile band for chunked bake / shadow work
   const FENCE_NOTICED_MS = 8; // a finished frame is only noticed at the next screen refresh, half of one late on average
   const FENCE_GIVE_UP_MS = 5000; // a driver that never signals must not freeze the wallpaper for good
+  const HEAD_CAP = 25; // the most a vehicle's headlights may count for, in the scene's light units (sprites.js)
   // the tree on the rock at the left: direction as a share of half the view, distance and ground height (m)
   const HILL_TIP_M = 2.6; // how far past the tree the rock reaches (ledge.js)
   const GRASS_WRAP_M = 50; // a whole number of noise tiles at the grass's wind scales (composite.js)
@@ -253,7 +254,7 @@
       gl.bindVertexArray(this.spriteVAO);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.spriteBuf);
       gl.bufferData(gl.ARRAY_BUFFER, LE.Life.MAX * LE.Life.FLOATS * 4, gl.DYNAMIC_DRAW);
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < LE.Life.FLOATS / 4; i++) {
         gl.enableVertexAttribArray(i);
         gl.vertexAttribPointer(i, 4, gl.FLOAT, false, LE.Life.FLOATS * 4, i * 16);
         gl.vertexAttribDivisor(i, 1);
@@ -634,6 +635,7 @@
         this._volWarm = 0;
         this._holdExposure = false;
         this._findSmokeSources();
+        this._findForestSources();
         this._setStatus('running');
       } else {
         // B now holds the new shadows: cross-fade A → B, then swap
@@ -715,6 +717,18 @@
       p.set('uCloudFine', q.cloudFine);
       p.set('uMistSteps', q.mistSteps);
       p.set('uLightSteps', q.lightSteps);
+      // mist rising off the forest and smoke from houses and fires (life.js decides where and how much)
+      const L = this.life;
+      const plumes = L && L.plumeCount ? L.plumeCount : 0;
+      p.set('uPlumes', plumes);
+      p.set('uPlumeSteps', q.plumeSteps || 10);
+      p.set('uTime', state.time % 2400); // wrapped, as everywhere: the smoke's climb repeats exactly in that time
+      p.set('uHeadE', Math.min(state.exposure * 3e-4, HEAD_CAP)); // a fire's glow on its smoke, as a lamp's
+      if (plumes) {
+        p.set('uPlumeA', L.plumeA);
+        p.set('uPlumeB', L.plumeB);
+        p.set('uPlumeC', L.plumeC);
+      }
       p.set('uAirExt', 0.004 * w.haze + 0.0022 * w.valleyHaze);
       this._bind(p, {
         uG0: this.gbuf.tex[0],
@@ -773,7 +787,7 @@
       p.set('uFog', w.fog);
       p.set('uDebugView', this.cfg.debugView | 0);
       p.set('uValleyHaze', w.valleyHaze);
-      p.set('uLampE', this.cfg.life === false ? 0 : state.lampE);
+      p.set('uLampE', this.cfg.life === false || this.cfg.lights === false ? 0 : state.lampE);
       p.set('uLampDark', state.lampDark);
       p.set('uLocalHour', state.localHour);
       p.set('uGustDir', state.gustDir);
@@ -873,8 +887,12 @@
       p.set('uMieScale', w.haze);
       p.set('uNight', state.night);
       p.set('uTime', state.time % 2400);
+      // About 30 lux close in front of the lamps, against the sun's 100 000 at an irradiance of 1: capped, so on a
+      // moonless night the patch reads as lamplight on the road instead of burning out white
+      p.set('uHeadE', Math.min(state.exposure * 3e-4, HEAD_CAP));
       this._bind(p, {
         uG0: this.gbuf.tex[0],
+        uG1: this.gbuf.tex[1],
         uVol: this.volA.tex[0],
         uAdapt: this.adaptA.tex[0],
         uSkyLUT: this.skyLUT.tex[0],
@@ -904,12 +922,19 @@
         gl.readBuffer(gl.COLOR_ATTACHMENT0);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         const v = this.viewInfo();
-        const cands = [];
+        // houses: the pixels most covered by a house's light. On a small window a house is smaller than a pixel and
+        // never covers one fully, so take the best covered ones there are, down to a little
+        const all = [];
         for (let y = 0; y < h; y += step) {
           for (let x = 0; x < w; x += step) {
             const i = (y * w + x) * 4;
-            if (g3[i] > 200 && g3[i + 2] > 60) cands.push([x, y]);
+            if (g3[i] > 20 && g3[i + 2] > 30) all.push([x, y, g3[i]]);
           }
+        }
+        let cands = [];
+        for (const least of [200, 120, 60, 20]) {
+          cands = all.filter((c) => c[2] > least);
+          if (cands.length >= 40) break;
         }
         // need distances (nearest villages first). Read G0 once for just the rows these
         // candidates and their occlusion test need, instead of hundreds of 1-pixel reads
@@ -935,13 +960,14 @@
         const found = [];
         for (const [x, y] of pick) {
           const t = dist(x, y);
-          if (!(t > 1.5 && t < 10)) continue;
-          // the plume must rise in open view, not straight behind a nearer ridge
-          let blocked = false;
+          // Villages across the valley too: smoke is drawn in 3D, so from behind a nearer ridge it shows rising above
+          // it, as it would. Only one hidden right up past its first hundred metres or so is no use.
+          if (!(t > 1.5 && t < 20)) continue;
+          let blocked = true;
           for (const up of [5, 12, 22]) {
             if (y + up >= h) break;
             const d = dist(x, y + up);
-            if (d > 0 && d < t - 0.25) blocked = true;
+            if (!(d > 0 && d < t - 0.25)) blocked = false;
           }
           if (blocked) continue;
           const a = (x - 0.5 * w) * v.pxAng;
@@ -961,6 +987,80 @@
       } catch (e) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         this.smokeSources = [];
+      }
+    }
+
+    /**
+     * Once after the bake: places on the forested slopes where mist can rise off the canopy after rain, or a field
+     * be burned. Reads the canopy map whole (8 bits a pixel), and the distances only in a few bands of rows spread
+     * from the near slopes to the far ones, instead of the whole depth buffer.
+     */
+    _findForestSources() {
+      const gl = this.gl;
+      const w = this.w;
+      const h = this.h;
+      const STEP = 6;
+      const BAND = 30;
+      try {
+        const v = this.viewInfo();
+        const g1 = new Uint8Array(w * h * 4);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.gbuf.fbo);
+        gl.readBuffer(gl.COLOR_ATTACHMENT1);
+        gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, g1);
+        const forest = (x, y) => g1[(y * w + x) * 4 + 3] > 140;
+        const rows = [];
+        for (let y = 0; y < h - BAND; y += STEP) {
+          let n = 0;
+          for (let x = 0; x < w; x += STEP) if (forest(x, y)) n++;
+          if (n > 6) rows.push(y);
+        }
+        // six bands, spread through the rows that have forest: near slopes low in the picture, far ones higher up
+        const bands = [];
+        for (let k = 0; k < 6 && rows.length; k++) {
+          const y = rows[Math.min(rows.length - 1, Math.floor(((k + 0.5) / 6) * rows.length))];
+          if (bands.every((b) => Math.abs(b - y) >= BAND)) bands.push(y);
+        }
+        const g0 = new Float32Array(w * BAND * 4);
+        const found = [];
+        for (const y0 of bands) {
+          gl.readBuffer(gl.COLOR_ATTACHMENT0);
+          gl.readPixels(0, y0, w, BAND, gl.RGBA, gl.FLOAT, g0);
+          const dist = (x, y) => g0[((y - y0) * w + x) * 4 + 2];
+          for (let y = y0; y < y0 + 8; y += 2) {
+            for (let x = (y * 7) % STEP; x < w; x += STEP) {
+              if (!forest(x, y)) continue;
+              const t = dist(x, y);
+              if (!(t > 1.2 && t < 14)) continue;
+              // the mist must rise in open view, not straight behind a nearer ridge
+              let blocked = false;
+              for (const up of [5, 12, 21]) {
+                const d = dist(x, y + up);
+                if (d > 0 && d < t - 0.25) blocked = true;
+              }
+              if (blocked) continue;
+              const a = (x - 0.5 * w) * v.pxAng;
+              const ty = (y - v.horizonY * h) * v.pxAng;
+              const n = Math.hypot(Math.sin(a), ty, Math.cos(a));
+              found.push({ t, x: (Math.sin(a) / n) * t, y: v.camY + (ty / n) * t, z: (Math.cos(a) / n) * t });
+            }
+          }
+        }
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        // spread out over the view, a few hundred metres apart at least
+        for (let i = found.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [found[i], found[j]] = [found[j], found[i]];
+        }
+        const out = [];
+        for (const pt of found) {
+          if (out.every((o) => Math.hypot(o.x - pt.x, o.z - pt.z) > 0.4)) out.push({ x: pt.x, y: pt.y, z: pt.z });
+          if (out.length >= 24) break;
+        }
+        this.forestSources = out;
+        if (this.life) this.life.setForestSources(out);
+      } catch (e) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        this.forestSources = [];
       }
     }
 

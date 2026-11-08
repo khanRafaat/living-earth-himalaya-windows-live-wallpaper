@@ -343,7 +343,13 @@ vec3 skyIrradiance(vec3 n) {
   return PI * (zen * (0.5 * up + 0.08) + hor * (0.3 + 0.2 * l) + horB * 0.1 * (1.0 - 0.5 * l));
 }
 
-// Village windows after dusk: each house keeps its own schedule
+// One house's lights in one spell of the evening: lit or not, the same for the whole spell
+float houseSpell(float id, float spell) {
+  return step(0.27, fract(sin(spell * 12.9898 + id * 78.233) * 43758.5453));
+}
+
+// Village windows after dusk: each house keeps its own schedule, and within it its lights come and go as people
+// move about, a room lit for a few minutes and then dark. Far off, a lamp shimmers a little through the air.
 vec3 villageLight(vec4 g3, float t) {
   if (uLampDark <= 0.001 || g3.r < 0.01) return vec3(0.0);
   float id = g3.g;
@@ -355,13 +361,25 @@ vec3 villageLight(vec4 g3, float t) {
   float on = clamp(evening + allNight + earlyRiser, 0.0, 1.0);
   on *= step(0.1 + fract(id * 13.7) * 0.6, uLampDark);     // switched on one by one as dusk deepens
   if (on <= 0.0) return vec3(0.0);
+  // comings and goings: spells of half a minute to four minutes, dark for about one in four. The lights left on all night
+  // (a lamp over a door, a shop) stay on. Switching takes a moment, like a bulb warming up, not a pop.
+  float spellLen = 30.0 + 210.0 * fract(id * 41.7);
+  float k = (uLocalHour * 3600.0) / spellLen + fract(id * 97.3) * 50.0;
+  float now = houseSpell(id, floor(k));
+  float before = houseSpell(id, floor(k) - 1.0);
+  float lit = mix(before, now, smoothstep(0.0, 0.8, fract(k) * spellLen));
+  on *= max(lit, allNight);
+  if (on <= 0.001) return vec3(0.0);
+  // shimmer through the air, more with distance: a little close in, a clear twinkle across the valley
+  float amp = 0.1 + 0.22 * smoothstep(2.0, 14.0, t);
+  float shimmer = 1.0 + amp * sin(uTime * 2.3 + id * 47.0) * sin(uTime * 3.7 + id * 19.0);
   vec3 warm = vec3(1.0, 0.62, 0.30);
   vec3 led = vec3(0.92, 0.95, 1.0);
   vec3 c = mix(warm, led, step(0.86, fract(id * 17.9)));
   float fire = step(0.8, fract(id * 23.1));                // oil lamps / fires flicker
   float fl = 1.0 - fire * 0.25 * (0.5 + 0.5 * sin(uTime * 7.3 + id * 60.0) * sin(uTime * 3.1 + id * 21.0));
   float d = clamp(16.0 / (t * t), 0.05, 1.3);              // point source: dimmer with distance
-  return c * uLampE * g3.r * on * fl * d * (0.6 + 0.8 * fract(id * 29.3));
+  return c * uLampE * g3.r * on * fl * shimmer * d * (0.6 + 0.8 * fract(id * 29.3));
 }
 
 vec3 shadeTerrain(vec3 rd, float t, vec4 g0, ivec2 ic) {

@@ -380,5 +380,14 @@
     return t * t * (3 - 2 * t);
   }
 
-  LE.Road = { GRID, ROUTE, gridPoints, findHillside, plan, finish, at, vectorMap, headlight };
+  /**
+   * How much of a tail light shows from here: all of it from behind, and still most of it from the side, since rear
+   * lamps wrap round the corners to be seen from there. Nothing from the front.
+   */
+  function taillight(facing) {
+    const t = clamp((0.3 - facing) / 0.5, 0, 1);
+    return t * t * (3 - 2 * t);
+  }
+
+  LE.Road = { GRID, ROUTE, gridPoints, findHillside, plan, finish, at, vectorMap, headlight, taillight };
 })();

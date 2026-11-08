@@ -319,11 +319,7 @@
               label: 'Tree on the rock',
               stops: ON_OFF,
               get: () => (r.tree !== false ? 1 : 0),
-              set: (v) => {
-                r.tree = !!v;
-                const R = renderer();
-                if (R && R.fg) R.fg.enabled = !!v;
-              },
+              set: (v) => (r.tree = !!v), // the tree reads it every frame
             },
             {
               label: 'Birds, smoke, lights',
@@ -333,12 +329,32 @@
               tip: 'Also meteors and satellites',
             },
             {
+              label: 'Traffic',
+              stops: [['Light', 'light'], ['Normal', 'normal'], ['Busy', 'busy']],
+              get: () => cfg.traffic || 'normal',
+              set: (v) => (cfg.traffic = v),
+              tip: 'How many vehicles use the road',
+            },
+            {
               label: 'Birds',
               stops: ON_OFF,
               get: () => (cfg.birds !== false ? 1 : 0),
               set: (v) => (cfg.birds = !!v),
               tip: 'Only the birds: smoke, meteors and lights stay',
             },
+            ...[
+              ['Shooting stars', 'shootingStars', 'Meteors and satellites. The stars stay'],
+              ['Village lights', 'lights', 'Lights in the houses at night'],
+              ['Forest mist', 'mist', 'Mist rising off the forest when the air is humid or after rain'],
+              ['Village smoke', 'smoke', 'Smoke from the houses, and their cooking fires after dark'],
+              ['Burning fields', 'fires', 'Now and then a field burning on a hill'],
+            ].map(([label, key, tip]) => ({
+              label,
+              stops: ON_OFF,
+              get: () => (cfg[key] !== false ? 1 : 0),
+              set: (v) => (cfg[key] = !!v),
+              tip,
+            })),
             {
               label: 'Flying leaves',
               stops: ON_OFF,
@@ -359,6 +375,9 @@
             ['Flock', () => life.summon('flock'), 'Birds leave in rain, snow, fog and at night'],
             ['Geese', () => life.summon('geese'), 'Birds leave in rain, snow, fog and at night'],
             ['Meteor', () => life.summon('meteor'), 'Shows in a dark sky'],
+            ['Forest mist', () => life.summon('mist'), 'Mist rising off the forest as after rain, drifting with the wind. Stays for a few minutes'],
+            ['Village smoke', () => life.summon('smoke'), 'Smoke from houses on the hills, where houses are in view'],
+            ['Burning field', () => life.summon('fire'), 'A field burning on a hill: a tall plume, glowing at its foot after dark'],
             ['Satellite', () => life.summon('satellite'), 'Shows in a dark sky'],
             ['Bus', () => life.summon('bus'), 'Somewhere on the road in view, going either way'],
             ['Jeep', () => life.summon('jeep'), 'Somewhere on the road in view, going either way'],
@@ -442,6 +461,12 @@
               stops: [['Right, bottom', 'right-bottom'], ['Right, top', 'right-top'], ['Left, bottom', 'left-bottom'], ['Left, top', 'left-top']],
               get: () => ui.panelPosition,
               set: refreshPanel((v) => (ui.panelPosition = v)),
+            },
+            {
+              label: 'Size',
+              stops: [['Small', 'small'], ['Medium', 'medium'], ['Large', 'large']],
+              get: () => ui.panelSize || 'medium',
+              set: refreshPanel((v) => (ui.panelSize = v)),
             },
             { label: 'Clock', stops: [['12 hour', 0], ['24 hour', 1]], get: () => (ui.clock24h ? 1 : 0), set: (v) => (ui.clock24h = !!v) },
             { label: 'Temperature in', stops: [['°C', 'C'], ['°F', 'F']], get: () => ui.tempUnit, set: (v) => (ui.tempUnit = v) },

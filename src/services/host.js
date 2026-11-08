@@ -7,7 +7,8 @@
  *   rest   the scene every 2 s (you are working), fading smoothly between its pictures with the birds flying
  *   still  no frames at all (locked, or paused from the tray)
  *
- * The second argument carries settings: { quality, road, birds, leaves, corner, place: { lat, lon, name } }.
+ * The second argument carries settings: { quality, road, traffic, birds, leaves, tree, mist, smoke, fires, lights, stars,
+ * panel, corner, panelSize, place: { lat, lon, name } }.
  * They apply at once. Turning the road on or off shapes the mountains again, which takes a few minutes.
  *
  * Does nothing unless the page was opened with ?host=1, so Lively and browser testing are unaffected.
@@ -21,6 +22,8 @@
   const SETTLE_MS = 6000; // run at full speed first, or the first picture would hold a half-formed sky
   const QUALITY = ['auto', 'eco', 'balanced', 'high', 'ultra']; // the order livelyPropertyListener expects
   const CORNER = ['right-bottom', 'right-top', 'left-bottom', 'left-top']; // the same
+  const PANEL_SIZE = ['small', 'medium', 'large']; // the same
+  const TRAFFIC = ['light', 'normal', 'busy']; // the same
 
   let wanted = 'live';
   let applied = 'live';
@@ -48,13 +51,30 @@
     const q = options.quality;
     const i = QUALITY.indexOf(q);
     if (i >= 0 && c.render.quality !== q) window.livelyPropertyListener('quality', i);
-    // Only on a change: the road starts the mountains over
-    for (const name of ['road', 'birds', 'leaves']) {
+    // Only on a change: the road starts the mountains over. Each switch: what it is now, and Lively's name for it.
+    const switches = {
+      road: [c.road, 'road'],
+      birds: [c.birds, 'birds'],
+      leaves: [c.leaves, 'leaves'],
+      tree: [c.render.tree, 'tree'],
+      mist: [c.mist, 'mist'],
+      smoke: [c.smoke, 'smoke'],
+      fires: [c.fires, 'fires'],
+      lights: [c.lights, 'lights'],
+      stars: [c.shootingStars, 'stars'],
+      panel: [c.ui.showPanel, 'showPanel'],
+    };
+    for (const name in switches) {
       const on = options[name];
-      if (typeof on === 'boolean' && (c[name] !== false) !== on) window.livelyPropertyListener(name, on);
+      const [now, lively] = switches[name];
+      if (typeof on === 'boolean' && (now !== false) !== on) window.livelyPropertyListener(lively, on);
     }
     const corner = CORNER.indexOf(options.corner);
     if (corner >= 0 && c.ui.panelPosition !== options.corner) window.livelyPropertyListener('panelPosition', corner);
+    const traffic = TRAFFIC.indexOf(options.traffic);
+    if (traffic >= 0 && (c.traffic || 'normal') !== options.traffic) window.livelyPropertyListener('traffic', traffic);
+    const size = PANEL_SIZE.indexOf(options.panelSize);
+    if (size >= 0 && c.ui.panelSize !== options.panelSize) window.livelyPropertyListener('panelSize', size);
   }
 
   function apply() {

@@ -40,7 +40,7 @@
     apply() {
       const ui = this.cfg.ui;
       this.root.style.display = ui.showPanel ? '' : 'none';
-      this.root.className = 'panel pos-' + ui.panelPosition;
+      this.root.className = 'panel pos-' + ui.panelPosition + ' size-' + (ui.panelSize || 'medium');
     }
 
     _time(d, withSeconds) {

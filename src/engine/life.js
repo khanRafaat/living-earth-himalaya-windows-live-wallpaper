@@ -6,11 +6,16 @@
  *   • chough flocks swoop near the ridge, busiest after sunrise and before sunset
  *   • geese/cranes cross in V-formation during the real migration seasons
  *   • all birds shelter in rain, fog, snow and storms, and roost at night
- *   • wood smoke rises from village houses at cooking times and leans with the wind
+ *   • wood smoke rises from village houses through the day, most at cooking times, and leans with the wind
+ *   • when the air is humid or the forest wet, mist lifts off the canopy here and there, billows and dissolves
+ *   • now and then a field burns on a hill: a tall plume fanning out at the top, glowing at its foot by night
  *   • meteor rates follow the real annual shower calendar and need a dark, clear sky
  *   • satellites only show in twilight, when they are sunlit against a dark sky
  *   • buses, jeeps and motorcycles keep to the road, driving on the left, and slow down for bends. Most in the day,
- *     few at night, and their headlights show only while they head towards the viewer
+ *     few at night. Faster ones overtake slow ones on straight stretches when nothing is coming, with indicators;
+ *     buses stop now and then with their hazard lights on. At night they drive on main beam, dip it for oncoming
+ *     traffic, flash it before a blind hairpin, light the road and the trees ahead, and show red tail lights,
+ *     brighter when braking
  * Units: km, km/s; scene frame as in the renderer (+z = view centre, camera at origin).
  */
 (function () {
@@ -18,7 +23,7 @@
   const LE = (window.LE = window.LE || {});
   const D2R = Math.PI / 180;
   const TAU = Math.PI * 2;
-  const FLOATS = 16;
+  const FLOATS = 20;
   const MAX = 160;
   const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
   const smooth = (a, b, x) => {
@@ -49,20 +54,32 @@
   const SIZE_ON_SCREEN = 1.3; // a little larger than life, or at this distance a motorcycle would be under a pixel
   const rgb5 = (r, g, b) => r + g * 32 + b * 1024;
   const VEHICLES = {
+    // lamp height, how much light it throws, and how far: dipped and on main beam (km), and the beam's spread (cosine)
     bus: {
       code: 0, len: 0.0105, wid: 0.0025, hgt: 0.0031, cruise: 0.0085, lane: 0.0017,
+      lampH: 0.0009, power: 1.0, low: 0.065, high: 0.16, cone: 0.8,
       paints: [rgb5(24, 5, 4), rgb5(5, 11, 22), rgb5(26, 19, 4), rgb5(25, 25, 24), rgb5(5, 16, 10)],
     },
     jeep: {
       code: 1, len: 0.0045, wid: 0.0018, hgt: 0.0019, cruise: 0.0115, lane: 0.0017,
+      lampH: 0.0008, power: 0.8, low: 0.055, high: 0.14, cone: 0.82,
       paints: [rgb5(27, 27, 26), rgb5(6, 12, 7), rgb5(19, 20, 20), rgb5(16, 4, 5), rgb5(4, 5, 7)],
     },
     motorcycle: {
       code: 2, len: 0.0021, wid: 0.0008, hgt: 0.0016, cruise: 0.0125, lane: 0.0022,
+      lampH: 0.0009, power: 0.4, low: 0.035, high: 0.085, cone: 0.88,
       paints: [rgb5(22, 5, 4), rgb5(5, 7, 14), rgb5(24, 24, 22), rgb5(9, 12, 6)],
     },
   };
   const TRAFFIC_MAX = 14; // on the whole road, most of which is in view
+  // what rises from the hills: wood smoke from a house, mist off wet forest, smoke from a burning field
+  const SMOKE = { village: 0, mist: 1, fire: 2 };
+  // how much traffic the viewer wants: light, normal or busy
+  const TRAFFIC = { light: 0.45, normal: 1, busy: 1.8 };
+  const PASS_LANE = 0.0017; // km right of the centre line, where an overtaking vehicle drives
+  const BLINK_LEFT = 1;
+  const BLINK_RIGHT = 2;
+  const BLINK_BOTH = 3; // hazard lights
   const TMP = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
 
   class Life {
@@ -77,12 +94,24 @@
       this.sats = [];
       this.smoke = [];
       this.smokeSources = []; // [{x,y,z}] world positions found after the bake
+      this.forestSources = []; // the same, on the forested slopes
+      this.plumeA = new Float32Array(64); // mist and smoke, for the volume pass (_writePlumes)
+      this.plumeB = new Float32Array(64);
+      this.plumeC = new Float32Array(64);
+      this.plumeCount = 0;
+      this._nextWisp = 0;
+      this._nextFire = rand(300, 2400); // the first one can come early
       this.road = null;
       this.vehicles = [];
       this._nextVehicle = 0;
       this._trafficSeeded = false;
       this.enabled = true;
       this.birds = true; // off: no birds, while the rest of life goes on
+      this.mist = true; // mist rising off the forest
+      this.villageSmoke = true; // smoke from the villages
+      this.fires = true; // a field burning now and then
+      this.shootingStars = true; // meteors and satellites
+      this.traffic = 'normal'; // light | normal | busy
       this.t = 0;
       this._nextFlock = rand(20, 90);
       this._nextGeese = rand(60, 240);
@@ -92,7 +121,62 @@
 
     setSmokeSources(list) {
       this.smokeSources = list || [];
-      this.smoke = [];
+      this.smoke = this.smoke.filter((s) => s.kind !== SMOKE.village);
+    }
+
+    /** The weather's wind near the ground: which way it blows (unit, scene axes) and how far it carries the top of
+     * smoke or mist downwind per km it rises. */
+    _wind(state) {
+      const wv = state.windVel || [0, 0, 0];
+      const kmh = Math.hypot(wv[0], wv[2]) * 3600;
+      return {
+        dx: kmh > 0.1 ? (wv[0] * 3600) / kmh : 0,
+        dz: kmh > 0.1 ? (wv[2] * 3600) / kmh : 0,
+        lean: clamp(kmh / 12, 0.2, 1.5),
+      };
+    }
+
+    /**
+     * Mist off the forest and smoke from houses and burning fields are drawn in 3D by the volume pass, not as pictures:
+     * the ones in view now, nearest first, up to 16 (8 of mist), four numbers each in three arrays (see uPlumeA..C in volume.js).
+     * The last number says which: 0 mist, 1 smoke from a house, 2 a burning field, plus half the glow of its fire.
+     */
+    _writePlumes(list, state) {
+      const v = this._view;
+      const { dx, dz, lean } = this._wind(state);
+      const seen = [];
+      for (const s of list) {
+        if (s.alpha < 0.005) continue;
+        const p = s.src;
+        const pr = this._project(p.x, p.y, p.z);
+        const dist = Math.hypot(p.x, p.y - v.camY, p.z);
+        // how far from its foot it can show, in px: sideways as it spreads and leans, and upwards as it rises
+        const reach = (s.width * 4 + s.rise * (lean + 1)) / (dist * v.pxAng);
+        if (this._inView(pr, reach + 20)) seen.push({ s, pr, dist });
+      }
+      seen.sort((a, b) => a.dist - b.dist);
+      // the nearest 8 patches of mist at most, as they are big on the picture, and smoke in the rest
+      let mists = 0;
+      const drawn = seen.filter(({ s }) => s.kind !== SMOKE.mist || ++mists <= 8).slice(0, 16);
+      const n = drawn.length;
+      for (let i = 0; i < n; i++) {
+        const { s, pr } = drawn[i];
+        const p = s.src;
+        const mist = s.kind === SMOKE.mist;
+        // Mist forms as a low patch over the canopy and rises to its full height over a minute or two. Smoke climbs
+        // from its fire to where it stops rising in about the same time.
+        const H = mist ? s.rise * (0.35 + 0.65 * (1 - Math.exp(-s.age / 70))) : s.rise * (0.2 + 0.8 * (1 - Math.exp(-s.age / 60)));
+        const code = mist ? 0 : s.kind === SMOKE.fire ? 2 : 1;
+        this.plumeA.set([p.x, p.y - (mist ? 0.015 : 0), p.z, H], i * 4);
+        this.plumeB.set([s.width * 0.5, s.alpha, dx * H * lean, dz * H * lean], i * 4);
+        this.plumeC.set([s.seed * 40, pr.sx, pr.sy, code + clamp(s.fire, 0, 1) * 0.5], i * 4);
+      }
+      this.plumeCount = n;
+    }
+
+    setForestSources(list) {
+      this.forestSources = list || [];
+      this.smoke = this.smoke.filter((s) => s.kind === SMOKE.village);
     }
 
     setRoad(road) {
@@ -120,10 +204,32 @@
     summon(kind) {
       if (!this._view || !this.state) return;
       if (!this.birds && (kind === 'raptor' || kind === 'flock' || kind === 'geese')) return;
+      if (!this._smokeOn(kind === 'mist' ? SMOKE.mist : kind === 'smoke' ? SMOKE.village : kind === 'fire' ? SMOKE.fire : -1)) return;
+      if (!this.shootingStars && (kind === 'meteor' || kind === 'satellite')) return;
       if (kind === 'raptor') this.raptors.push(this._newRaptor(true));
       else if (kind === 'flock') this.flock = this._newFlock(true);
       else if (kind === 'geese') this.geese = this._newGeese(this.state, true);
       else if (kind === 'meteor') this.meteors.push(this._newMeteor(null, this.state));
+      else if (kind === 'mist' || kind === 'smoke') {
+        // put up part way through their lives, so they show at once, and held: the weather or the hour does not take
+        // them away early, only the end of their time or turning life off
+        for (let i = 0; i < (kind === 'mist' ? 6 : 4); i++) {
+          const s = this._newPlume(kind === 'mist' ? SMOKE.mist : SMOKE.village);
+          if (!s) break;
+          s.alpha = s.target;
+          s.age = rand(0, s.life * 0.5);
+          s.held = true;
+          this.smoke.push(s);
+        }
+      } else if (kind === 'fire') {
+        const s = this._newPlume(SMOKE.fire);
+        if (s) {
+          s.alpha = s.target;
+          s.age = 180; // risen to its full height, so it shows at once
+          s.held = true;
+          this.smoke.push(s);
+        }
+      }
       else if (kind === 'satellite') this.sats.push({ az: rand(-0.4, 0.4), el: 0.25, heading: 0.4, speed: 0.0005, age: 5, life: 600, bright: 0.45 });
       else if (VEHICLES[kind] && this.road) this.vehicles.push(this._newVehicle(kind, Math.random() < 0.5 ? 1 : -1, this._roadInView()));
     }
@@ -483,7 +589,7 @@
       const w = state.weather;
       const byHour = 0.08 + 0.92 * smooth(4.5, 7.5, h) * (1 - smooth(19.5, 23.5, h));
       const byWeather = (1 - 0.6 * smooth(0.2, 0.7, w.snow)) * (1 - 0.5 * smooth(0.3, 0.8, w.fog)) * (1 - 0.4 * w.storm);
-      return Math.round(TRAFFIC_MAX * byHour * byWeather);
+      return Math.round(TRAFFIC_MAX * (TRAFFIC[this.traffic] || 1) * byHour * byWeather);
     }
 
     /** A point of the road inside the picture. */
@@ -512,7 +618,38 @@
         v: k.cruise * 0.7,
         paint: paints[Math.floor(Math.random() * paints.length)],
         lane: k.lane,
+        side: 0, // 0 its own lane, 1 out in the other to overtake, below 0 pulled in to the edge
+        sideTarget: 0,
+        pass: null, // the overtaking under way
+        cool: rand(5, 40), // seconds before it may think of overtaking
+        stopIn: kind === 'bus' ? rand(0.4, 3) : Infinity, // km to its next stop
+        stopping: false,
+        stopFor: 0,
+        blink: 0,
+        blinkFor: 0,
+        brake: 0,
+        brakeHold: 0, // seconds the brake lights stay on, so small changes of speed don't make them flicker
+        beam: 1, // 1 main beam, 0 dipped
+        flash: 0, // seconds left of a double flash of the main beam
+        flashedAt: -1,
+        seed: Math.random(),
       };
+    }
+
+    /** How far left of the centre line it drives, in km: its own lane, out to overtake, or in at a stop. */
+    _offset(c) {
+      return c.side >= 0 ? c.lane + (-PASS_LANE - c.lane) * c.side : c.lane * (1 - c.side);
+    }
+
+    /** Headlights come on as the light goes, and in thick weather. */
+    _lightsLevel(state) {
+      const w = state.weather;
+      return Math.max(1 - smooth(-4, 3, state.astro.sunAltDeg), smooth(0.35, 0.7, Math.max(w.fog, w.rain, w.snow)) * 0.8);
+    }
+
+    _signal(c, blink, seconds = 2.5) {
+      c.blink = blink;
+      c.blinkFor = seconds;
     }
 
     _pickVehicleKind() {
@@ -527,33 +664,222 @@
       // the road isn't empty when the picture first appears
       if (!this._trafficSeeded && this._view) {
         this._trafficSeeded = true;
-        for (let i = 0; i < want; i++) this.vehicles.push(this._newVehicle(this._pickVehicleKind(), Math.random() < 0.5 ? 1 : -1, rand(0, road.length)));
+        for (let i = 0; i < want; i++) {
+          const dir = Math.random() < 0.5 ? 1 : -1;
+          for (let tries = 0; tries < 20; tries++) {
+            const s = rand(0.02, road.length - 0.02);
+            if (this.vehicles.every((o) => o.dir !== dir || Math.abs(o.s - s) > 0.05)) {
+              this.vehicles.push(this._newVehicle(this._pickVehicleKind(), dir, s));
+              break;
+            }
+          }
+        }
       }
       this._nextVehicle -= dt;
       if (this._nextVehicle <= 0) {
-        this._nextVehicle = rand(6, 45);
+        this._nextVehicle = rand(6, 45) / (TRAFFIC[this.traffic] || 1);
         if (this.vehicles.length < want) {
           const dir = Math.random() < 0.5 ? 1 : -1;
           const s = dir > 0 ? 0.001 : road.length - 0.001;
-          if (this.vehicles.every((o) => o.dir !== dir || Math.abs(o.s - s) > 0.06)) this.vehicles.push(this._newVehicle(this._pickVehicleKind(), dir, s));
+          // clear in its lane: nothing near going its way, nor overtaking towards the end of the road in it
+          if (this.vehicles.every((o) => (o.dir !== dir && o.side < 0.3) || Math.abs(o.s - s) > 0.06)) this.vehicles.push(this._newVehicle(this._pickVehicleKind(), dir, s));
         }
       }
       const w = state.weather;
       const careful = 1 - 0.3 * smooth(0.1, 0.6, Math.max(w.rain, w.snow, w.fog));
+      const night = this._lightsLevel(state) > 0.3;
+      const idx = (s) => clamp(Math.round(s / road.step), 0, road.n - 1);
+      // which lanes it takes up: its own below 0.7, the other above 0.3, both while it moves across
+      const inOwn = (c) => c.side < 0.7;
+      const inOut = (c) => c.side > 0.3;
       for (const c of this.vehicles) {
-        const i = clamp(Math.round(c.s / road.step), 0, road.n - 1);
-        let target = Math.min(c.cruise * careful, road.limit[i]);
-        // keeps its distance from the one in front
+        const i = idx(c.s);
+        const cruise = Math.min(c.cruise * careful, road.limit[i]);
+        let target = cruise;
+        // what is around it: the nearest in front in each lane, and the nearest coming the other way
+        let ahead = null; // in its own lane
+        let aheadGap = 1e9;
+        let aheadOut = null; // in the other lane
+        let outGap = 1e9;
+        let onGap = 1e9; // anything coming, in either lane: for the beams and for overtaking
+        let headOn = 1e9; // coming the other way in a lane it takes up now
+        let mirror = true; // nobody beside it or coming up behind in the other lane
+        let passedBy = false; // someone is out overtaking it
+        let beside = null; // alongside it in its own lane: it can't move back in there
         for (const o of this.vehicles) {
-          if (o === c || o.dir !== c.dir) continue;
+          if (o === c) continue;
+          if (o.dir === c.dir && inOwn(o) && Math.abs(o.s - c.s) < (o.len + c.len) / 2 + 0.004) beside = o;
+          if (o.pass && o.pass.of === c && o.pass.phase === 1) passedBy = true;
           const gap = (o.s - c.s) * c.dir - (o.len + c.len) / 2;
-          if (gap <= 0 || gap > 0.08) continue;
+          if (o.dir === c.dir && inOut(o) && gap < 0.004 && gap > -(o.len + c.len) - 0.04) mirror = false;
+          if (o.dir !== c.dir && inOwn(o) && Math.abs(o.s - c.s) < (o.len + c.len) / 2 + 0.006) mirror = false; // alongside, coming
+          if (gap <= 0) continue;
+          if (o.dir === c.dir) {
+            if (inOwn(o) && gap < aheadGap) {
+              ahead = o;
+              aheadGap = gap;
+            }
+            if (inOut(o) && gap < outGap) {
+              aheadOut = o;
+              outGap = gap;
+            }
+          } else {
+            onGap = Math.min(onGap, gap);
+            // the other's own lane is the far lane for this one
+            if ((inOwn(o) && inOut(c)) || (inOut(o) && inOwn(c))) headOn = Math.min(headOn, gap);
+          }
+        }
+        // keeps its distance from the one in front, in each lane it takes up
+        const follow = (o, gap) => {
+          if (!o || gap > 0.08) return;
           if (gap < 0.012 + c.v * 2) target = Math.min(target, o.v * 0.95);
           if (gap < 0.006) target = 0;
+        };
+        if (inOwn(c)) follow(ahead, aheadGap);
+        if (inOut(c)) follow(aheadOut, outGap);
+        // one overtaking towards it in its lane: slow down, and stop if it must
+        if (!inOut(c) && headOn < 0.06) target = Math.min(target, headOn < 0.02 ? 0 : cruise * 0.5);
+        // being overtaken: a courteous driver does not speed up meanwhile
+        if (passedBy) target = Math.min(target, Math.max(c.v, 1e-4));
+        // out overtaking with something coming: slow down too, so it can drop back in behind
+        if (inOut(c) && headOn < 0.04) target = Math.min(target, headOn < 0.015 ? 0 : cruise * 0.4);
+
+        // ---- a bus stop: pull in, hazard lights while it waits, indicate and pull out
+        if (c.kind === 'bus' && !c.pass) {
+          c.stopIn -= c.v * dt;
+          if (c.stopIn <= 0 && !c.stopping && c.stopFor <= 0 && road.limit[i] > 0.007 && c.s > 0.2 && c.s < road.length - 0.2) {
+            c.stopping = true;
+            c.sideTarget = -0.5;
+            this._signal(c, BLINK_LEFT, 99);
+          }
+          if (c.stopping) {
+            target = 0;
+            if (c.v < 0.0003) {
+              c.stopping = false;
+              c.stopFor = rand(12, 40);
+              this._signal(c, BLINK_BOTH, 99);
+            }
+          } else if (c.stopFor > 0) {
+            target = 0;
+            c.stopFor -= dt;
+            if (c.stopFor < 3 && c.blink === BLINK_BOTH) this._signal(c, BLINK_RIGHT, 99);
+            if (c.stopFor <= 0 && headOn > 0.03) {
+              c.sideTarget = 0;
+              c.stopIn = rand(1.5, 4);
+              this._signal(c, BLINK_RIGHT, 2);
+            } else if (c.stopFor <= 0) c.stopFor = 0.5; // something is passing it: wait a moment more
+          }
         }
+
+        // ---- overtaking a slower one on a straight, when nothing is coming
+        c.cool -= dt;
+        if (!c.pass && c.cool <= 0 && mirror && ahead && aheadGap < 0.03 && c.side < 0.05 && !c.stopping && c.stopFor <= 0) {
+          const parked = ahead.stopFor > 0 || ahead.stopping;
+          const slow = parked || ahead.v < cruise * 0.8;
+          // and room to get back in beyond it
+          let room = 1e9;
+          for (const o of this.vehicles) {
+            if (o === ahead || o.dir !== c.dir || !inOwn(o)) continue;
+            const g = (o.s - ahead.s) * c.dir - (o.len + ahead.len) / 2;
+            if (g > 0) room = Math.min(room, g);
+          }
+          if (slow && room > 0.035 && !ahead.pass && (c.kind !== 'bus' || parked)) {
+            const vPass = Math.min(c.cruise * careful * 1.15, 0.016);
+            const gain = aheadGap + ahead.len + c.len + 0.02;
+            const time = gain / Math.max(vPass - ahead.v, 0.002);
+            const reach = vPass * time + 0.03;
+            let straight = true;
+            for (let d = 0; d < reach && straight; d += road.step) {
+              const s = c.s + c.dir * d;
+              if (s <= 0 || s >= road.length || road.limit[idx(s)] < vPass * 0.9) straight = false;
+            }
+            // what comes the other way covers ground meanwhile too
+            if (straight && onGap > reach + 0.013 * time + 0.06) {
+              c.pass = { of: ahead, phase: 0, wait: 1.5, vPass };
+              this._signal(c, BLINK_RIGHT, 99);
+              if (night) c.flash = 1.2; // "coming past"
+            } else c.cool = rand(3, 8);
+          } else c.cool = rand(3, 8);
+        }
+        if (c.pass) {
+          const p = c.pass;
+          const of = p.of;
+          const gone = !this.vehicles.includes(of);
+          const behindBy = gone ? -1 : (of.s - c.s) * c.dir + (of.len + c.len) / 2; // still to gain to be clear of its front
+          if (p.phase === 0) {
+            // signalling, then out
+            p.wait -= dt;
+            if (!mirror) p.wait = Math.max(p.wait, 0.3); // someone is passing it: wait
+            if (onGap < 0.15) p.phase = 3;
+            else if (p.wait <= 0) p.phase = 1;
+          } else if (p.phase === 1) {
+            c.sideTarget = 1;
+            if (c.side > 0.5) target = Math.min(p.vPass, road.limit[i]);
+            const rest = (behindBy + 0.008) / Math.max(c.v - (gone ? 0 : of.v), 0.001);
+            p.out = (p.out || 0) + dt;
+            if (p.out > 5 && !gone && c.v - of.v < 4e-4) p.phase = 3; // not gaining on it: give up
+            if (c.side < 0.5 && !mirror) p.phase = 3; // someone came up in that lane after all
+            const next = beside && beside !== of ? beside : ahead && ahead !== of && (ahead.s - c.s) * c.dir > 0 ? ahead : null;
+            if (behindBy < -0.008 && (!next || (next !== beside && aheadGap > 0.012 + c.v * 1.5))) {
+              p.phase = 2; // past it, with room: back in
+              c.sideTarget = 0;
+              this._signal(c, BLINK_LEFT, 99);
+            } else if (behindBy < -0.008) {
+              p.of = next; // the next one is close: past that one too, as long as the way stays clear
+              if (headOn < 0.12) {
+                p.phase = 2; // no time: back in behind it
+                c.sideTarget = 0;
+                this._signal(c, BLINK_LEFT, 99);
+              }
+            } else if (headOn < (c.v + 0.013) * rest + 0.04) {
+              p.phase = 3; // something is coming after all: drop back
+            }
+          }
+          if (p.phase === 2 && beside && c.side > 0.3) {
+            // something alongside in its lane after all: stay out and pass that one as well
+            p.phase = 1;
+            p.of = beside;
+            c.sideTarget = 1;
+          }
+          if (p.phase === 3) {
+            // back behind it before moving in, slowing down meanwhile
+            if ((behindBy > of.len + c.len + 0.003 || gone) && !beside) c.sideTarget = 0;
+            if (!gone) target = Math.min(target, of.v * 0.7);
+            if (c.blink !== BLINK_LEFT) this._signal(c, BLINK_LEFT, 99);
+          }
+          if ((p.phase === 2 || p.phase === 3) && c.sideTarget === 0 && c.side < 0.03) {
+            c.pass = null;
+            c.blinkFor = 0.8;
+            c.cool = rand(15, 60);
+          }
+        }
+
+        // ---- lights: main beam on an empty road, dipped for anyone near, a double flash before a blind hairpin
+        if (night) {
+          const dip = onGap < 0.25 || (ahead && aheadGap < 0.1);
+          c.beam += clamp((dip ? 0 : 1) - c.beam, -dt * 6, dt * 6);
+          const j = idx(c.s + c.dir * 0.07);
+          if (road.limit[j] < 0.0045 && road.limit[j] < road.limit[i] * 0.6 && Math.abs(c.s - c.flashedAt) > 0.25) {
+            c.flashedAt = c.s;
+            c.flash = 1.2;
+          }
+        }
+        c.flash = Math.max(c.flash - dt, 0);
+        if (c.blinkFor < 50) {
+          c.blinkFor -= dt;
+          if (c.blinkFor <= 0) c.blink = 0;
+        }
+
+        // ---- speed, braking, and the move across the road
         const dv = 1.2e-3 * dt;
+        // braking: a real slowing down (about 3 km/h below its speed), or standing still. Held a moment, as a driver
+        // keeps a foot on the pedal, instead of flickering with every small change of speed.
+        if (target < c.v - 8e-4 || (c.v < 3e-4 && target < 1e-4)) c.brakeHold = 1.2;
+        else c.brakeHold = Math.max(c.brakeHold - dt, 0);
+        c.brake += clamp((c.brakeHold > 0 ? 1 : 0) - c.brake, -dt * 4, dt * 8);
         c.v += clamp(target - c.v, -dv * 2, dv);
         c.s += c.dir * c.v * dt;
+        c.side += clamp(c.sideTarget - c.side, -dt * 0.5, dt * 0.5); // a lane in two seconds
       }
       this.vehicles = this.vehicles.filter((c) => c.s > 0 && c.s < road.length);
     }
@@ -562,7 +888,7 @@
       const v = this._view;
       const road = this.road;
       const R = LE.Road;
-      const off = -c.dir * c.lane; // on the left of its own direction
+      const off = -c.dir * this._offset(c); // left of its own direction, unless it is out overtaking
       const p = R.at(road, c.s, off, TMP[0]);
       const pr = this._project(p[0], p[1], p[2]);
       if (!this._inView(pr, 30)) return;
@@ -579,48 +905,182 @@
       const ps = this._project(p[0] + (fz / flat) * hw, p[1], p[2] - (fx / flat) * hw);
       const ax = (pf.sx - pb.sx) / 2;
       const ay = (pf.sy - pb.sy) / 2;
-      const bx = ps.sx - pr.sx;
+      const bx = ps.sx - pr.sx; // towards its right side
       const by = ps.sy - pr.sy;
       const halfH = Math.max(c.hgt / pr.r / v.pxAng, 0.9) / 2;
       const toCam = [-p[0], v.camY - p[1], -p[2]];
       const dist = Math.hypot(toCam[0], toCam[1], toCam[2]);
       const facing = (fx * toCam[0] + fy * toCam[1] + fz * toCam[2]) / (fl * dist);
-      const lamp = lights * R.headlight(facing);
+      // a flash of the main beam shows by day as well
+      const flashing = c.flash > 0.85 || (c.flash > 0.25 && c.flash < 0.6) ? 1 : 0;
+      const lampOn = Math.max(lights, flashing * 0.6);
+      const lamp = lampOn * R.headlight(facing);
+      const beam = Math.max(c.beam, flashing);
+      // tail lights: on whenever the headlights are, and brighter when braking, by day as well
+      const rear = R.taillight(facing);
+      const tail = rear * Math.max(lights * 0.5, c.brake * (0.3 + 0.7 * lights)); // by day a brake light is a small red point
+      const braking = rear * c.brake;
+      const blinkLit = c.blink && ((this.t * 1.4 + c.seed) % 1) < 0.55 ? c.blink : 0;
       let qx = Math.abs(ax) + Math.abs(bx) + 1.5;
       let qy = Math.abs(ay) + Math.abs(by) + halfH + 1.5;
+      // room for the whole glow, so it fades out before the edge of the patch it is drawn on
       if (lamp > 0.003) {
-        qx = Math.max(qx, 11);
-        qy = Math.max(qy, 11);
+        qx = Math.max(qx, Math.abs(ax) + Math.abs(bx) + 12 + 8 * beam);
+        qy = Math.max(qy, Math.abs(ay) + Math.abs(by) + halfH + 12 + 8 * beam);
       }
+      if (tail > 0.003 || blinkLit) {
+        qx = Math.max(qx, Math.abs(ax) + Math.abs(bx) + 12);
+        qy = Math.max(qy, Math.abs(ay) + Math.abs(by) + halfH + 12);
+      }
+      // the light it throws on the road and the trees ahead: seen from any side, so before the vehicle itself
+      if (lights > 0.02) this._pushBeam(c, f, [fx / fl, fy / fl, fz / fl], lights, beam, dist);
       this._push([
         pr.sx, pr.sy + halfH, qx, qy,
         0, 6, 1, dist,
         ax, ay, bx, by,
         halfH, c.paint, lamp, c.code,
+        tail, beam, blinkLit, braking,
       ]);
+    }
+
+    /** Type 7: the patch of light ahead of a vehicle, longer and narrower on main beam, small for a motorcycle. */
+    _pushBeam(c, front, fwd, lights, beam, dist) {
+      const k = VEHICLES[c.kind];
+      const lampP = [front[0], front[1] + k.lampH, front[2]];
+      const range = k.low + (k.high - k.low) * beam;
+      const cone = k.cone + (1 - k.cone) * 0.45 * beam;
+      // the light fades to nothing at this angle off its axis: the same as the shader
+      const outer = Math.max(cone - 0.22, 0.35);
+      const spread = Math.sqrt(1 - outer * outer) / outer;
+      const sl = Math.hypot(fwd[0], fwd[2]) || 1;
+      const rx = fwd[2] / sl;
+      const rz = -fwd[0] / sl;
+      let x0 = 1e9;
+      let x1 = -1e9;
+      let y0 = 1e9;
+      let y1 = -1e9;
+      // everything it can light: the road, and the slope falling away below it or rising with its trees above it
+      for (const along of [0, 0.25, 0.5, 0.75, 1]) {
+        const half = range * along * spread + 0.004;
+        for (const across of [-half, 0, half]) {
+          for (const up of [-k.lampH - 0.03, 0.02]) {
+            const q = this._project(lampP[0] + fwd[0] * range * along + rx * across, lampP[1] + fwd[1] * range * along + up, lampP[2] + fwd[2] * range * along + rz * across);
+            x0 = Math.min(x0, q.sx);
+            x1 = Math.max(x1, q.sx);
+            y0 = Math.min(y0, q.sy);
+            y1 = Math.max(y1, q.sy);
+          }
+        }
+      }
+      const v = this._view;
+      if (x1 < -10 || x0 > v.w + 10 || y1 < -10 || y0 > v.h + 10) return;
+      const w = this.state ? this.state.weather : { fog: 0, rain: 0, snow: 0 };
+      const haze = Math.max(w.fog, w.rain * 0.7, w.snow * 0.8);
+      this._push([
+        (x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0) / 2 + 6, (y1 - y0) / 2 + 6,
+        0, 7, lights * k.power * (0.8 + 0.7 * beam), dist,
+        lampP[0], lampP[1], lampP[2], range,
+        fwd[0], fwd[1], fwd[2], cone,
+        haze, 0, 0, 0,
+      ]);
+    }
+
+    /** Is this kind of smoke or mist turned on? (Anything else: yes.) */
+    _smokeOn(kind) {
+      if (kind === SMOKE.mist) return this.enabled && this.mist;
+      if (kind === SMOKE.village) return this.enabled && this.villageSmoke;
+      if (kind === SMOKE.fire) return this.enabled && this.fires;
+      return true;
     }
 
     _stepSmoke(dt, state) {
       const a = state.astro;
       const w = state.weather;
       const h = state.now.getHours() + state.now.getMinutes() / 60;
-      // cooking fires: early morning and evening; more in the cold months
+      // smoke and mist are blown apart by a strong wind, washed out by heavy rain, and hidden in thick fog
+      const calm = (1 - smooth(25, 45, w.windSpeed)) * (1 - smooth(0.3, 0.7, w.fog));
+
+      // ---- village smoke: a little all day, more at cooking times, a fire kept in through the night now and then
       const cooking = Math.max(Math.exp(-((h - 7.0) ** 2) / 1.2), Math.exp(-((h - 18.3) ** 2) / 1.0));
-      const winter = 0.6 + 0.4 * Math.cos((2 * Math.PI * (a.dayOfYear - 15)) / 365);
-      const visible = smooth(-6, 2, a.sunAltDeg) * (1 - smooth(0.05, 0.3, w.rain)) * (1 - smooth(25, 45, w.windSpeed)) * (1 - smooth(0.3, 0.7, w.fog));
-      const want = this.enabled ? Math.round(Math.min(this.smokeSources.length, 7) * cooking * winter * visible) : 0;
-      while (this.smoke.length < want) {
-        const used = new Set(this.smoke.map((s) => s.src));
-        const free = this.smokeSources.filter((s) => !used.has(s));
-        if (!free.length) break;
-        const src = free[Math.floor(Math.random() * free.length)];
-        this.smoke.push({ src, alpha: 0, seed: Math.random(), target: rand(0.25, 0.5) });
+      const awake = smooth(5, 6.5, h) * (1 - smooth(21.5, 23, h));
+      const winter = 0.7 + 0.3 * Math.cos((2 * Math.PI * (a.dayOfYear - 15)) / 365);
+      const village = Math.min(0.08 + 0.27 * awake + cooking, 1) * winter * calm * (1 - smooth(0.05, 0.3, w.rain));
+      const wantVillage = (this._smokeOn(SMOKE.village) ? 1 : 0) * Math.round(Math.min(this.smokeSources.length, 7) * village);
+      const houses = this.smoke.filter((s) => s.kind === SMOKE.village && !s.fading && !s.held);
+      if (houses.length < wantVillage) {
+        const s = this._newPlume(SMOKE.village);
+        if (s) this.smoke.push(s);
+      } else if (houses.length > wantVillage) houses[houses.length - 1].fading = true;
+      for (const s of this.smoke) if (s.kind === SMOKE.village) s.fire = 0.5 * cooking * smooth(-2, -8, a.sunAltDeg);
+
+      // ---- mist off the forest: when the air is humid or the canopy wet, most in the morning and the evening
+      const tod = 0.55 + 0.45 * Math.max(Math.exp(-((h - 7.5) ** 2) / 4), Math.exp(-((h - 18) ** 2) / 3));
+      const humid = Math.max(w.wet || 0, smooth(0.5, 0.95, w.mist || 0), 0.8 * smooth(0.05, 0.3, w.rain));
+      const steamy = humid * (1 - smooth(0.6, 0.95, w.rain)) * calm;
+      const wantMist = (this._smokeOn(SMOKE.mist) ? 1 : 0) * Math.round(Math.min(this.forestSources.length, 8) * steamy * tod);
+      const wisps = this.smoke.filter((s) => s.kind === SMOKE.mist && !s.fading && !s.held).length;
+      this._nextWisp -= dt;
+      if (wisps < wantMist && this._nextWisp <= 0) {
+        // one at a time, so they come and go here and there rather than all at once
+        this._nextWisp = rand(8, 30);
+        const s = this._newPlume(SMOKE.mist);
+        if (s) this.smoke.push(s);
+      } else if (wisps > wantMist) {
+        const s = this.smoke.find((x) => x.kind === SMOKE.mist && !x.fading && !x.held);
+        if (s) s.fading = true;
       }
-      if (this.smoke.length > want) this.smoke.forEach((s, i) => { if (i >= want) s.fading = true; });
+
+      // ---- a field burning on a hill: now and then, more in the dry months, never in rain
+      const dryMonths = 0.5 + 0.5 * Math.cos((2 * Math.PI * (a.dayOfYear - 60)) / 365);
+      const dry = dryMonths * (1 - smooth(0.4, 0.9, w.mist || 0)) * (1 - (w.wet || 0)) * (1 - smooth(0.02, 0.2, w.rain));
+      this._nextFire -= dt;
+      if (this._nextFire <= 0) {
+        this._nextFire = rand(2400, 9000);
+        const burning = this.smoke.some((s) => s.kind === SMOKE.fire);
+        if (this._smokeOn(SMOKE.fire) && !burning && h > 9 && h < 19.5 && Math.random() < 0.25 + 0.75 * dry) {
+          const s = this._newPlume(SMOKE.fire);
+          if (s) this.smoke.push(s);
+        }
+      }
+      for (const s of this.smoke) if (s.kind === SMOKE.fire && w.rain > 0.3) s.fading = true; // put out by the rain
+
+      // ---- each one grows, lives its time, and dissolves
       for (const s of this.smoke) {
-        s.alpha += ((s.fading ? 0 : s.target) - s.alpha) * (1 - Math.exp(-dt / 20));
+        if (!this._smokeOn(s.kind)) s.fading = true;
+        s.age += dt;
+        if (s.age > s.life) s.fading = true;
+        const goal = s.fading ? 0 : s.target * (s.kind === SMOKE.village ? 1 : calm);
+        s.alpha += (goal - s.alpha) * (1 - Math.exp(-dt / s.ease));
       }
       this.smoke = this.smoke.filter((s) => !(s.fading && s.alpha < 0.01));
+    }
+
+    /** A new plume of this kind at a free place for it, or null if there is none. */
+    _newPlume(kind) {
+      const list = kind === SMOKE.village ? this.smokeSources : this.forestSources;
+      const used = new Set(this.smoke.map((s) => s.src));
+      let free = list.filter((s) => !used.has(s));
+      if (!free.length) return null;
+      if (kind !== SMOKE.village && this._view) {
+        // A field on the slopes a few km off, where its smoke reads: one far across the valley is only a grey thread,
+        // and one right below fills the view. Failing that, the forest nearest to 5 km. Mist within 7 km: further out
+        // the valley mist takes over, and a patch of it on its own looks like a cloud that has lost its way.
+        const camY = this._view.camY;
+        const dist = (s) => Math.hypot(s.x, s.y - camY, s.z);
+        const [lo, hi] = kind === SMOKE.fire ? [3, 8] : [1.2, 7];
+        const near = free.filter((s) => dist(s) > lo && dist(s) < hi);
+        if (near.length) free = near;
+        else if (kind === SMOKE.fire) free = [free.reduce((a, b) => (Math.abs(dist(a) - 5) < Math.abs(dist(b) - 5) ? a : b))];
+        else return null;
+      }
+      const src = free[Math.floor(Math.random() * free.length)];
+      const base = { src, kind, alpha: 0, seed: Math.random(), age: 0, fire: 0, fading: false };
+      // mist: a low patch, wider than it is tall, a few hundred metres across
+      if (kind === SMOKE.mist) return Object.assign(base, { target: rand(0.55, 0.85), rise: rand(0.12, 0.32), width: rand(0.3, 0.7), life: rand(240, 720), ease: 30 });
+      // a field: a broad front of fire, its smoke pouring up a few hundred metres and spreading
+      if (kind === SMOKE.fire) return Object.assign(base, { target: rand(0.8, 0.95), rise: rand(0.45, 0.8), width: rand(0.12, 0.2), life: rand(1500, 4000), ease: 60, fire: 1 });
+      // a village's hearths: their smoke rises together and spreads in a layer over the roofs
+      return Object.assign(base, { target: rand(0.45, 0.7), rise: rand(0.2, 0.4), width: rand(0.06, 0.1), life: rand(1200, 5400), ease: 20 });
     }
 
     _stepMeteors(dt, state) {
@@ -646,13 +1106,13 @@
         if (!best || z > best.z) best = { sh, z, rd, act };
       }
       this.activeShower = best && best.act > 0.2 ? best.sh.name : null;
-      const perSec = (rate * 0.18 * dark * clear * (this.enabled ? 1 : 0)) / 3600;
+      const perSec = (rate * 0.18 * dark * clear * (this.enabled && this.shootingStars ? 1 : 0)) / 3600;
       if (Math.random() < perSec * dt && this.meteors.length < 4) {
         const fromShower = best && Math.random() < best.z / rate;
         this.meteors.push(this._newMeteor(fromShower ? best.rd : null, state));
       }
       for (const me of this.meteors) me.age += dt;
-      this.meteors = this.meteors.filter((me) => me.age < me.dur + 0.35);
+      this.meteors = this.meteors.filter((me) => me.age < me.dur + 0.7);
     }
 
     _newMeteor(radiant, state) {
@@ -677,12 +1137,19 @@
       }
       const nT = Math.hypot(...T) || 1;
       T = T.map((x) => x / nT);
-      const lenRad = rand(4, 16) * D2R;
+      const mag = Math.pow(Math.random(), 2.2) * 5 - 1.5; // mostly faint, a few bright
+      // a short scratch across the sky: a faint one a degree or two, the brightest up to about six. Longer looked
+      // like a comet across a sky only some 25 degrees tall on the picture.
+      const lenRad = (1.5 + 4.5 * clamp((3.5 - mag) / 5, 0, 1) * rand(0.6, 1)) * D2R;
       const p0 = this._projectDir(P);
       const P1 = P.map((x, i) => x + T[i] * lenRad);
       const p1 = this._projectDir(P1);
-      const mag = Math.pow(Math.random(), 2.2) * 5 - 1.5; // mostly faint, a few bright
-      return { p0, p1, age: 0, dur: rand(0.25, 0.9), bright: 0.9 * Math.pow(2.512, -mag) };
+      return {
+        p0, p1, age: 0, dur: rand(0.2, 0.7), bright: 0.9 * Math.pow(2.512, -mag),
+        trail: rand(0.35, 0.75), // how much of its path still glows behind the head
+        flareAt: rand(0.5, 0.95), // where along its path it flares, if it does
+        flare: Math.random() < 0.35 ? rand(0.6, 2) : 0,
+      };
     }
 
     _stepSatellites(dt, state) {
@@ -691,7 +1158,7 @@
       // sunlit satellites against a dark sky: roughly the first/last ~2 h of night
       const window = smooth(-6, -10, a.sunAltDeg) * (1 - smooth(-24, -32, a.sunAltDeg));
       const clear = 1 - 0.95 * smooth(0.3, 0.9, w.coverage);
-      const perSec = (window * clear * (this.enabled ? 1 : 0)) / 200;
+      const perSec = (window * clear * (this.enabled && this.shootingStars ? 1 : 0)) / 200;
       if (Math.random() < perSec * dt && this.sats.length < 3) {
         const v = this._view;
         const az = rand(-0.5, 0.5) * v.hfov;
@@ -735,7 +1202,9 @@
     // ------------------------------------------------------------ instance buffer
     _push(vals) {
       if (this.count >= MAX) return;
-      this.data.set(vals, this.count * FLOATS);
+      const at = this.count * FLOATS;
+      this.data.set(vals, at);
+      if (vals.length < FLOATS) this.data.fill(0, at + vals.length, at + FLOATS);
       this.count++;
     }
 
@@ -791,9 +1260,8 @@
 
     _write(state) {
       this.count = 0;
-      // Headlights come on as the light goes, and in thick weather. Too slow on the picture to need a higher frame rate.
-      const w0 = state.weather;
-      const lights = Math.max(1 - smooth(-4, 3, state.astro.sunAltDeg), smooth(0.35, 0.7, Math.max(w0.fog, w0.rain, w0.snow)) * 0.8);
+      // Vehicles are too slow on the picture to need a higher frame rate, and their indicators blink well within it.
+      const lights = this._lightsLevel(state);
       for (const c of this.vehicles) this._pushVehicle(c, lights);
       const vehiclesInView = this.count;
       for (const r of this.raptors) this._pushBird(r);
@@ -801,42 +1269,43 @@
       if (this.geese) for (const b of this.geese.birds) this._pushBird(b);
       const birdsInView = this.count - vehiclesInView;
 
-      // chimney smoke
+      // mist and smoke rising from the hills go to the volume pass; only the glow of a fire where it burns is drawn
+      // here, a small patch round its foot (the shader shows it by night only)
       const v = this._view;
-      const w = state.weather;
+      this._writePlumes(this.smoke, state);
       for (const s of this.smoke) {
+        if (s.kind === SMOKE.mist || s.fire < 0.01) continue;
         const p = s.src;
         const pr = this._project(p.x, p.y, p.z);
-        if (!this._inView(pr, 60)) continue;
+        if (!this._inView(pr, 30)) continue;
         const dist = Math.hypot(p.x, p.y - v.camY, p.z);
-        const pxPerKm = 1 / (dist * v.pxAng);
-        const hPx = 0.12 * pxPerKm; // wood smoke rises ~120 m before it thins out
-        const wPx = Math.max(0.022 * pxPerKm, 3);
-        const lean = clamp((w.rainSlant || 0) * 4 + Math.sin(state.time * 0.02 + s.seed * 10) * 0.25, -0.9, 0.9);
-        const hx = wPx * (1 + Math.abs(lean) * 3);
+        const R = 24;
         this._push([
-          pr.sx, pr.sy + hPx * 0.5, hx, hPx * 0.5,
+          pr.sx, pr.sy + R, R, R,
           0, 5, s.alpha, dist,
-          lean * 0.9, s.seed, wPx / hx * 0.6, 0,
-          0, 0, 0, 0,
+          0, s.seed, 0, s.kind,
+          s.fire, 0, 0, 0,
         ]);
       }
 
       const skyFrom = this.count;
 
-      // meteors (head runs from p0 to p1, tail follows)
+      // meteors: a hair-thin line growing from where it starts, brightest at its head, sometimes flaring once, and
+      // ending at once; the faint train it leaves behind fades in a moment
       for (const me of this.meteors) {
         const k = clamp(me.age / me.dur, 0, 1);
         const head = [me.p0[0] + (me.p1[0] - me.p0[0]) * k, me.p0[1] + (me.p1[1] - me.p0[1]) * k];
-        const tk = clamp(k - 0.45, 0, 1);
+        const tk = clamp(k - me.trail, 0, 1);
         const tail = [me.p0[0] + (me.p1[0] - me.p0[0]) * tk, me.p0[1] + (me.p1[1] - me.p0[1]) * tk];
         const len = Math.max(Math.hypot(head[0] - tail[0], head[1] - tail[1]), 2);
-        const fade = smooth(0, 0.08, me.age) * (1 - smooth(me.dur * 0.75, me.dur + 0.35, me.age));
+        const burning = me.age < me.dur ? 1 : 0;
+        const glow = smooth(0, 0.05, me.age) * (1 + me.flare * Math.exp(-((k - me.flareAt) ** 2) / 0.006) * burning);
+        const train = Math.exp(-Math.max(me.age - me.dur, 0) / 0.18);
         const ang = Math.atan2(head[1] - tail[1], head[0] - tail[0]);
         this._push([
-          (head[0] + tail[0]) / 2, (head[1] + tail[1]) / 2, len / 2 + 4, 4,
+          (head[0] + tail[0]) / 2, (head[1] + tail[1]) / 2, len / 2 + 3, 3,
           ang, 3, 1, 0,
-          0, me.bright * fade * state.starVis * 4, 0, 0.9,
+          burning, Math.min(me.bright * glow * train * state.starVis * 2, 2.5), 0, 0.55,
           0, 0, 0, 0,
         ]);
       }

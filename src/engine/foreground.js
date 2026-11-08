@@ -619,11 +619,15 @@
 
   // ---------------------------------------------------------------- the tree and the falling leaves
   class Foreground {
+    /** Read each frame, so the tree can be turned on and off while the wallpaper runs. */
+    get enabled() {
+      return this.r.cfg.render.tree !== false;
+    }
+
     constructor(renderer) {
       const gl = renderer.gl;
       this.r = renderer;
       this.gl = gl;
-      this.enabled = renderer.cfg.render.tree !== false;
       this.site = [0, 0, 11];
       this.box = null;
       this.ms = null;
