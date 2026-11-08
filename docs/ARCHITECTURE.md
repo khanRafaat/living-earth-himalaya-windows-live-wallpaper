@@ -18,10 +18,10 @@ startup (once, in strips)   bake.js       G-buffer: 20+ octaves of terrain, indi
 when the sun moves 0.35°    shadow        soft terrain + tree shadows, double-buffered and cross-faded
 ~1 Hz                       transLUT      atmospheric transmittance (Rayleigh, Mie, ozone, Earth's shadow)
 ~1 Hz                       skyLUT        single-scattering sky radiance, lit by sun AND moon, plus airglow
-every frame (40–50% res)    volume        clouds + valley mist/fog, temporally accumulated
+every frame (40–50% res)    volume        clouds, valley mist/fog, and mist and smoke rising off the hills, temporally accumulated
 10 Hz (64×18)               meter/adapt   camera-like auto exposure
 every frame (full res)      composite     relight, aerial perspective, sky, moon, stars, cirrus, rain, snow, village lights, wind in the trees, tone map
-every frame (instanced)     sprites       birds, chimney smoke, meteors, satellites — depth-tested against the bake
+every frame (instanced)     sprites       birds, road vehicles and their beams, fire glows, meteors, satellites — depth-tested against the bake
 when due (4–30 Hz)          tree          bark and leaves into their own multisampled target, moved by the wind
 every frame                 tree overlay  that target laid over the picture, with falling leaves before and after it
 ```
@@ -33,7 +33,9 @@ every frame                 tree overlay  that target laid over the picture, wit
   - **Chough flocks:** boids (cohesion, alignment, separation, wandering target) with flap-and-glide rhythm. Most frequent at dawn and dusk.
   - **Geese/cranes:** V-formation, heading south-west in autumn and north-east in spring; rare outside the migration seasons.
 - Villages are part of the bake: forest is cleared, terraced fields follow the contours (faded where sub-pixel), and houses are placed on a 30 m jittered grid. Each lamp's exact screen position is projected in the bake and stored in G3; the composite applies a per-house schedule (staggered switch-on at dusk, most off 21:00–24:00, a few all night, early risers before dawn). Lamps dim with distance like real point lights.
-- Chimney smoke sources are picked once after the bake from lit houses 1.5–12 km away. Plumes appear at breakfast and dinner times (more in winter) and lean with the crosswind.
+- Village smoke sources are picked once after the bake from lit houses 1.5–20 km away, forest sources from the canopy 1.2–14 km away. Village smoke rises at breakfast and dinner times (more in winter), mist lifts off the forest when the air is humid or it has rained, and now and then a field burns on a slope 3–8 km off in the dry months.
+- Mist and smoke are not pictures: `_writePlumes` hands the volume pass up to 16 of them (8 of mist), nearest first, as a foot, a height, a radius and where the wind has carried the top. `plumeDensity` and `smokeDensity` in `shaders/volume.js` build them as the cloud deck is built, billow noise thresholded inside an envelope, so mist forms small clouds with torn edges and a field's smoke rises, widens, wanders, bends downwind along a crosswind plume's curve and spreads where it stops rising. A village's smoke is a see-through haze instead, with no hard edge, torn into streaks drawn out along the wind; `smokeLook` gives each its own character from its seed (one hearth or many, where and how far it spreads, puff size, wander), and `_writePlumes` its own drift. Each is marched only near its axis, and self-shadowed towards the light and the sky. Only a fire's night glow at its foot is a sprite.
+- The road (`engine/road.js`) is planned on the real terrain after the bake. Buses, jeeps and motorcycles keep to their lanes, slow for bends, overtake with mirror checks and stop at bus stops. A vehicle is lit by the shadow on the road under it (sampled along its length), and its faces are sampled four times per pixel so it doesn't shimmer as it moves. By night its headlights throw a soft pool (sprite type 7) that relights whatever the bake stored there.
 - Meteors: a sporadic background plus seven annual showers (Gaussian activity around each peak date, scaled by radiant altitude computed through the star matrix). They streak away from the radiant and need sun below −12°, little moonlight and clear skies.
 - Satellites appear only while the sun is 6–30° below the horizon (sunlit satellites against a dark sky).
 

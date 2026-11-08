@@ -144,7 +144,9 @@ for (const name of want) {
   await ev(`(() => { LE.clock.configure({ time: '${time}', date: '${DATE}' }); __le.env.w = null; __le.renderer._adaptReset = true; return __frames(3); })()`);
   // new sun, new shadows: wait for them, then let the sky and the eye settle
   for (let k = 0; k < 600 && (await ev('__le.renderer.status')) !== 'running'; k++) await sleep(1000);
-  await ev('__frames(12)');
+  // smoke over the villages, as there is most of the day: it takes minutes to gather by itself
+  await ev(`(() => { const L = __le.renderer.life; L.smoke = L.smoke.filter((s) => !s.held); L.summon('smoke'); return true; })()`);
+  await ev('__frames(16)');
   const url = await ev(`__jpeg(${QUALITY})`);
   const file = path.join(outDir, name + '.jpg');
   writeFileSync(file, Buffer.from(url.split(',')[1], 'base64'));

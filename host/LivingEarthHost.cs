@@ -43,7 +43,9 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("Living Earth Himalaya")]
 [assembly: AssemblyProduct("Living Earth Himalaya")]
-[assembly: AssemblyCopyright("Khan Rafaat Abtahe. MIT licence")]
+[assembly: AssemblyCompany("Khan Rafaat Abtahe")]
+[assembly: AssemblyCopyright("© 2026 Khan Rafaat Abtahe. MIT licence")]
+[assembly: AssemblyDescription("Living Earth Himalaya live wallpaper. Author: Khan Rafaat Abtahe")]
 [assembly: AssemblyVersion("2.1.0.0")]
 [assembly: AssemblyFileVersion("2.1.0.0")]
 
@@ -588,10 +590,11 @@ namespace LivingEarth
             maximizedItem = ModeItem("Animate unless a window is maximized", RestMode.Maximized);
             pausedItem = ModeItem("Pause (keep the current picture)", RestMode.Paused);
             startupItem = new ToolStripMenuItem("Start with Windows", null, delegate { SetStartup(!StartsWithWindows()); }) { Checked = StartsWithWindows() };
+            var aboutItem = new ToolStripMenuItem("About Living Earth Himalaya", null, delegate { AboutForm.ShowOnce(); });
             menu.Items.AddRange(new ToolStripItem[]
             {
                 statusItem, new ToolStripSeparator(), settingsItem, new ToolStripSeparator(), desktopItem, maximizedItem, pausedItem,
-                new ToolStripSeparator(), startupItem, new ToolStripMenuItem("Exit (back to the normal wallpaper)", null, delegate { Quit(); })
+                new ToolStripSeparator(), startupItem, aboutItem, new ToolStripMenuItem("Exit (back to the normal wallpaper)", null, delegate { Quit(); })
             });
             tray = new NotifyIcon { Icon = AppIcon, Text = "Living Earth Himalaya", ContextMenuStrip = menu, Visible = false };
             tray.DoubleClick += delegate { ShowSetup(); };
@@ -1407,6 +1410,98 @@ namespace LivingEarth
     }
 
     // ====================================================================== the setup window
+    /// <summary>
+    /// About the app: its version, who made it and how, where to find it, its licence and the data it uses. One at a time.
+    /// </summary>
+    public sealed class AboutForm : Form
+    {
+        private static AboutForm open;
+
+        public static void ShowOnce()
+        {
+            if (open == null || open.IsDisposed)
+            {
+                open = new AboutForm();
+                open.Show();
+            }
+            if (open.WindowState == FormWindowState.Minimized) open.WindowState = FormWindowState.Normal;
+            open.Activate();
+        }
+
+        /// <summary>The version people see: 2.1.0, from the exe's own version.</summary>
+        public static string VersionText
+        {
+            get
+            {
+                Version v = typeof(AboutForm).Assembly.GetName().Version;
+                return v.Major + "." + v.Minor + "." + v.Build;
+            }
+        }
+
+        public AboutForm()
+        {
+            const int W = 440, Pad = 24;
+            SuspendLayout();
+            AutoScaleMode = AutoScaleMode.Dpi;
+            AutoScaleDimensions = new SizeF(96F, 96F);
+            Font = new Font("Segoe UI", 9F);
+            BackColor = Color.White;
+            ForeColor = Color.FromArgb(26, 26, 26);
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.CenterScreen;
+            Text = "About Living Earth Himalaya";
+            Icon = Host.AppIcon;
+
+            int y = Pad;
+            Controls.Add(new Label { Text = "Living Earth Himalaya", Location = new Point(Pad, y), AutoSize = true, Font = new Font("Segoe UI Semibold", 14F) });
+            y += 34;
+            Controls.Add(new Label { Text = "Version " + VersionText, Location = new Point(Pad, y), AutoSize = true, ForeColor = Color.FromArgb(96, 96, 96) });
+            y += 26;
+            y = Para("A free live wallpaper for Windows: a Himalayan panorama whose sun, moon, stars, clouds, wind, rain and snow follow the real sky and your local weather.", Pad, y, W - 2 * Pad);
+            y += 10;
+            Controls.Add(new Label { Text = "Author: Khan Rafaat Abtahe", Location = new Point(Pad, y), AutoSize = true, Font = new Font("Segoe UI Semibold", 9F) });
+            y += 22;
+            y = Link("februne.com", "https://februne.com", Pad, y);
+            y = Link("rafaatabtahe@gmail.com", "mailto:rafaatabtahe@gmail.com", Pad, y);
+            y = Link("Source code, help and every version on GitHub", Program.ProjectUrl, Pad, y);
+            y += 10;
+            y = Para("A personal hobby project, shared as open source. Designed and planned by Khan Rafaat Abtahe; the code was written using Claude.", Pad, y, W - 2 * Pad);
+            y += 6;
+            y = Para("MIT licence. Weather data from Open-Meteo (CC BY 4.0). Sun and moon formulas adapted from SunCalc (BSD-2-Clause), with moon terms from Meeus, Astronomical Algorithms.", Pad, y, W - 2 * Pad);
+            y += 16;
+            var ok = new Button { Text = "OK", Location = new Point(W - Pad - 90, y), Size = new Size(90, 30), UseVisualStyleBackColor = true, DialogResult = DialogResult.OK };
+            ok.Click += delegate { Close(); };
+            Controls.Add(ok);
+            AcceptButton = ok;
+            CancelButton = ok;
+            y += 30 + Pad;
+            ClientSize = new Size(W, y);
+            ResumeLayout(false);
+        }
+
+        private int Para(string text, int x, int y, int w)
+        {
+            var l = new Label { Text = text, Location = new Point(x, y), MaximumSize = new Size(w, 0), AutoSize = true, ForeColor = Color.FromArgb(64, 64, 64) };
+            Controls.Add(l);
+            return y + l.PreferredHeight + 4;
+        }
+
+        private int Link(string text, string url, int x, int y)
+        {
+            var l = new LinkLabel { Text = text, Location = new Point(x, y), AutoSize = true };
+            l.LinkClicked += delegate
+            {
+                try { Process.Start(url); }
+                catch (Exception) { }
+            };
+            Controls.Add(l);
+            return y + 22;
+        }
+    }
+
     public sealed class SetupForm : Form
     {
         private const int W = 560, Pad = 24, Indent = 22, BannerH = 150;
@@ -1574,6 +1669,9 @@ namespace LivingEarth
                 catch (Exception) { }
             };
             Controls.Add(link);
+            var about = new LinkLabel { Text = "About", Location = new Point(link.Right + 18, y + 9), AutoSize = true };
+            about.LinkClicked += delegate { AboutForm.ShowOnce(); };
+            Controls.Add(about);
             setButton = new Button
             {
                 Text = "Set wallpaper", Location = new Point(W - Pad - 150, y), Size = new Size(150, 34),

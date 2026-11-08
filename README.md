@@ -8,13 +8,13 @@ You do not need Lively, Wallpaper Engine, Steam, an installer, admin rights or a
 
 ## Download and set your wallpaper
 
-### **[Download LivingEarthHimalaya-2.0.1.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.0.1/LivingEarthHimalaya-2.0.1.exe)**
+### **[Download LivingEarthHimalaya-2.1.0.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.1.0/LivingEarthHimalaya-2.1.0.exe)**
 
-About 0.2 MB. For Windows 11 version 24H2 or later.
+About 2.4 MB. For Windows 11 version 24H2 or later.
 
 1. **Download the exe** and move it somewhere it can stay, such as your Documents folder. "Start with Windows" remembers where it is.
 2. **Double-click it.** There is nothing to install. If Windows shows "Windows protected your PC", click **More info**, then **Run anyway**.
-3. **Choose your options and click Set wallpaper.** Pick your location, when it should animate, the quality, and whether to start with Windows.
+3. **Choose your options and click Set wallpaper.** Pick your location, when it should animate, what is in the scene, the clock and weather panel, the quality, and whether to start with Windows.
 
 The mountains now sit behind your desktop icons like a normal wallpaper, with a small icon in the system tray. The first start prepares the graphics and shapes the mountains, which can take a few minutes. Later starts take about 15 seconds.
 
@@ -28,6 +28,7 @@ The mountains now sit behind your desktop icons like a normal wallpaper, with a 
 |---|---|
 | Change settings | Double-click the tray icon. |
 | Pause it | Right-click the tray icon and choose **Pause (keep the current picture)**. |
+| See the version and who made it | Right-click the tray icon and choose **About Living Earth Himalaya**. |
 | Go back to your normal wallpaper | Right-click the tray icon and choose **Exit (back to the normal wallpaper)**. |
 | Remove it | Turn off **Start with Windows** in the tray menu and exit. Then delete the exe and the folder `%LOCALAPPDATA%\LivingEarth`. |
 
@@ -35,8 +36,11 @@ The mountains now sit behind your desktop icons like a normal wallpaper, with a 
 |---|---|
 | Location | Found automatically, or choose a place by name or by latitude and longitude. It sets the sun, moon and weather. |
 | Wallpaper mode | **Animate while you look at the desktop** is the lightest. **Animate unless a window is maximized or full screen** moves more often. **Paused** keeps a still picture. In the first two, it keeps moving gently while you work and is never behind the real sky when you come back. |
+| In the scene | Turn each part on or off: the road and its traffic (light, normal or busy), the tree on the rock, flying leaves, birds, shooting stars, village lights, forest mist, village smoke and burning fields. Changing the road shapes the mountains again, which takes a few minutes. |
+| Clock and weather panel | Show it or hide it, and choose its corner and size. |
 | Quality | **Auto** adjusts to your graphics. **Eco** is the lightest, then **Balanced** and **High**. **Ultra** is for powerful graphics only. |
 | Start with Windows | Starts the wallpaper when you sign in, with no window to click through. |
+| Show the scene in Windows Settings too | Also sets a still picture of the scene, matching the time of day, as the Windows desktop background, so Settings > Personalization shows it. Your previous background comes back when you exit. |
 
 ### What the app uses
 
@@ -59,7 +63,7 @@ Lively offers more settings. Right-click the wallpaper and choose **Customise**:
 
 | Setting | What it does |
 |---|---|
-| Show information panel / position | Clock, date, phase of day, live sun and moon position, local weather, sunrise, sunset, moonrise and moonset. Put it on either monitor. |
+| Show information panel / position / size | Clock, date, phase of day, live sun and moon position, local weather, sunrise, sunset, moonrise and moonset. Put it on either monitor, small, medium or large. |
 | Frame rate limit | 30 fps is smooth and light. 24 fps saves more power. |
 | Save power when the scene is calm | On by default. With no rain or snow, it redraws the land and sky about twice a second and fades between the pictures, while the tree and birds keep moving. |
 | Quality | **Auto** adapts to your graphics chip. Choose **Eco** if the PC feels busy, **High/Ultra** for richer clouds. |
@@ -68,7 +72,8 @@ Lively offers more settings. Right-click the wallpaper and choose **Customise**:
 | Landscape variation | A different mountain range (1 is the tuned default). |
 | Cloud and mist speed | **1 = the real wind speed** (default). Higher values are a time-lapse. |
 | Wind in the trees | **1 = natural** (default), up to 3 for stronger, 0 for off. |
-| Wildlife and village life | Birds, chimney smoke, village lights, shooting stars and satellites. Untick for a quieter scene. |
+| Wildlife and village life | Birds, smoke, village lights, shooting stars and satellites. Untick for a quieter scene, or turn each one off on its own below it, with the tree, flying leaves, forest mist and burning fields. |
+| Road and traffic / how much | The mountain road with buses, jeeps and motorcycles, light, normal or busy. Changing it shapes the mountains again, which takes a few minutes. |
 | Weather | **Live** normally. The *Preview* options show rain, fog, storms and so on when you want them, and the panel labels them as previews. |
 | Demo: 24-hour time-lapse | Plays a full day in two minutes. Turn it off for real time. |
 | Use Windows location | Uses your PC's location if Windows allows it. Otherwise it uses Dhaka. |
@@ -106,12 +111,14 @@ In Windows **Display settings**, choose **Extend these displays**, put the monit
 - **Clouds move with the real wind.** Low, middle and high cloud each follow the live wind at their own height and at true speed.
 - **Weather changes play out naturally.** Clouds build first and then the rain starts. Rain stops before the sky clears. A change arrives from the side the wind is coming from.
 - **Wind in the trees.** Gusts travel across the forest and meadows in the real wind direction. A tree rhododendron on the cliff edge moves with the live wind speed and direction, gets wet in rain, turns white in snow, changes colour with the season and flowers red in spring. Its fallen leaves drift past on the wind.
+- **A mountain road with traffic.** Buses, jeeps and motorcycles wind along a road through the forest. They slow for hairpins, overtake when the road ahead is clear, and stop for passengers. At night their headlights light the road and the trees ahead, with red tail lights that brighten when they brake.
+- **Mist and smoke in 3D.** After rain or on humid mornings, mist lifts off the forest in soft patches and drifts with the real wind. Wood smoke gathers over the villages as a thin blue-grey haze and drifts downwind, each village's its own shape, and now and then a field burns on a hill, its smoke glowing from below at night.
 - **Wildlife and village life,** following the real clock, season and weather:
   - Vultures and eagles circle in thermals on sunny, calm middays.
   - Flocks of mountain choughs swoop past the ridge after sunrise and before sunset.
   - Geese and cranes cross in V-formation during the real autumn and spring migrations.
   - Birds shelter in rain, fog, snow and storms, and roost at night.
-  - Hill villages have terraced fields, with wood smoke at breakfast and dinner time and lights that come on one by one at dusk.
+  - Hill villages have terraced fields, with wood smoke at breakfast and dinner time and lights that come on one by one at dusk, and go off and on again through the night.
   - Shooting stars follow the real meteor-shower calendar, and satellites glide across the sky in twilight.
 - **Light on your PC.** It runs at below-normal priority and can rest whenever a window is in front. With no rain or snow, it redraws the land and sky about twice a second and fades between the pictures, while the tree and birds keep moving. It sends the graphics chip one frame at a time and spaces its frames to leave at least half of the chip's time for your other work.
 - **Works offline.** The last forecast is saved, and the panel tells you what it is using.
@@ -121,7 +128,7 @@ In Windows **Display settings**, choose **Extend these displays**, put the monit
 ## Frequently asked questions
 
 ### How do I get a live wallpaper on Windows 11?
-On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.0.1.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
+On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.1.0.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
 
 ### Do I need Lively or Wallpaper Engine?
 No. The exe sets the wallpaper by itself on Windows 11 version 24H2 or later, with nothing else to install. Lively is only for older versions of Windows.
@@ -199,7 +206,7 @@ LivelyProperties.json    Lively "Customise" options
 src/config.js            all defaults in one place
 src/services/            clock, location, astronomy, weather (no rendering code)
 src/engine/              WebGL 2 renderer, shaders, environment state, quality control
-src/engine/life.js       birds, chimney smoke, meteors, satellites
+src/engine/life.js       birds, road traffic, mist and smoke, meteors, satellites
 src/ui/overlay.js        the information panel
 docs/ARCHITECTURE.md     how the renderer works and why
 tests/                   checks that run without the GPU: npm test, npm run test:browser
@@ -209,9 +216,7 @@ tests/                   checks that run without the GPU: npm test, npm run test
 
 ## How it was made
 
-**Living Earth Himalaya was developed fully by an AI assistant.** [Claude](https://www.anthropic.com/claude), Anthropic's AI model, wrote every part of it in [Claude Code](https://claude.com/claude-code): the WebGL 2 renderer and its shaders (terrain, atmosphere, clouds, the tree), the weather and astronomy services, the bird and village life, the Windows app with its setup screen, the tests, and this README.
-
-Development worked in conversation. The author, Khan Rafaat Abtahe, set the goals, watched the result on a real two-monitor desktop, and pointed out what looked wrong, such as stuttering birds, noisy clouds, hard shadows at golden hour or seams in the rock. The assistant then found the cause and fixed it. Its checks run on the CPU only (software rendering), so testing never loads the graphics card the wallpaper runs on.
+Living Earth Himalaya is a personal hobby project, shared as open source. Khan Rafaat Abtahe designed and planned everything: the scene, the look, the features and how it should behave. The code was written using [Claude](https://www.anthropic.com/claude) in [Claude Code](https://claude.com/claude-code).
 
 ## Author
 

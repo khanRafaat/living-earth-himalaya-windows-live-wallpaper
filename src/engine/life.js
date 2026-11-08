@@ -168,7 +168,9 @@
         const H = mist ? s.rise * (0.35 + 0.65 * (1 - Math.exp(-s.age / 70))) : s.rise * (0.2 + 0.8 * (1 - Math.exp(-s.age / 60)));
         const code = mist ? 0 : s.kind === SMOKE.fire ? 2 : 1;
         this.plumeA.set([p.x, p.y - (mist ? 0.015 : 0), p.z, H], i * 4);
-        this.plumeB.set([s.width * 0.5, s.alpha, dx * H * lean, dz * H * lean], i * 4);
+        // a village's smoke stops rising low and drifts off further downwind than a fire's hot column
+        const drift = H * lean * (s.drift || 1);
+        this.plumeB.set([s.width * 0.5, s.alpha, dx * drift, dz * drift], i * 4);
         this.plumeC.set([s.seed * 40, pr.sx, pr.sy, code + clamp(s.fire, 0, 1) * 0.5], i * 4);
       }
       this.plumeCount = n;
@@ -1061,6 +1063,8 @@
       const used = new Set(this.smoke.map((s) => s.src));
       let free = list.filter((s) => !used.has(s));
       if (!free.length) return null;
+      // smoke from the nearer villages first, where it can be seen (the list is nearest first)
+      if (kind === SMOKE.village) free = free.slice(0, Math.max(3, Math.ceil(free.length / 2)));
       if (kind !== SMOKE.village && this._view) {
         // A field on the slopes a few km off, where its smoke reads: one far across the valley is only a grey thread,
         // and one right below fills the view. Failing that, the forest nearest to 5 km. Mist within 7 km: further out
@@ -1080,7 +1084,8 @@
       // a field: a broad front of fire, its smoke pouring up a few hundred metres and spreading
       if (kind === SMOKE.fire) return Object.assign(base, { target: rand(0.8, 0.95), rise: rand(0.45, 0.8), width: rand(0.12, 0.2), life: rand(1500, 4000), ease: 60, fire: 1 });
       // a village's hearths: their smoke rises together and spreads in a layer over the roofs
-      return Object.assign(base, { target: rand(0.45, 0.7), rise: rand(0.2, 0.4), width: rand(0.06, 0.1), life: rand(1200, 5400), ease: 20 });
+      // drift: how far the wind carries it for its height, as some stop rising lower than others
+      return Object.assign(base, { target: rand(0.6, 0.85), rise: rand(0.2, 0.45), width: rand(0.08, 0.16), drift: rand(1.0, 2.2), life: rand(1200, 5400), ease: 20 });
     }
 
     _stepMeteors(dt, state) {

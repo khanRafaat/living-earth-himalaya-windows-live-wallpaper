@@ -187,8 +187,18 @@ float plumeDensity(vec3 p, vec4 A, vec4 B, float seed) {
 
 // How wide smoke is at this height (h 0..1 of its rise), as a multiple of its radius at the foot: it widens as it draws
 // in air, and spreads out flat where it stops rising. field: a burning field's big plume (1) or a house's (0).
-float smokeRadius(float hc, float field) {
-  return mix(0.35, 0.6, field) + 2.2 * hc + mix(2.6, 1.8, field) * smoothstep(mix(0.45, 0.65, field), 1.0, hc);
+// Every village's smoke has its own character, from its seed, so no two look alike: from one hearth or many, where it
+// stops rising and spreads and how far, how big its puffs are, how much it wanders.
+vec4 smokeLook(float seed) {
+  return fract(sin(vec4(seed * 1.37 + 0.1, seed * 2.11 + 1.7, seed * 0.73 + 3.1, seed * 1.91 + 5.3)) * 43758.5453);
+}
+
+float smokeRadius(float hc, float field, float seed) {
+  // a field's column widens steadily and spreads at its top
+  if (field > 0.5) return 0.6 + 2.2 * hc + 1.8 * smoothstep(0.65, 1.0, hc);
+  // a village's rises from one hearth (narrow) or many (broad), and spreads low or high, a little or a lot
+  vec4 k = smokeLook(seed);
+  return mix(0.6, 1.6, k.x) + 1.5 * hc + mix(1.2, 4.0, k.y) * smoothstep(mix(0.15, 0.6, k.z), 1.0, hc);
 }
 
 // Smoke from a house or a burning field: a column rising from its fire, widening and thinning as it climbs, bent over
@@ -200,28 +210,49 @@ float smokeDensity(vec3 p, vec4 A, vec4 B, float seed, float field) {
   float h = (p.y - A.y) / A.w;
   if (h < -0.05 || h > 1.0) return 0.0;
   float hc = max(h, 0.0);
-  float rk = smokeRadius(hc, field);
+  float rk = smokeRadius(hc, field, seed);
+  vec4 k = smokeLook(seed);
+  vec4 k2 = fract(k * 7.13 + 0.31);
   // it never rises quite straight: its axis wanders a little, more as it climbs, and the wander moves up it (periods
-  // of 100 and 75 s, whole numbers of them in 2400 s)
-  float ph = seed + hc * 7.0;
-  vec2 wander = vec2(sin(ph - uTime * 0.0628319), cos(ph * 0.8 - uTime * 0.0837758)) * B.x * rk * 0.35 * hc;
+  // of 100 and 75 s, whole numbers of them in 2400 s); some villages' smoke far more than others'
+  float ph = seed + hc * mix(4.0, 9.0, k2.x);
+  float wa = field > 0.5 ? 0.35 : mix(0.1, 0.45, k.w);
+  vec2 wander = vec2(sin(ph - uTime * 0.0628319), cos(ph * 0.8 - uTime * 0.0837758)) * B.x * rk * wa * hc;
   vec2 rel = p.xz - A.xz - B.zw * hc * sqrt(hc) - wander;
   float wl = length(B.zw);
   vec2 wd = wl > 1e-4 ? B.zw / wl : vec2(1.0, 0.0);
   float slope = 1.5 * wl / A.w * sqrt(hc);      // how far it goes downwind per km it climbs, at this height
-  vec2 d = vec2(dot(rel, wd) / sqrt(1.0 + slope * slope), dot(rel, vec2(-wd.y, wd.x))) / (B.x * rk);
-  float env = exp(-dot(d, d) * 2.0) * smoothstep(-0.05, 0.03, h) * (1.0 - smoothstep(0.7, 1.0, h));
+  // a village's veil drifts out long downwind and stays narrower across it
+  float spread = (1.0 - field) * smoothstep(0.25, 1.0, hc) * k2.w;
+  vec2 d = vec2(dot(rel, wd) / sqrt(1.0 + slope * slope), dot(rel, vec2(-wd.y, wd.x)) / (1.0 - 0.5 * spread)) / (B.x * rk);
+  float top = field > 0.5 ? 0.7 : mix(0.3, 0.65, k2.z);
+  // a village's is thin where it leaves the chimneys and gathers as it rises; a field's pours up thick
+  float env = exp(-dot(d, d) * 2.0) * smoothstep(-0.05, mix(0.45, 0.03, field), h) * (1.0 - smoothstep(top, 1.0, h));
   if (env < 0.04) return 0.0;
-  float s = mix(8.0, 4.0, field);                 // billows of about 30 m in a house's smoke, 60 m in a field's
+  float s = field > 0.5 ? 4.0 : mix(4.0, 7.5, k2.y); // puffs of 35 to 60 m in a village's smoke, 60 m in a field's
   vec3 q = (p + uMistWind) * s + seed;
-  q.y -= uTime * mix(0.03, 0.02, field);          // climbing, about 4 m/s
-  // a field's smoke pours up whole; a village's is a loose drift of wisps from many hearths, never a tube
-  float cover = field > 0.5 ? mix(0.82, 0.55, hc) : mix(0.62, 0.4, hc);
-  float c = clamp(remap(textureLod(uNoise3D, q, 0.0).r, 1.0 - env * cover, 1.0, 0.0, 1.0), 0.0, 1.0);
-  if (c <= 0.0) return 0.0;
+  q.y -= uTime * mix(0.025, 0.02, field);         // climbing, about 4 m/s
+  float n = textureLod(uNoise3D, q, 0.0).r;
   float w = textureLod(uNoise3D, q * 2.7 + 0.4, 0.0).g;
+  if (field < 0.5) {
+    // A village's smoke: a see-through haze over the houses, no hard edge anywhere, densest low down and fading as it
+    // rises and drifts. Low down it stands in separate threads from the hearths, bent with the rest, that merge as
+    // they rise.
+    float c = smoothstep(0.25, 0.8, n - w * mix(0.15, 0.35, k.z)) * env;
+    // torn into streaks a few hundred metres long, drawn out along the wind, that move with it
+    vec2 sw = vec2(dot(rel, wd) * 0.35, dot(rel, vec2(-wd.y, wd.x)));
+    float big = textureLod(uNoise3D, vec3(sw.x, p.y * 0.8, sw.y) * 1.6 + vec3(seed * 0.37, seed * 0.11, 0.0) + uMistWind * 0.5, 0.0).a;
+    c *= smoothstep(0.35, 0.75, big);
+    float tf = mix(4.0, 10.0, k2.x);                   // a few hearths, or many close together
+    float th = textureLod(uNoise3D, vec3(rel.x * tf + seed, 0.37, rel.y * tf + seed * 0.7), 0.0).r;
+    c *= mix(mix(1.0, smoothstep(0.4, 0.75, th), k.x), 1.0, smoothstep(0.1, mix(0.3, 0.6, k2.y), hc));
+    return c * 2.4 / rk;
+  }
+  // a field's smoke pours up whole, in billows
+  float c = clamp(remap(n, 1.0 - env * mix(0.82, 0.55, hc), 1.0, 0.0, 1.0), 0.0, 1.0);
+  if (c <= 0.0) return 0.0;
   c = clamp(remap(c, w * mix(0.35, 0.55, hc), 1.0, 0.0, 1.0), 0.0, 1.0);
-  return c * (mix(0.35, 0.6, field) / rk) * 2.0;  // thinning as it spreads
+  return c * (0.6 / rk) * 2.0;                    // thinning as it spreads
 }
 
 float plumeD(vec3 p, vec4 A, vec4 B, float seed, int kind) {
@@ -284,7 +315,9 @@ void main() {
         float field = kind == 2 ? 1.0 : 0.0;
         float wl = length(B.zw);
         float stretchTop = sqrt(1.0 + (1.5 * wl / max(A.w, 1e-3)) * (1.5 * wl / max(A.w, 1e-3)));
-        float rMax = kind == 0 ? B.x * 4.0 : B.x * smokeRadius(1.0, field) * stretchTop * 1.3;
+        // (a village's smoke wanders further from its axis, up to 0.45 of its width)
+        float reachK = kind == 1 ? 1.75 : 1.3;
+        float rMax = kind == 0 ? B.x * 4.0 : B.x * smokeRadius(1.0, field, C.x) * stretchTop * reachK;
         vec3 lo = vec3(min(A.x, A.x + B.z) - rMax, A.y - (kind == 0 ? 0.3 : 0.05) * A.w, min(A.z, A.z + B.w) - rMax);
         vec3 hi = vec3(max(A.x, A.x + B.z) + rMax, A.y + A.w, max(A.z, A.z + B.w) + rMax);
         vec3 ta = (lo - uCamPos) * inv;
@@ -308,7 +341,7 @@ void main() {
         // how far out it reaches at that height, along its long axis (downwind)
         float slope = 1.5 * wl / max(A.w, 1e-3) * sqrt(hs);
         float rad = kind == 0 ? B.x * (1.0 + 0.6 * hs) * (1.0 + 0.7 * hs) * 1.4
-                              : B.x * smokeRadius(hs, field) * sqrt(1.0 + slope * slope) * 1.3;
+                              : B.x * smokeRadius(hs, field, C.x) * sqrt(1.0 + slope * slope) * reachK;
         vec2 off = uCamPos.xz + rxz * sc - ax;
         float miss = rad * rad - dot(off, off);
         if (miss <= 0.0) continue;
@@ -318,9 +351,9 @@ void main() {
         if (b0 <= a0) continue;
         // in the hills' shadow where it rises from, out of it higher up
         float footSh = texelFetch(uShadow, clamp(ivec2(C.yz), ivec2(0), ivec2(uRes) - 1), 0).r;
-        // per km. Mist: about two thirds of the light through its heart, little at its edges. A house's smoke is a thin
-        // grey thread; a field's is thick and brown low down, paler and thinner as it spreads.
-        float sigma = B.y * (kind == 0 ? 4.5 : kind == 1 ? 26.0 : 40.0);
+        // per km. Mist: about two thirds of the light through its heart, little at its edges. A village's smoke is a
+        // thin blue-grey veil; a field's is thick and brown low down, paler and thinner as it spreads.
+        float sigma = B.y * (kind == 0 ? 4.5 : kind == 1 ? 12.0 : 40.0);
         // how far it shades itself: steps towards the light in proportion to its size there
         float ls = kind == 0 ? 0.05 : rad * 0.3;
         float dtp = (b0 - a0) / float(uPlumeSteps);
@@ -340,7 +373,7 @@ void main() {
           vec3 direct = uSunE * transmittance(p.y, uSunDir.y) * phS * 0.2 * (uKeyIsSun > 0.5 ? sh : 1.0)
                       + uMoonE * transmittance(p.y, uMoonDir.y) * phM * 0.08 * (uKeyIsSun > 0.5 ? 1.0 : sh);
           // what it is made of: mist white; wood smoke a little blue; a field's smoke brown where it is thick
-          vec3 alb = kind == 0 ? vec3(0.92) : kind == 1 ? vec3(0.6, 0.63, 0.7)
+          vec3 alb = kind == 0 ? vec3(0.92) : kind == 1 ? vec3(0.4, 0.45, 0.56)
                    : mix(vec3(0.34, 0.31, 0.28), vec3(0.62, 0.61, 0.6), smoothstep(0.05, 0.7, hh));
           vec3 Sc = (direct * Tl * underCloud + amb * (0.55 + 0.45 * hh) * mix(0.45, 1.0, exp(-odUp))) * alb;
           // lit from below by its fire, only just above it
