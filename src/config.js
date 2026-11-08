@@ -105,4 +105,8 @@
   c.testMode = q.get('test') === '1'; // used by automated screenshot tests
   c.life = q.get('life') !== '0'; // birds, smoke, meteors, satellites, village lights
   c.lifeTest = q.get('lifetest') === '1'; // tests: start with birds already on screen
+  c.road = q.get('road') !== '0'; // the road on the hillside and its traffic
+  c.birds = q.get('birds') !== '0'; // birds alone, while smoke, meteors and lights stay
+  c.leaves = q.get('leaves') !== '0'; // the leaves the wind carries past. The tree stays
+  if (['right-bottom', 'right-top', 'left-bottom', 'left-top'].includes(q.get('corner'))) c.ui.panelPosition = q.get('corner');
 })();

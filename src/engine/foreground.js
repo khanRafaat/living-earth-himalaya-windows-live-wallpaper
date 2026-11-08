@@ -862,6 +862,12 @@
         dt = 0;
         this.drift.length = 0; // after a long pause, start over rather than jump
       }
+      // The flying leaves can be turned off on their own: the tree stays. Spring blossom goes with them.
+      this.leaves = this.r.cfg.leaves !== false;
+      if (!this.leaves) {
+        this.drift.length = 0;
+        this._spawn = 0;
+      }
       const wind = this._wind(state);
       this.moving = wind.kmh > 2.5 || this.drift.length > 0;
       // several small steps keep the rocking fall smooth at a low frame rate
@@ -879,7 +885,7 @@
       // old leaves let go all year, most in autumn and in a storm; strong wind also brings them from upwind
       const shed = 0.6 + 1.2 * season[1] + 0.3 * season[0];
       const rate = (wind.kmh < 3 ? 0.04 : 0.06 + 2.4 * Math.pow(smooth(3, 45, wind.kmh), 1.4)) * shed + bloom * 0.35 * smooth(2, 25, wind.kmh);
-      this._spawn += rate * dt;
+      if (this.leaves !== false) this._spawn += rate * dt;
       while (this._spawn >= 1) {
         this._spawn -= 1;
         if (this.drift.length < MAX_DRIFT) this.drift.push(this._newLeaf(U, W, bloom, wind.kmh));

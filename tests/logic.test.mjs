@@ -1394,6 +1394,300 @@ test('the app follows Edge by its job, because the process it starts can hand ov
   assert.ok(!method('private void StartEdge(').includes('cmd.Append(" --enable-logging'), 'no terminal window on the desktop');
 });
 
+// ---- the road -------------------------------------------------------------------------------------------------------
+/** A hillside like the real one: rising away from the viewer to a crest about 2.8 km off, with small bumps. */
+function testHillside(R) {
+  const { na, nr, az, r0, r1 } = R.GRID;
+  const h = new Float32Array(na * nr);
+  for (let j = 0; j < nr; j++) {
+    const r = r0 + ((r1 - r0) * (j + 0.5)) / nr;
+    for (let i = 0; i < na; i++) {
+      const a = -az + (2 * az * (i + 0.5)) / na;
+      const rise = Math.min(Math.max((r - 2.1) / 0.8, 0), 1);
+      const bump = 0.012 * Math.sin(a * 0.4) * Math.cos(r * 9);
+      h[j * na + i] = r < 2.9 ? 2.2 + 0.25 * rise + bump : 2.45 - 0.5 * (r - 2.9) + bump;
+    }
+  }
+  return h;
+}
+
+function testRoad() {
+  const { LE } = load(['engine/road.js']);
+  const R = LE.Road;
+  const line = R.plan(testHillside(R), 2.8, -0.2757);
+  const ys = new Float32Array(line.length / 2).fill(2.3);
+  return { R, line, road: R.finish(line, ys) };
+}
+
+function testLife(hour = 12, over = {}) {
+  const { LE } = load(['engine/road.js', 'engine/life.js']);
+  const R = LE.Road;
+  const line = R.plan(testHillside(R), 2.8, -0.2757);
+  const road = R.finish(line, new Float32Array(line.length / 2).fill(2.3));
+  const life = new LE.Life();
+  life.setRoad(road);
+  const state = {
+    now: new Date(2026, 4, 15, hour, 0, 0),
+    time: 100,
+    heading: 50,
+    starVis: 0,
+    starMat: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+    windVel: [0, 0, 0],
+    astro: { sunAltDeg: hour > 6 && hour < 18 ? 40 : -30, moonAltDeg: 0, moonFraction: 0, dayOfYear: 135, times: {} },
+    weather: { rain: 0, snow: 0, fog: 0, storm: 0, overcast: 0, coverage: 0, windSpeed: 5, flash: 0, rainSlant: 0, ...over },
+  };
+  const hfov = (140 * Math.PI) / 180;
+  const view = { w: 3840, h: 1080, hfov, pxAng: hfov / 3840, horizonY: 0.4, camY: 2.8 };
+  return { LE, life, road, state, view };
+}
+
+test('the road is smooth, evenly spaced, and starts and ends outside the widest view', () => {
+  const { line, road } = testRoad();
+  const n = line.length / 2;
+  assert.ok(road.length > 6, 'crosses the whole view: ' + road.length);
+  const azOf = (i) => (Math.atan2(line[i * 2], line[i * 2 + 1]) * 180) / Math.PI;
+  assert.ok(azOf(0) < -70 && azOf(n - 1) > 70, `from ${azOf(0)} to ${azOf(n - 1)}`);
+  for (let i = 1; i < n; i++) near(Math.hypot(line[i * 2] - line[i * 2 - 2], line[i * 2 + 1] - line[i * 2 - 1]), road.step, road.step * 0.3, 'spacing at ' + i);
+  // no kink: the heading changes little from one point to the next
+  for (let i = 2; i < n; i++) {
+    const a = Math.atan2(line[i * 2 - 2] - line[i * 2 - 4], line[i * 2 - 1] - line[i * 2 - 3]);
+    const b = Math.atan2(line[i * 2] - line[i * 2 - 2], line[i * 2 + 1] - line[i * 2 - 1]);
+    const turn = Math.abs(Math.atan2(Math.sin(b - a), Math.cos(b - a)));
+    assert.ok(turn < 0.6, `turn of ${turn} rad at point ${i}`);
+  }
+});
+
+test('the bake finds the way to the road from either side of it, and nothing far from it', () => {
+  const { R, road } = testRoad();
+  const map = R.vectorMap(road);
+  const look = (x, z) => {
+    const u = Math.floor((x - map.box[0]) * map.box[2] * map.w);
+    const v = Math.floor((z - map.box[1]) * map.box[3] * map.h);
+    const k = (v * map.w + u) * 2;
+    return [map.data[k], map.data[k + 1]];
+  };
+  const i = Math.floor(road.n / 2);
+  const dx = road.x[i + 1] - road.x[i];
+  const dz = road.z[i + 1] - road.z[i];
+  const l = Math.hypot(dx, dz);
+  for (const side of [-1, 1]) {
+    const px = road.x[i] + (side * 0.012 * dz) / l;
+    const pz = road.z[i] - (side * 0.012 * dx) / l;
+    const [vx, vz] = look(px, pz);
+    near(Math.hypot(vx, vz), 0.012, 0.005, 'distance to the centre');
+  }
+  const far = look(map.box[0] + 0.001, map.box[1] + 0.001);
+  assert.ok(Math.hypot(far[0], far[1]) > 0.5, 'far from the road');
+});
+
+test('headlights show only towards the viewer, for every kind of vehicle, and are gone on a turn', () => {
+  const { R } = testRoad();
+  near(R.headlight(1), 1, 1e-6, 'heading straight at the viewer');
+  near(R.headlight(0.8), 1, 1e-6, 'nearly straight at the viewer');
+  assert.equal(R.headlight(0.4), 0, 'turned well away');
+  assert.equal(R.headlight(0), 0, 'across the view');
+  assert.equal(R.headlight(-1), 0, 'driving away');
+  // one rule: nothing in the vehicle's own data decides it
+  const life = readFileSync(new URL('engine/life.js', SRC), 'utf8');
+  assert.ok(life.includes('const lamp = lights * R.headlight(facing);'), 'the same call for all kinds');
+  assert.equal((life.match(/headlight\(/g) || []).length, 1, 'and only that one');
+});
+
+test('vehicles pushed to the picture carry the headlight by the way they face', () => {
+  const { life, road, state, view } = testLife(22);
+  life._view = view;
+  life.state = state;
+  // find a point where one direction faces the viewer, and one where the road runs across the view
+  const facingAt = (i, dir) => {
+    const fx = (road.x[i + 2] - road.x[i - 2]) * dir;
+    const fz = (road.z[i + 2] - road.z[i - 2]) * dir;
+    const cx = -road.x[i];
+    const cy = 0.5;
+    const cz = -road.z[i];
+    return (fx * cx + fz * cz) / (Math.hypot(fx, fz) * Math.hypot(cx, cy, cz));
+  };
+  let toward = -1;
+  let across = -1;
+  for (let i = 5; i < road.n - 5; i++) {
+    if (Math.abs(Math.atan2(road.x[i], road.z[i])) > 1.1) continue;
+    if (toward < 0 && facingAt(i, 1) > 0.85) toward = i;
+    if (across < 0 && Math.abs(facingAt(i, 1)) < 0.1) across = i;
+  }
+  assert.ok(toward > 0, 'the road has a stretch that heads towards the viewer');
+  assert.ok(across > 0, 'and one that runs across the view');
+  for (const kind of ['bus', 'jeep', 'motorcycle']) {
+    const lampAt = (i, dir) => {
+      life.count = 0;
+      life._pushVehicle(life._newVehicle(kind, dir, i * road.step), 1);
+      assert.equal(life.count, 1, kind + ' is in view');
+      return life.data[14];
+    };
+    assert.ok(lampAt(toward, 1) > 0.5, kind + ' heading towards the viewer shows its light');
+    assert.equal(lampAt(toward, -1), 0, kind + ' driving away shows none');
+    assert.equal(lampAt(across, 1), 0, kind + ' going across the view shows none');
+  }
+});
+
+test('traffic is busy by day, thin at night, keeps its distance and slows for bends', () => {
+  const day = testLife(12);
+  const night = testLife(3);
+  assert.ok(day.life._trafficWanted(day.state) >= 10, 'day');
+  assert.ok(night.life._trafficWanted(night.state) <= 2, 'night');
+  const snow = testLife(12, { snow: 0.9 });
+  assert.ok(snow.life._trafficWanted(snow.state) < day.life._trafficWanted(day.state), 'snow keeps people home');
+
+  const { life, road, state, view } = day;
+  for (let k = 0; k < 2000; k++) life.update(0.5, state, view);
+  assert.ok(life.vehicles.length > 3, 'vehicles keep coming: ' + life.vehicles.length);
+  for (const a of life.vehicles) {
+    assert.ok(a.s >= 0 && a.s <= road.length, 'stays on the road');
+    assert.ok(a.v >= 0 && a.v < 0.02, 'a sane speed: ' + a.v);
+    const i = Math.min(Math.round(a.s / road.step), road.n - 1);
+    assert.ok(a.v <= road.limit[i] + 0.002, `no faster than the bend allows: ${a.v} at ${road.limit[i]}`);
+    for (const b of life.vehicles) {
+      if (a === b || a.dir !== b.dir) continue;
+      assert.ok(Math.abs(a.s - b.s) > 0.001, 'no two in the same place going the same way');
+    }
+  }
+});
+
+test('vehicles drive on the left of their own direction', () => {
+  const { LE, life, road, state, view } = testLife(12);
+  life._view = view;
+  life.state = state;
+  const i = Math.floor(road.n / 2);
+  const fx = road.x[i + 1] - road.x[i];
+  const fz = road.z[i + 1] - road.z[i];
+  // this frame has +x to the right when looking along +z, so the left of a heading (fx, fz) is (-fz, fx)
+  const leftOf = (px, pz, dir) => (px - road.x[i]) * -fz * dir + (pz - road.z[i]) * fx * dir;
+  for (const dir of [1, -1]) {
+    const c = life._newVehicle('jeep', dir, i * road.step);
+    const p = LE.Road.at(road, c.s, -c.dir * c.lane, [0, 0, 0]);
+    assert.ok(leftOf(p[0], p[2], dir) > 0, 'going ' + dir + ' keeps left');
+  }
+});
+
+test('vehicles do not raise the frame rate: they are too slow on the picture to need it', () => {
+  const { life, state, view } = testLife(12);
+  life.update(0.1, state, view);
+  assert.ok(life.vehicles.length > 0);
+  assert.ok(life.count > 0, 'some are in view');
+  assert.equal(life.movers, 0, 'no birds, meteors or satellites, so nothing asks for more frames');
+});
+
+// ---- the options in the Windows app's window: birds, flying leaves, the panel's corner ------------------------------
+test('birds off takes the birds away at once and brings no new ones, while meteors, satellites and traffic stay', () => {
+  const { life, state, view } = testLife(22);
+  life.seedForTest(state, view);
+  life.update(0.1, state, view);
+  assert.ok(life.raptors.length > 0 && life.flock && life.geese, 'birds to start with');
+  assert.ok(life.meteors.length > 0 && life.sats.length > 0 && life.vehicles.length > 0);
+  life.birds = false;
+  life.update(0.1, state, view);
+  assert.equal(life.raptors.length, 0);
+  assert.equal(life.flock, null);
+  assert.equal(life.geese, null);
+  assert.ok(life.meteors.length > 0 && life.sats.length > 0 && life.vehicles.length > 0, 'the rest of life goes on');
+  life.summon('raptor');
+  life.summon('flock');
+  life.summon('geese');
+  life.summon('meteor');
+  life.update(0.1, state, view);
+  assert.ok(!life.raptors.length && !life.flock && !life.geese, 'the test panel can not bring them either');
+  assert.ok(life.meteors.length > 1, 'but it can bring a meteor');
+});
+
+test('with birds off a sunny noon stays empty of them, where with birds on they come', () => {
+  const on = testLife(12);
+  for (let i = 0; i < 30; i++) on.life.update(2, on.state, on.view);
+  assert.ok(on.life.raptors.length > 0, 'birds on: raptors in the thermals');
+  const off = testLife(12);
+  off.life.birds = false;
+  for (let i = 0; i < 30; i++) off.life.update(2, off.state, off.view);
+  assert.ok(!off.life.raptors.length && !off.life.flock && !off.life.geese);
+});
+
+test('flying leaves off clears the air at once and keeps the tree, in autumn wind and spring blossom alike', () => {
+  const { fg, run } = newForeground();
+  run(12, 36, [1, 0]);
+  assert.ok(fg.drift.length > 5, 'leaves to start with');
+  fg.r.cfg.leaves = false;
+  run(1, 36, [1, 0]);
+  assert.equal(fg.drift.length, 0, 'gone');
+  run(12, 36, [1, 0]);
+  run(12, 20, [1, 0], [1, 0, 0, 0], 80); // spring, with the blossom out
+  assert.equal(fg.drift.length, 0, 'none let go');
+  assert.ok(fg.enabled && fg.tree, 'the tree stays');
+  fg.r.cfg.leaves = true;
+  run(12, 36, [1, 0]);
+  assert.ok(fg.drift.length > 5, 'and they come back when turned on');
+});
+
+test('birds, leaves and the corner come from the address, and an unknown corner is ignored', () => {
+  const on = load(['config.js']).LE.config;
+  assert.equal(on.birds, true);
+  assert.equal(on.leaves, true);
+  assert.equal(on.ui.panelPosition, 'right-bottom');
+  const off = load(['config.js'], { search: '?birds=0&leaves=0&road=0&corner=left-top' }).LE.config;
+  assert.equal(off.birds, false);
+  assert.equal(off.leaves, false);
+  assert.equal(off.road, false);
+  assert.equal(off.ui.panelPosition, 'left-top');
+  for (const c of ['right-top', 'left-bottom', 'left-top', 'right-bottom'])
+    assert.equal(load(['config.js'], { search: `?corner=${c}` }).LE.config.ui.panelPosition, c);
+  for (const c of ['middle', 'top-left', '', 'right-bottom2'])
+    assert.equal(load(['config.js'], { search: `?corner=${c}` }).LE.config.ui.panelPosition, 'right-bottom', c);
+});
+
+test('the app\'s settings reach the page once, on a change, and never start the mountains over for nothing', () => {
+  const h = load(['config.js', 'services/host.js'], { search: '?host=1' });
+  // a script tag that loads at once: the poll then applies the options
+  h.ctx.document.createElement = () => ({ remove() {} });
+  h.ctx.document.head = { appendChild: (s) => s.onload() };
+  const cfg = h.LE.config;
+  const CORNER = ['right-bottom', 'right-top', 'left-bottom', 'left-top'];
+  const calls = [];
+  h.ctx.livelyPropertyListener = (name, v) => {
+    calls.push([name, v]);
+    if (name === 'panelPosition') cfg.ui.panelPosition = CORNER[v];
+    else if (name !== 'quality') cfg[name] = v;
+  };
+  const all = { quality: 'auto', road: true, birds: true, leaves: true, corner: 'right-bottom' };
+  h.ctx.leHostState('live', all);
+  h.tick();
+  assert.deepEqual(calls, [], 'the same as the page already has');
+  h.ctx.leHostState('live', { ...all, road: false, leaves: false, corner: 'left-top' });
+  h.tick();
+  h.tick();
+  h.tick();
+  assert.deepEqual(calls, [['road', false], ['leaves', false], ['panelPosition', 3]], 'each change once');
+  h.ctx.leHostState('live', { ...all, road: false, leaves: false, corner: 'somewhere' });
+  h.tick();
+  assert.equal(calls.length, 3, 'an unknown corner changes nothing');
+  h.ctx.leHostState('live', { quality: 'auto' }); // an older app without these options
+  h.tick();
+  assert.equal(calls.length, 3, 'a missing option is left as it is');
+});
+
+test('the four corners are in the same order in the app, the page and Lively, and the page knows each option', () => {
+  const read = (p) => readFileSync(new URL(p, new URL('../', import.meta.url)), 'utf8');
+  const list = (text, re) => {
+    const m = text.match(re);
+    assert.ok(m, String(re));
+    return m[1].match(/[a-z]+-[a-z]+/g);
+  };
+  const app = list(read('host/LivingEarthHost.cs'), /Corners = \{([^}]*)\}/);
+  const main = read('src/main.js');
+  assert.deepEqual(list(main, /PANEL_POS = \[([^\]]*)\]/), app, 'main.js');
+  assert.deepEqual(list(read('src/services/host.js'), /CORNER = \[([^\]]*)\]/), app, 'host.js');
+  const lively = JSON.parse(read('LivelyProperties.json'));
+  assert.deepEqual(lively.panelPosition.items.map((s) => s.toLowerCase().replace(/ monitor · /, '-')), app, 'Lively');
+  for (const name of ['road', 'birds', 'leaves']) {
+    assert.ok(main.includes(`case '${name}':`), `main.js takes ${name}`);
+    assert.equal(lively[name].type, 'checkbox', `Lively offers ${name}`);
+  }
+});
+
 test('the app finds the desktop\'s wallpaper layer again each time, since Explorer can replace it after the start', () => {
   const host = readFileSync(new URL('../host/LivingEarthHost.cs', import.meta.url), 'utf8');
   const method = (signature) => {

@@ -358,6 +358,32 @@ void main() {
     canopyW = distForest;
   }
 
+  // ---- the road: paved, with a strip of bare earth along it and the cut into the hillside on its upper side ----
+  float roadPaved = 0.0;
+  float roadCut = 0.0;
+  vec2 toRoad = roadVec(p.xz);
+  float roadD = length(toRoad);
+  if (roadD < 0.02) {
+    // what a pixel covers across the road: longer where it lies along the line of sight on a slope seen at a low angle
+    vec2 across = toRoad / max(roadD, 1e-5);
+    float along = abs(dot(across, normalize(rd.xz)));
+    float pxw = fp * mix(1.0, 1.0 / max(-dot(Ns, rd), 0.12), along);
+    float uphill = step(0.0, dot(toRoad, Ns.xz));
+    float halfW = 0.0035;
+    float reach = halfW + mix(0.002, 0.0048, uphill);
+    roadPaved = clamp(min(roadD + 0.5 * pxw, halfW) - max(roadD - 0.5 * pxw, -halfW), 0.0, pxw) / pxw;
+    roadCut = clamp(min(roadD + 0.5 * pxw, reach) - max(roadD - 0.5 * pxw, -reach), 0.0, pxw) / pxw;
+    roadPaved *= 1.0 - crown;
+    roadCut *= 1.0 - crown;
+    vec3 earth = vec3(0.135, 0.115, 0.09) * (0.8 + 0.4 * (nC * 0.5 + 0.5));
+    vec3 paved = vec3(0.085, 0.082, 0.08) * (0.85 + 0.3 * (nD * 0.5 + 0.5));
+    albedo = mix(albedo, earth, roadCut);
+    albedo = mix(albedo, paved, roadPaved);
+    canopyW *= 1.0 - roadCut;
+    dens *= 1.0 - roadCut; // no forest floor's shade on it
+    N = normalize(mix(N, Ns, roadCut)); // the road is level across, whatever the ground around it does
+  }
+
   // ---- ambient occlusion ----
   float ao = horizonAO(p, t);
   if (tf > 0.0) {
@@ -377,11 +403,12 @@ void main() {
   float flute = noise2(vec2(q.x * 60.0 + q.y * 9.0, q.y * 7.0 + alt * 3.0));
   suit *= mix(1.0, 0.55 + 0.45 * smoothstep(-0.3, 0.4, flute), smoothstep(0.35, 0.6, slope));
   suit = mix(suit, suit * 0.45, canopyW);
+  suit *= 1.0 - 0.85 * roadPaved; // traffic and the plough keep it clear
 
   o0 = vec4(octEncodeY(N), t, clamp(ao, 0.0, 1.0));
   o1 = vec4(sqrt(clamp(albedo, 0.0, 1.0)), canopyW);
   o2 = vec4(octEncodeY(Ns), snowAlt, suit);
-  float meadow = (1.0 - rockiness) * (1.0 - canopyW) * (1.0 - smoothstep(4.6, 5.2, alt));
+  float meadow = (1.0 - rockiness) * (1.0 - canopyW) * (1.0 - smoothstep(4.6, 5.2, alt)) * (1.0 - roadCut);
   o3 = vec4(lightCov, lightId, vm, canopyW > 0.5 && tf > 0.0 ? tree.y : meadow);
 }
 `;

@@ -202,6 +202,7 @@
         throw new Error('This GPU cannot render to floating-point textures (EXT_color_buffer_float).');
       }
       this.gl = gl;
+      this.floatTargets = !!gl.getExtension('EXT_color_buffer_float');
       this.timerExt = gl.getExtension('EXT_disjoint_timer_query_webgl2');
       // compile in the background instead of freezing the page (polled in render())
       this.parallelExt = gl.getExtension('KHR_parallel_shader_compile');
@@ -221,6 +222,7 @@
         composite: new Program(gl, V, S.composite(), 'composite', X),
         sprites: new Program(gl, S.spriteVertex, S.spriteFragment(), 'sprites', X),
         fade: new Program(gl, V, S.fade(), 'fade', X),
+        roadHeights: new Program(gl, V, S.roadHeights(), 'roadHeights', X),
         noise3D: new Program(gl, V, S.noise3D(), 'noise3D', X),
         noise2D: new Program(gl, V, S.noise2D(), 'noise2D', X),
         adapt: new Program(gl, V, S.adapt(), 'adapt', X),
@@ -362,7 +364,7 @@
      *  direction does not: the landscape stays, only the real sky turns around it. */
     sceneKey() {
       const r = this.cfg.render;
-      return [r.seed, r.cameraAltitude, r.horizonY, r.maxHFovDeg].join('|');
+      return [r.seed, r.cameraAltitude, r.horizonY, r.maxHFovDeg, this.cfg.road !== false].join('|');
     }
 
     rebake() {
@@ -405,8 +407,70 @@
       this._shadowMix = 0;
       this._fading = false;
       this._sceneKey = this.sceneKey();
+      this._layRoad();
       this.progress = 0;
       this._setStatus('baking');
+    }
+
+    /** The ground height at a list of points. pts = [x, z, ...] in km, packed in a texture of w by h. */
+    _groundHeights(pts, w, h) {
+      const gl = this.gl;
+      const p = this.prog.roadHeights;
+      const src = LE.GL.createTexture2D(gl, w, h, 'rg32f');
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RG, gl.FLOAT, pts);
+      const target = createTarget(gl, w, h, [{ fmt: 'rgba32f', filter: gl.NEAREST }]);
+      this._target(target, w, h);
+      gl.useProgram(p.p);
+      this._camera(p, this.w, this.h);
+      this._bind(p, { uPts: src });
+      this._draw();
+      const out = new Float32Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, out);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      deleteTarget(gl, target);
+      gl.deleteTexture(src);
+      const heights = new Float32Array(w * h);
+      for (let i = 0; i < w * h; i++) heights[i] = out[i * 4];
+      return heights;
+    }
+
+    /** Lays the road for this landscape and gives the bake its map. A failure only costs the road. */
+    _layRoad() {
+      const gl = this.gl;
+      if (this.roadMap) gl.deleteTexture(this.roadMap);
+      this.roadMap = null;
+      this.road = null;
+      if (this.cfg.road !== false && this.floatTargets) {
+        try {
+          const R = LE.Road;
+          const v = this.viewInfo();
+          const heights = this._groundHeights(R.gridPoints(), R.GRID.na, R.GRID.nr);
+          const line = R.plan(heights, v.camY, -v.horizonY * v.h * v.pxAng);
+          const n = line.length / 2;
+          const w = 1024;
+          const h = Math.ceil(n / w);
+          const pts = new Float32Array(w * h * 2);
+          pts.set(line);
+          const road = R.finish(line, this._groundHeights(pts, w, h));
+          const map = R.vectorMap(road);
+          this.roadMap = LE.GL.createTexture2D(gl, map.w, map.h, 'rg16f', { filter: gl.LINEAR });
+          gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, map.w, map.h, gl.RG, gl.FLOAT, map.data);
+          this.roadBox = map.box;
+          this.road = road;
+        } catch (e) {
+          console.warn('road: not laid', e);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        }
+      }
+      if (this.life) this.life.setRoad(this.road);
+    }
+
+    /** What the bake and the shadows need to know of the road. Returns the textures to bind. */
+    _roadUniforms(p) {
+      p.set('uRoadOn', this.roadMap ? 1 : 0);
+      if (!this.roadMap) return {};
+      p.set('uRoadBox', this.roadBox);
+      return { uRoadMap: this.roadMap };
     }
 
     // ---------------------------------------------------------------- uniforms
@@ -496,6 +560,7 @@
       p.set('uNorth', [0, -1]); // snow lingers a little longer on the faces turned toward the viewer
       p.set('uSeason', state.season);
       p.set('uTreeSite', this.treeSite());
+      this._bind(p, this._roadUniforms(p));
       this._scissor(r);
       pacer.begin();
       this._draw();
@@ -540,7 +605,7 @@
       this._camera(p, this.w, this.h);
       p.set('uLightDir', job.dir);
       p.set('uTreeSite', this.treeSite());
-      this._bind(p, { uG0: this.gbuf.tex[0], uG2: this.gbuf.tex[2] });
+      this._bind(p, { uG0: this.gbuf.tex[0], uG2: this.gbuf.tex[2], ...this._roadUniforms(p) });
       this._scissor(r);
       pacer.begin();
       this._draw();
@@ -814,6 +879,7 @@
         uAdapt: this.adaptA.tex[0],
         uSkyLUT: this.skyLUT.tex[0],
         uTransLUT: this.transLUT.tex[0],
+        uShadow: this.shadowA.tex[0],
       });
       gl.bindVertexArray(this.spriteVAO);
       gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, life.count);

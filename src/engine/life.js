@@ -9,6 +9,8 @@
  *   • wood smoke rises from village houses at cooking times and leans with the wind
  *   • meteor rates follow the real annual shower calendar and need a dark, clear sky
  *   • satellites only show in twilight, when they are sunlit against a dark sky
+ *   • buses, jeeps and motorcycles keep to the road, driving on the left, and slow down for bends. Most in the day,
+ *     few at night, and their headlights show only while they head towards the viewer
  * Units: km, km/s; scene frame as in the renderer (+z = view centre, camera at origin).
  */
 (function () {
@@ -43,6 +45,26 @@
     { name: 'Geminids', m: 12, d: 14.2, zhr: 150, ra: 112, dec: 33, w: 1.2 },
   ];
 
+  // Sizes in km, cruising speed in km/s. Paint: 5 bits each of red, green and blue.
+  const SIZE_ON_SCREEN = 1.3; // a little larger than life, or at this distance a motorcycle would be under a pixel
+  const rgb5 = (r, g, b) => r + g * 32 + b * 1024;
+  const VEHICLES = {
+    bus: {
+      code: 0, len: 0.0105, wid: 0.0025, hgt: 0.0031, cruise: 0.0085, lane: 0.0017,
+      paints: [rgb5(24, 5, 4), rgb5(5, 11, 22), rgb5(26, 19, 4), rgb5(25, 25, 24), rgb5(5, 16, 10)],
+    },
+    jeep: {
+      code: 1, len: 0.0045, wid: 0.0018, hgt: 0.0019, cruise: 0.0115, lane: 0.0017,
+      paints: [rgb5(27, 27, 26), rgb5(6, 12, 7), rgb5(19, 20, 20), rgb5(16, 4, 5), rgb5(4, 5, 7)],
+    },
+    motorcycle: {
+      code: 2, len: 0.0021, wid: 0.0008, hgt: 0.0016, cruise: 0.0125, lane: 0.0022,
+      paints: [rgb5(22, 5, 4), rgb5(5, 7, 14), rgb5(24, 24, 22), rgb5(9, 12, 6)],
+    },
+  };
+  const TRAFFIC_MAX = 14; // on the whole road, most of which is in view
+  const TMP = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+
   class Life {
     constructor() {
       this.data = new Float32Array(MAX * FLOATS);
@@ -55,7 +77,12 @@
       this.sats = [];
       this.smoke = [];
       this.smokeSources = []; // [{x,y,z}] world positions found after the bake
+      this.road = null;
+      this.vehicles = [];
+      this._nextVehicle = 0;
+      this._trafficSeeded = false;
       this.enabled = true;
+      this.birds = true; // off: no birds, while the rest of life goes on
       this.t = 0;
       this._nextFlock = rand(20, 90);
       this._nextGeese = rand(60, 240);
@@ -66,6 +93,12 @@
     setSmokeSources(list) {
       this.smokeSources = list || [];
       this.smoke = [];
+    }
+
+    setRoad(road) {
+      this.road = road || null;
+      this.vehicles = [];
+      this._trafficSeeded = false;
     }
 
     /** Fill the screen with life immediately (used by automated screenshot tests). */
@@ -86,11 +119,13 @@
     /** Brings one on now, whatever the hour and the weather (the test panel). They then behave as any other would. */
     summon(kind) {
       if (!this._view || !this.state) return;
+      if (!this.birds && (kind === 'raptor' || kind === 'flock' || kind === 'geese')) return;
       if (kind === 'raptor') this.raptors.push(this._newRaptor(true));
       else if (kind === 'flock') this.flock = this._newFlock(true);
       else if (kind === 'geese') this.geese = this._newGeese(this.state, true);
       else if (kind === 'meteor') this.meteors.push(this._newMeteor(null, this.state));
       else if (kind === 'satellite') this.sats.push({ az: rand(-0.4, 0.4), el: 0.25, heading: 0.4, speed: 0.0005, age: 5, life: 600, bright: 0.45 });
+      else if (VEHICLES[kind] && this.road) this.vehicles.push(this._newVehicle(kind, Math.random() < 0.5 ? 1 : -1, this._roadInView()));
     }
 
     // ------------------------------------------------------------ geometry helpers
@@ -209,7 +244,13 @@
       const sunAlt = a.sunAltDeg;
       const daylight = smooth(-5, 3, sunAlt);
       const shelter = (1 - smooth(0.1, 0.4, w.rain)) * (1 - smooth(0.35, 0.75, w.fog)) * (1 - w.storm) * (1 - smooth(0.2, 0.6, w.snow));
-      const birdOK = this.enabled ? daylight * shelter : 0;
+      // Turned off: the birds go at once rather than flying away, since that is what was asked
+      if (!this.birds) {
+        this.raptors = [];
+        this.flock = null;
+        this.geese = null;
+      }
+      const birdOK = this.enabled && this.birds ? daylight * shelter : 0;
       const thermals = smooth(14, 32, sunAlt) * (1 - 0.85 * w.overcast) * (1 - smooth(28, 50, w.windSpeed));
       // dawn/dusk activity for small birds
       let dawnDusk = 0;
@@ -264,7 +305,8 @@
         if (this.geese.dead) this.geese = null;
       }
 
-      // ---- chimney smoke, meteors, satellites ----
+      // ---- chimney smoke, meteors, satellites, the road ----
+      this._stepTraffic(dt, state);
       this._stepSmoke(dt, state);
       this._stepMeteors(dt, state);
       this._stepSatellites(dt, state);
@@ -431,6 +473,131 @@
         b.dihedral = 0.02;
       }
       if (g.age > g.maxAge) g.dead = true;
+    }
+
+    // ------------------------------------------------------------ the road
+    /** How many vehicles the road holds now: by the hour, and fewer when the weather is bad. */
+    _trafficWanted(state) {
+      if (!this.enabled || !this.road) return 0;
+      const h = state.now.getHours() + state.now.getMinutes() / 60;
+      const w = state.weather;
+      const byHour = 0.08 + 0.92 * smooth(4.5, 7.5, h) * (1 - smooth(19.5, 23.5, h));
+      const byWeather = (1 - 0.6 * smooth(0.2, 0.7, w.snow)) * (1 - 0.5 * smooth(0.3, 0.8, w.fog)) * (1 - 0.4 * w.storm);
+      return Math.round(TRAFFIC_MAX * byHour * byWeather);
+    }
+
+    /** A point of the road inside the picture. */
+    _roadInView() {
+      const road = this.road;
+      for (let tries = 0; tries < 40; tries++) {
+        const s = rand(0, road.length);
+        const i = Math.floor(s / road.step);
+        if (Math.abs(Math.atan2(road.x[i], road.z[i])) < this._view.hfov * 0.42) return s;
+      }
+      return road.length / 2;
+    }
+
+    _newVehicle(kind, dir, s) {
+      const k = VEHICLES[kind];
+      const paints = k.paints;
+      return {
+        kind,
+        code: k.code,
+        dir,
+        s,
+        len: k.len * SIZE_ON_SCREEN,
+        wid: k.wid * SIZE_ON_SCREEN,
+        hgt: k.hgt * SIZE_ON_SCREEN,
+        cruise: k.cruise * rand(0.9, 1.1),
+        v: k.cruise * 0.7,
+        paint: paints[Math.floor(Math.random() * paints.length)],
+        lane: k.lane,
+      };
+    }
+
+    _pickVehicleKind() {
+      const x = Math.random();
+      return x < 0.25 ? 'bus' : x < 0.65 ? 'jeep' : 'motorcycle';
+    }
+
+    _stepTraffic(dt, state) {
+      const road = this.road;
+      if (!road) return;
+      const want = this._trafficWanted(state);
+      // the road isn't empty when the picture first appears
+      if (!this._trafficSeeded && this._view) {
+        this._trafficSeeded = true;
+        for (let i = 0; i < want; i++) this.vehicles.push(this._newVehicle(this._pickVehicleKind(), Math.random() < 0.5 ? 1 : -1, rand(0, road.length)));
+      }
+      this._nextVehicle -= dt;
+      if (this._nextVehicle <= 0) {
+        this._nextVehicle = rand(6, 45);
+        if (this.vehicles.length < want) {
+          const dir = Math.random() < 0.5 ? 1 : -1;
+          const s = dir > 0 ? 0.001 : road.length - 0.001;
+          if (this.vehicles.every((o) => o.dir !== dir || Math.abs(o.s - s) > 0.06)) this.vehicles.push(this._newVehicle(this._pickVehicleKind(), dir, s));
+        }
+      }
+      const w = state.weather;
+      const careful = 1 - 0.3 * smooth(0.1, 0.6, Math.max(w.rain, w.snow, w.fog));
+      for (const c of this.vehicles) {
+        const i = clamp(Math.round(c.s / road.step), 0, road.n - 1);
+        let target = Math.min(c.cruise * careful, road.limit[i]);
+        // keeps its distance from the one in front
+        for (const o of this.vehicles) {
+          if (o === c || o.dir !== c.dir) continue;
+          const gap = (o.s - c.s) * c.dir - (o.len + c.len) / 2;
+          if (gap <= 0 || gap > 0.08) continue;
+          if (gap < 0.012 + c.v * 2) target = Math.min(target, o.v * 0.95);
+          if (gap < 0.006) target = 0;
+        }
+        const dv = 1.2e-3 * dt;
+        c.v += clamp(target - c.v, -dv * 2, dv);
+        c.s += c.dir * c.v * dt;
+      }
+      this.vehicles = this.vehicles.filter((c) => c.s > 0 && c.s < road.length);
+    }
+
+    _pushVehicle(c, lights) {
+      const v = this._view;
+      const road = this.road;
+      const R = LE.Road;
+      const off = -c.dir * c.lane; // on the left of its own direction
+      const p = R.at(road, c.s, off, TMP[0]);
+      const pr = this._project(p[0], p[1], p[2]);
+      if (!this._inView(pr, 30)) return;
+      const f = R.at(road, c.s + (c.dir * c.len) / 2, off, TMP[1]);
+      const b = R.at(road, c.s - (c.dir * c.len) / 2, off, TMP[2]);
+      const pf = this._project(f[0], f[1], f[2]);
+      const pb = this._project(b[0], b[1], b[2]);
+      const fx = f[0] - b[0];
+      const fy = f[1] - b[1];
+      const fz = f[2] - b[2];
+      const fl = Math.hypot(fx, fy, fz) || 1;
+      const flat = Math.hypot(fx, fz) || 1;
+      const hw = c.wid / 2;
+      const ps = this._project(p[0] + (fz / flat) * hw, p[1], p[2] - (fx / flat) * hw);
+      const ax = (pf.sx - pb.sx) / 2;
+      const ay = (pf.sy - pb.sy) / 2;
+      const bx = ps.sx - pr.sx;
+      const by = ps.sy - pr.sy;
+      const halfH = Math.max(c.hgt / pr.r / v.pxAng, 0.9) / 2;
+      const toCam = [-p[0], v.camY - p[1], -p[2]];
+      const dist = Math.hypot(toCam[0], toCam[1], toCam[2]);
+      const facing = (fx * toCam[0] + fy * toCam[1] + fz * toCam[2]) / (fl * dist);
+      const lamp = lights * R.headlight(facing);
+      let qx = Math.abs(ax) + Math.abs(bx) + 1.5;
+      let qy = Math.abs(ay) + Math.abs(by) + halfH + 1.5;
+      if (lamp > 0.003) {
+        qx = Math.max(qx, 11);
+        qy = Math.max(qy, 11);
+      }
+      this._push([
+        pr.sx, pr.sy + halfH, qx, qy,
+        0, 6, 1, dist,
+        ax, ay, bx, by,
+        halfH, c.paint, lamp, c.code,
+      ]);
     }
 
     _stepSmoke(dt, state) {
@@ -624,10 +791,15 @@
 
     _write(state) {
       this.count = 0;
+      // Headlights come on as the light goes, and in thick weather. Too slow on the picture to need a higher frame rate.
+      const w0 = state.weather;
+      const lights = Math.max(1 - smooth(-4, 3, state.astro.sunAltDeg), smooth(0.35, 0.7, Math.max(w0.fog, w0.rain, w0.snow)) * 0.8);
+      for (const c of this.vehicles) this._pushVehicle(c, lights);
+      const vehiclesInView = this.count;
       for (const r of this.raptors) this._pushBird(r);
       if (this.flock) for (const b of this.flock.birds) this._pushBird(b);
       if (this.geese) for (const b of this.geese.birds) this._pushBird(b);
-      const birdsInView = this.count;
+      const birdsInView = this.count - vehiclesInView;
 
       // chimney smoke
       const v = this._view;

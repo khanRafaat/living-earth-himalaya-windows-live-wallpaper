@@ -193,6 +193,28 @@ float forestDensity(vec2 q, float h) {
   return clamp(alt * (0.6 + 0.8 * n), 0.0, 1.0) * (1.0 - 0.88 * villageField(q, h));
 }
 
+// The road (road.js). The map holds the way from a point to the road's centre line, which is far from 0 away from the road.
+uniform sampler2D uRoadMap;
+uniform vec4 uRoadBox; // x0, z0, 1/width, 1/depth
+uniform float uRoadOn;
+vec2 roadVec(vec2 p) {
+  vec2 uv = (p - uRoadBox.xy) * uRoadBox.zw;
+  if (uRoadOn < 0.5 || uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return vec2(1.0);
+  // an explicit level: this runs inside ray-march loops, where the Direct3D compiler rejects derivatives
+  return textureLod(uRoadMap, uv, 0.0).xy;
+}
+// How tall the trees grow here, as a share of their full height. None on the road. From this far up the line of sight
+// meets the hillside at a low angle, so full-grown trees between the viewer and the road would hide it altogether:
+// on that side they shorten gradually towards it, and the forest keeps its look.
+float roadTreeHeight(vec2 p) {
+  vec2 v = roadVec(p);
+  float d = length(v);
+  if (d > 0.09) return 1.0;
+  float open = smoothstep(0.009, 0.018, d);
+  float nearer = smoothstep(0.0, 0.6, dot(v, normalize(p)) / max(d, 1e-5)); // the road lies beyond this point
+  return open * mix(1.0, mix(0.12, 1.0, smoothstep(0.015, 0.09, d)), nearer);
+}
+
 float treeSlopeMask(vec2 p) {
   const float e = 0.025;
   // one terrainBase call site in a loop (each call site is otherwise inlined in full)
@@ -208,6 +230,8 @@ float treeSlopeMask(vec2 p) {
 
 // Individual conifers: x = crown height above ground (km), y = per-tree random, z = radial position
 vec3 treeField(vec2 p, float dens) {
+  float grows = roadTreeHeight(p);
+  if (grows <= 0.0) return vec3(0.0, 0.0, 1.0);
   vec2 q = p * (1000.0 / 7.5);
   vec2 c = floor(q);
   vec2 f = q - c;
@@ -225,7 +249,7 @@ vec3 treeField(vec2 p, float dens) {
     float hh = H * (1.0 - pow(d, 1.3));
     if (hh > best) { best = hh; bh = hash12(c + g + 7.7); bd = d; }
   }
-  return vec3(best * 0.001, bh, bd);
+  return vec3(best * 0.001 * grows, bh, bd);
 }
 
 float treeFadeAt(float t) { return 1.0 - smoothstep(TREE_FAR * 0.6, TREE_FAR, t); }
@@ -239,6 +263,19 @@ float terrainFull(vec2 p, int oct, float tf) {
   return hb + treeField(p, dens).x * tf;
 }
 `;
+
+  // The ground height at each of a list of points (road.js), read back once before the bake.
+  S.roadHeights = () => `${S.header}
+${S.camera}
+${S.noise}
+${S.terrain}
+uniform sampler2D uPts;
+out vec4 fragColor;
+void main() {
+  vec2 p = texelFetch(uPts, ivec2(gl_FragCoord.xy), 0).xy;
+  // as many octaves as the bake uses at that distance, so a vehicle stands on the ground the bake drew
+  fragColor = vec4(terrainBase(p, octFor(length(p) * 1.01)), 0.0, 0.0, 1.0);
+}`;
 
   // ---------------- atmosphere ----------------
   S.atmosphere = `

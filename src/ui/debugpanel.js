@@ -332,6 +332,27 @@
               set: (v) => (cfg.life = !!v),
               tip: 'Also meteors and satellites',
             },
+            {
+              label: 'Birds',
+              stops: ON_OFF,
+              get: () => (cfg.birds !== false ? 1 : 0),
+              set: (v) => (cfg.birds = !!v),
+              tip: 'Only the birds: smoke, meteors and lights stay',
+            },
+            {
+              label: 'Flying leaves',
+              stops: ON_OFF,
+              get: () => (cfg.leaves !== false ? 1 : 0),
+              set: (v) => (cfg.leaves = !!v),
+              tip: 'The leaves and blossom the wind carries past. The tree stays',
+            },
+            {
+              label: 'Road and traffic',
+              stops: ON_OFF,
+              get: () => (cfg.road !== false ? 1 : 0),
+              set: (v) => (cfg.road = !!v),
+              tip: 'Changing this draws the land again, which takes a few minutes',
+            },
           ],
           buttons: [
             ['Raptor', () => life.summon('raptor'), 'Birds leave in rain, snow, fog and at night'],
@@ -339,6 +360,9 @@
             ['Geese', () => life.summon('geese'), 'Birds leave in rain, snow, fog and at night'],
             ['Meteor', () => life.summon('meteor'), 'Shows in a dark sky'],
             ['Satellite', () => life.summon('satellite'), 'Shows in a dark sky'],
+            ['Bus', () => life.summon('bus'), 'Somewhere on the road in view, going either way'],
+            ['Jeep', () => life.summon('jeep'), 'Somewhere on the road in view, going either way'],
+            ['Motorcycle', () => life.summon('motorcycle'), 'Somewhere on the road in view, going either way'],
             [
               'Lightning',
               () => {

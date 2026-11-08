@@ -4,7 +4,8 @@
 // uses the page in the folder above it instead.
 //
 //   1. Opening the app shows the setup window: location (found automatically or chosen by hand), when to
-//      animate, quality and Start with Windows. "Set wallpaper" starts the wallpaper. When Windows starts
+//      animate, what is in the scene (road and traffic, birds, flying leaves), the corner for the clock and
+//      weather panel, quality and Start with Windows. "Set wallpaper" starts the wallpaper. When Windows starts
 //      the app at sign-in (--startup), it goes straight to the wallpaper with the saved settings.
 //   2. Starts Edge on index.html with its own profile, at below-normal priority.
 //   3. Moves the Edge window behind the desktop icons.
@@ -131,12 +132,16 @@ namespace LivingEarth
     public sealed class Settings
     {
         public static readonly string[] Qualities = { "auto", "eco", "balanced", "high", "ultra" };
+        // Where the clock and weather panel sits. The same order as PANEL_POS in src/main.js.
+        public static readonly string[] Corners = { "right-bottom", "right-top", "left-bottom", "left-top" };
 
         public RestMode Mode = RestMode.Desktop;
         public string Quality = "high";
         public bool AutoLocation = true;
         public Place Manual;   // the place chosen by hand
         public Place Detected; // the last place found automatically
+        public bool Road = true, Birds = true, Leaves = true; // what is in the scene
+        public string Corner = "right-bottom";
 
         /** The place the wallpaper uses, or null for the page's default. */
         public Place Current { get { return !AutoLocation && Manual != null ? Manual : Detected; } }
@@ -175,6 +180,11 @@ namespace LivingEarth
             s.AutoLocation = !(v.TryGetValue("location", out x) && x == "manual");
             s.Manual = ReadPlace(v, "manual");
             s.Detected = ReadPlace(v, "detected");
+            // A missing key means on, so a settings file from an older version keeps everything
+            s.Road = !(v.TryGetValue("road", out x) && x == "off");
+            s.Birds = !(v.TryGetValue("birds", out x) && x == "off");
+            s.Leaves = !(v.TryGetValue("leaves", out x) && x == "off");
+            if (v.TryGetValue("corner", out x) && Array.IndexOf(Corners, x) >= 0) s.Corner = x;
             return s;
         }
 
@@ -184,6 +194,10 @@ namespace LivingEarth
             b.Append("mode=").Append(Mode.ToString().ToLowerInvariant()).Append("\r\n");
             b.Append("quality=").Append(Quality).Append("\r\n");
             b.Append("location=").Append(AutoLocation ? "auto" : "manual").Append("\r\n");
+            b.Append("road=").Append(Road ? "on" : "off").Append("\r\n");
+            b.Append("birds=").Append(Birds ? "on" : "off").Append("\r\n");
+            b.Append("leaves=").Append(Leaves ? "on" : "off").Append("\r\n");
+            b.Append("corner=").Append(Corner).Append("\r\n");
             WritePlace(b, "manual", Manual);
             WritePlace(b, "detected", Detected);
             File.WriteAllText(path, b.ToString(), new UTF8Encoding(false));
@@ -605,7 +619,9 @@ namespace LivingEarth
             ShowMode();
             Place p = settings.Current;
             Log("settings: " + settings.Mode + ", quality " + settings.Quality + ", " +
-                (p == null ? "default place" : p.Detail + (settings.AutoLocation ? " (automatic)" : " (chosen)")));
+                (p == null ? "default place" : p.Detail + (settings.AutoLocation ? " (automatic)" : " (chosen)")) +
+                ", road " + (settings.Road ? "on" : "off") + ", birds " + (settings.Birds ? "on" : "off") +
+                ", leaves " + (settings.Leaves ? "on" : "off") + ", panel " + settings.Corner);
             if (!running) StartWallpaper(); // otherwise the page picks the change up from state.js within a second
         }
 
@@ -753,6 +769,10 @@ namespace LivingEarth
             if (queryOverride == null)
             {
                 js.Append(", { quality: ").Append(Js(settings.Quality));
+                js.Append(", road: ").Append(settings.Road ? "true" : "false");
+                js.Append(", birds: ").Append(settings.Birds ? "true" : "false");
+                js.Append(", leaves: ").Append(settings.Leaves ? "true" : "false");
+                js.Append(", corner: ").Append(Js(settings.Corner));
                 Place p = settings.Current;
                 if (p != null)
                     js.Append(", place: { lat: ").Append(Locator.F(p.Lat)).Append(", lon: ").Append(Locator.F(p.Lon))
@@ -796,6 +816,10 @@ namespace LivingEarth
         {
             if (queryOverride != null) return queryOverride;
             var q = new StringBuilder("quality=").Append(settings.Quality).Append("&fps=24&geo=0");
+            if (!settings.Road) q.Append("&road=0");
+            if (!settings.Birds) q.Append("&birds=0");
+            if (!settings.Leaves) q.Append("&leaves=0");
+            q.Append("&corner=").Append(settings.Corner);
             Place p = settings.Current;
             if (p != null)
                 q.Append("&lat=").Append(Locator.F(p.Lat)).Append("&lon=").Append(Locator.F(p.Lon))
@@ -1320,7 +1344,8 @@ namespace LivingEarth
         private readonly TextBox searchBox;
         private readonly ListBox results;
         private readonly ComboBox qualityBox;
-        private readonly CheckBox startupBox;
+        private readonly CheckBox startupBox, roadBox, birdsBox, leavesBox;
+        private readonly RadioButton topLeft, topRight, bottomLeft, bottomRight;
         private Place detected, manual;
         private int detectRun, searchRun;
 
@@ -1369,9 +1394,9 @@ namespace LivingEarth
             loc.Controls.Add(searchBox);
             searchButton = MakeButton(loc, "Search", W - Pad - 110, ly, 110);
             ly += 34;
-            results = new ListBox { Location = new Point(Pad + Indent, ly), Size = new Size(W - 2 * Pad - Indent, 92), IntegralHeight = false };
+            results = new ListBox { Location = new Point(Pad + Indent, ly), Size = new Size(W - 2 * Pad - Indent, 64), IntegralHeight = false };
             loc.Controls.Add(results);
-            ly += 96;
+            ly += 68;
             manualStatus = Note(loc, "Type a city or town, or a latitude and longitude such as 27.99, 86.93.", Pad + Indent, ly, W - 2 * Pad - Indent, 20);
             ly += 24;
             loc.Height = ly;
@@ -1395,16 +1420,35 @@ namespace LivingEarth
             Controls.Add(modes);
             y += my + 12;
 
+            // ---- what is in the scene, and the corner for the panel, side by side to keep the window short
+            const int Col2 = W / 2 + 4;
+            HeadingAt("In the scene", Pad, y);
+            HeadingAt("Clock and weather panel", Col2, y);
+            y += 28;
+            roadBox = Check("Road and traffic", Pad, y, s.Road);
+            birdsBox = Check("Birds", Pad, y + 24, s.Birds);
+            leavesBox = Check("Flying leaves", Pad, y + 48, s.Leaves);
+            // a panel of their own, or they would be one group with the radio buttons above
+            var corners = new Panel { Location = new Point(Col2, y), Size = new Size(W - Col2 - Pad, 48) };
+            topLeft = Radio(corners, "Top left", 0, 0);
+            topRight = Radio(corners, "Top right", 124, 0);
+            bottomLeft = Radio(corners, "Bottom left", 0, 24);
+            bottomRight = Radio(corners, "Bottom right", 124, 24);
+            Controls.Add(corners);
+            y += 74;
+            Note(this, "Turning the road on or off shapes the mountains again, which takes a few minutes. " +
+                       "With two screens side by side, left and right mean the left and right screen.", Pad, y, W - 2 * Pad, 34);
+            y += 36 + 12;
+
             // ---- quality and start-up
             y = Heading("Quality and start-up", y);
             var ql = new Label { Text = "Quality", Location = new Point(Pad, y + 4), AutoSize = true };
             Controls.Add(ql);
-            qualityBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(Pad + 72, y), Width = 270 };
+            qualityBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(Pad + 72, y), Width = 250 };
             qualityBox.Items.AddRange(QualityNames);
             qualityBox.SelectedIndex = Math.Max(0, Array.IndexOf(Settings.Qualities, s.Quality));
             Controls.Add(qualityBox);
-            y += 34;
-            startupBox = new CheckBox { Text = "Start with Windows", Checked = startWithWindows, Location = new Point(Pad, y), AutoSize = true };
+            startupBox = new CheckBox { Text = "Start with Windows", Checked = startWithWindows, Location = new Point(Pad + 72 + 250 + 24, y + 3), AutoSize = true };
             Controls.Add(startupBox);
             y += 36;
 
@@ -1439,6 +1483,10 @@ namespace LivingEarth
             desktopRadio.Checked = s.Mode == RestMode.Desktop || s.Mode == RestMode.Always;
             maximizedRadio.Checked = s.Mode == RestMode.Maximized;
             pausedRadio.Checked = s.Mode == RestMode.Paused;
+            topLeft.Checked = s.Corner == "left-top";
+            topRight.Checked = s.Corner == "right-top";
+            bottomLeft.Checked = s.Corner == "left-bottom";
+            bottomRight.Checked = !(topLeft.Checked || topRight.Checked || bottomLeft.Checked);
 
             // ---- events
             autoRadio.CheckedChanged += delegate
@@ -1472,6 +1520,26 @@ namespace LivingEarth
             AcceptButton = setButton;
             UpdateButtons();
             ResumeLayout(false);
+        }
+
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            FitTo(Screen.FromPoint(MousePosition).WorkingArea);
+        }
+
+        /**
+         * About 860 px tall at 100% scale, so at 125% or more on a 1080p screen the window would run off the bottom.
+         * Then it takes the screen's height and scrolls, a little wider so the scroll bar covers nothing.
+         */
+        internal void FitTo(Rectangle area)
+        {
+            if (Height <= area.Height) return;
+            int full = ClientSize.Height;
+            AutoScroll = true;
+            AutoScrollMinSize = new Size(0, full);
+            ClientSize = new Size(ClientSize.Width + SystemInformation.VerticalScrollBarWidth, full - (Height - area.Height));
+            Location = new Point(area.Left + Math.Max(0, (area.Width - Width) / 2), area.Top);
         }
 
         protected override void OnShown(EventArgs e)
@@ -1551,6 +1619,10 @@ namespace LivingEarth
             if (detected != null) s.Detected = detected;
             s.Mode = maximizedRadio.Checked ? RestMode.Maximized : pausedRadio.Checked ? RestMode.Paused : RestMode.Desktop;
             s.Quality = Settings.Qualities[Math.Max(0, qualityBox.SelectedIndex)];
+            s.Road = roadBox.Checked;
+            s.Birds = birdsBox.Checked;
+            s.Leaves = leavesBox.Checked;
+            s.Corner = topLeft.Checked ? "left-top" : topRight.Checked ? "right-top" : bottomLeft.Checked ? "left-bottom" : "right-bottom";
             DialogResult = DialogResult.OK;
             Close();
         }
@@ -1562,8 +1634,20 @@ namespace LivingEarth
 
         private int Heading(string text, int y)
         {
-            Controls.Add(new Label { Text = text, Location = new Point(Pad, y), AutoSize = true, Font = new Font("Segoe UI Semibold", 10.5F), ForeColor = Ink });
+            HeadingAt(text, Pad, y);
             return y + 28;
+        }
+
+        private void HeadingAt(string text, int x, int y)
+        {
+            Controls.Add(new Label { Text = text, Location = new Point(x, y), AutoSize = true, Font = new Font("Segoe UI Semibold", 10.5F), ForeColor = Ink });
+        }
+
+        private CheckBox Check(string text, int x, int y, bool on)
+        {
+            var c = new CheckBox { Text = text, Checked = on, Location = new Point(x, y), AutoSize = true };
+            Controls.Add(c);
+            return c;
         }
 
         private static RadioButton Radio(Control parent, string text, int x, int y)

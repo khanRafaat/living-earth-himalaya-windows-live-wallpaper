@@ -313,9 +313,11 @@
       if (!lifeSeeded) {
         lifeSeeded = true;
         life.setSmokeSources(renderer.smokeSources);
+        life.setRoad(renderer.road);
         if (cfg.testMode && cfg.lifeTest) life.seedForTest(state, view);
       }
       life.enabled = cfg.life !== false;
+      life.birds = cfg.birds !== false;
       stepLife(state, nowReal);
     } else {
       lastLife = nowReal;
@@ -468,6 +470,15 @@
         break;
       case 'life':
         cfg.life = !!val;
+        break;
+      case 'road': // the renderer sees the change and shapes the mountains again
+        cfg.road = !!val;
+        break;
+      case 'birds':
+        cfg.birds = !!val;
+        break;
+      case 'leaves':
+        cfg.leaves = !!val;
         break;
       case 'refreshWeather':
         weather.refreshNow();

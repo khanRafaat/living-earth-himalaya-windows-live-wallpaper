@@ -83,6 +83,21 @@
     "value": true,
     "text": "Wildlife and village life (birds, smoke, lights, meteors)"
   },
+  "birds": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Birds"
+  },
+  "leaves": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Flying leaves"
+  },
+  "road": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Road and traffic (changing it shapes the mountains again, which takes a few minutes)"
+  },
   "weatherMode": {
     "type": "dropdown",
     "value": 0,

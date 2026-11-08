@@ -1,7 +1,7 @@
 /*
  * Sprites — the living layer drawn over the composite each frame:
  *   type 0 raptor · 1 chough · 2 goose/crane  (procedural flapping silhouettes)
- *   type 3 meteor · 4 satellite · 5 chimney smoke
+ *   type 3 meteor · 4 satellite · 5 chimney smoke · 6 road vehicle
  * Each instance is a rotated quad. Fragments are depth-tested against the baked
  * terrain, lit with the same sky/sun as the scene, hazed by distance, and
  * tone-mapped exactly like the composite so they sit naturally in the image.
@@ -57,6 +57,7 @@ ${S.atmosphereLookup}
 uniform sampler2D uG0;
 uniform sampler2D uVol;
 uniform sampler2D uAdapt;
+uniform sampler2D uShadow;
 uniform vec2 uVolRes;
 uniform vec3 uSunDir;
 uniform vec3 uSunE;
@@ -117,6 +118,15 @@ vec3 grade(vec3 col) {
   vec3 tone = clamp((col * (a * col + b)) / (col * (c * col + d) + e), 0.0, 1.0);
   col = mix(tone, 1.0 - exp(-col * 1.4), uNight);
   return pow(col, vec3(1.0 / 2.2));
+}
+
+// A box seen from above is three segments added together, the sum of its length, width and height on the picture.
+// The distance to the outside of such a shape is the largest over those three directions.
+float boxEdge(vec2 q, vec2 e, vec2 A, vec2 B, vec2 U) {
+  float l = length(e);
+  if (l < 1e-3) return -1e3;
+  vec2 n = vec2(-e.y, e.x) / l;
+  return abs(dot(q, n)) - abs(dot(A, n)) - abs(dot(B, n)) - abs(dot(U, n));
 }
 
 float volT() {
@@ -180,6 +190,88 @@ void main() {
     float r2 = dot(vLocal, vLocal);
     col = vec3(1.0, 0.98, 0.94) * vC.x * exp(-r2 / 0.8) * volT();
     fragColor = vec4(grade(col) * alpha, 0.0);
+    return;
+  }
+
+  if (type == 6) {
+    // ---------------- road vehicle ----------------
+    vec2 q = vLocal;
+    vec2 A = vC.xy;                              // half its length, pointing to the front
+    vec2 B = vC.zw;                              // half its width
+    vec2 U = vec2(0.0, vD.x);                    // half its height
+    int kind = int(vD.w + 0.5);                  // 0 bus, 1 jeep, 2 motorcycle
+    float d = max(boxEdge(q, A, A, B, U), max(boxEdge(q, B, A, B, U), boxEdge(q, U, A, B, U)));
+    a = clamp(0.5 - d, 0.0, 1.0) * alpha;
+    if (t > 0.0 && t < dist - 0.012) a = 0.0;    // behind a nearer slope, a tree or the rock
+
+    // its paint, as 5 bits each of red, green, blue
+    float pk = vD.y;
+    vec3 paint = vec3(mod(pk, 32.0), mod(floor(pk / 32.0), 32.0), floor(pk / 1024.0)) / 31.0;
+    paint *= paint;
+    // which face this pixel is on. The corner nearest the viewer is the lowest on the picture.
+    float sa = A.y <= 0.0 ? 1.0 : -1.0;
+    float sb = B.y <= 0.0 ? 1.0 : -1.0;
+    vec2 corner = A * sa + B * sb - U;
+    vec2 top = q - U;
+    float det = A.x * B.y - A.y * B.x;
+    float tu = abs(det) > 1e-3 ? (top.x * B.y - top.y * B.x) / det : 9.0;
+    float tv = abs(det) > 1e-3 ? (A.x * top.y - A.y * top.x) / det : 9.0;
+    vec3 alb;
+    float lit;
+    vec3 toEye = normalize(vec3(-rd.x, 0.0, -rd.z));
+    float sideSun = max(dot(toEye, uSunDir), 0.0) * 0.8 + 0.1;
+    if (max(abs(tu), abs(tv)) <= 1.0 && kind != 2) {
+      alb = kind == 0 ? mix(paint, vec3(0.6), 0.5) : paint * 0.9; // a bus's pale roof
+      lit = max(uSunDir.y, 0.0);
+    } else {
+      // up its side, 0 at the road, 1 at the roof
+      vec2 run = (q.x - corner.x) * A.x * sa <= 0.0 && abs(A.x) > 1e-3 ? -2.0 * sa * A : -2.0 * sb * B;
+      float along = abs(run.x) > 1e-3 ? clamp((q.x - corner.x) / run.x, 0.0, 1.0) : 0.0;
+      float up = clamp((q.y - corner.y - along * run.y) / max(2.0 * U.y, 1e-3), 0.0, 1.0);
+      vec3 glass = vec3(0.035, 0.05, 0.06);
+      if (kind == 2) alb = up > 0.48 ? paint : vec3(0.03);                        // the rider above the machine
+      else {
+        alb = paint;
+        if (up > 0.5 && up < 0.86) alb = glass;                                    // windows
+        if (up < 0.2) alb = vec3(0.02);                                            // wheels, and the dark under it
+      }
+      lit = sideSun;
+    }
+    vec3 here = uCamPos + rd * dist;
+    vec3 Ts = transmittance(here.y, uSunDir.y);
+    vec3 amb = skyLUT(vec3(0.0, 1.0, 0.0)) * PI * 0.5 + skyLUT(normalize(vec3(rd.x, 0.1, rd.z))) * PI * 0.25;
+    float sh = texelFetch(uShadow, ic, 0).r;      // the hills' shadow on the road under it
+    vec3 L = alb / PI * (amb + uSunE * Ts * lit * sh * (1.0 - 0.85 * uOvercast) + uMoonE * 0.3);
+    float T = exp(-dist * (0.012 + 0.0084 * uValleyHaze * 0.3));
+    vec3 skyH = skyLUT(normalize(vec3(rd.x, max(rd.y, 0.02), rd.z)));
+    col = grade(L * T + skyH * (1.0 - T));
+    float fog = volT();                           // cloud or mist between here and the road
+    a *= fog;
+
+    // Headlights, the same for every kind of vehicle: one lamp on a motorcycle, a pair otherwise. Added to the picture
+    // as it is shown, so they read the same through the night's exposure.
+    vec3 glow = vec3(0.0);
+    float lamp = vD.z;
+    vec2 at = A - U * 0.4;
+    // Whether the lamp is in sight is judged where the lamp is. Its glow spreads over ground nearer than the vehicle, which
+    // must not cut it off, and a lamp behind a tree or the crest gives no glow at all.
+    float lampT = lamp > 0.003 ? texelFetch(uG0, ivec2(vA.xy + at), 0).z : 0.0;
+    if (lamp > 0.003 && (lampT <= 0.0 || lampT >= dist - 0.012)) {
+      vec2 spread = kind == 2 ? vec2(0.0) : B * 0.8;
+      vec2 d1 = q - at - spread;
+      vec2 d2 = q - at + spread;
+      float r1 = dot(d1, d1);
+      float r2 = dot(d2, d2);
+      float core = exp(-r1 / 0.8);
+      float halo = exp(-r1 / 20.0);
+      if (kind != 2) {
+        core = max(core, exp(-r2 / 0.8));
+        halo = 0.5 * (halo + exp(-r2 / 20.0));
+      }
+      glow = vec3(1.0, 0.93, 0.78) * (core * 0.95 + halo * 0.2) * lamp * (0.25 + 0.75 * fog);
+    }
+    if (a <= 0.002 && dot(glow, glow) < 1e-5) discard;
+    fragColor = vec4(col * a + glow, a);
     return;
   }
 

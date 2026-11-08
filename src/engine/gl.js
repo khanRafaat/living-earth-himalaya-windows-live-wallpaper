@@ -132,6 +132,9 @@
     rgba8: (gl) => [gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE],
     r8: (gl) => [gl.R8, gl.RED, gl.UNSIGNED_BYTE],
     r16f: (gl) => [gl.R16F, gl.RED, gl.HALF_FLOAT],
+    rg16f: (gl) => [gl.RG16F, gl.RG, gl.HALF_FLOAT],
+    rg32f: (gl) => [gl.RG32F, gl.RG, gl.FLOAT],
+    rgba32f: (gl) => [gl.RGBA32F, gl.RGBA, gl.FLOAT],
   };
 
   function createTexture2D(gl, w, h, fmt, opts = {}) {

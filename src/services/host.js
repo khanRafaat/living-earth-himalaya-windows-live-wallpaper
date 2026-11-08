@@ -7,7 +7,8 @@
  *   rest   the scene every 2 s (you are working), fading smoothly between its pictures with the birds flying
  *   still  no frames at all (locked, or paused from the tray)
  *
- * The second argument carries settings: { quality, place: { lat, lon, name } }. They apply at once.
+ * The second argument carries settings: { quality, road, birds, leaves, corner, place: { lat, lon, name } }.
+ * They apply at once. Turning the road on or off shapes the mountains again, which takes a few minutes.
  *
  * Does nothing unless the page was opened with ?host=1, so Lively and browser testing are unaffected.
  */
@@ -19,6 +20,7 @@
   const SLOW_FRAME_MS = 2000;
   const SETTLE_MS = 6000; // run at full speed first, or the first picture would hold a half-formed sky
   const QUALITY = ['auto', 'eco', 'balanced', 'high', 'ultra']; // the order livelyPropertyListener expects
+  const CORNER = ['right-bottom', 'right-top', 'left-bottom', 'left-top']; // the same
 
   let wanted = 'live';
   let applied = 'live';
@@ -41,11 +43,18 @@
         window.leSetLocation(p);
       }
     }
+    if (!window.LE || !window.livelyPropertyListener) return;
+    const c = LE.config;
     const q = options.quality;
     const i = QUALITY.indexOf(q);
-    if (i >= 0 && window.LE && LE.config.render.quality !== q && window.livelyPropertyListener) {
-      window.livelyPropertyListener('quality', i);
+    if (i >= 0 && c.render.quality !== q) window.livelyPropertyListener('quality', i);
+    // Only on a change: the road starts the mountains over
+    for (const name of ['road', 'birds', 'leaves']) {
+      const on = options[name];
+      if (typeof on === 'boolean' && (c[name] !== false) !== on) window.livelyPropertyListener(name, on);
     }
+    const corner = CORNER.indexOf(options.corner);
+    if (corner >= 0 && c.ui.panelPosition !== options.corner) window.livelyPropertyListener('panelPosition', corner);
   }
 
   function apply() {
