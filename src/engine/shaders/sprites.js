@@ -161,6 +161,31 @@ float volT() {
   return texelFetch(uVol, ivec2(gl_FragCoord.xy * uVolRes / uRes), 0).a;
 }
 
+// The cloud and mist in front of what lies at this pixel, tFull away: the volume pass's light and how much it lets
+// through, from its low-resolution picture the way the scene takes them (composite.js sampleVolume), weighted towards
+// the texels that ended at about that distance. So a vehicle on the road gets the mist over the road, not what lay over
+// the trees in front of it.
+vec4 volAt(float tFull) {
+  vec2 scale = uVolRes / uRes;
+  vec2 vp = gl_FragCoord.xy * scale - 0.5;
+  vec2 base = floor(vp);
+  vec2 f = vp - base;
+  float zf = log(max(tFull, 0.01));
+  vec4 acc = vec4(0.0);
+  float wsum = 0.0;
+  for (int j = 0; j < 2; j++)
+  for (int i = 0; i < 2; i++) {
+    ivec2 vc = clamp(ivec2(base) + ivec2(i, j), ivec2(0), ivec2(uVolRes) - 1);
+    float tv = texelFetch(uG0, ivec2((vec2(vc) + 0.5) / scale), 0).z;
+    float zv = log(tv < 0.0 ? 250.0 : max(tv, 0.01));
+    float wb = (i == 0 ? 1.0 - f.x : f.x) * (j == 0 ? 1.0 - f.y : f.y);
+    float w = (wb + 1e-3) * exp(-abs(zv - zf) * 5.0);
+    acc += texelFetch(uVol, vc, 0) * w;
+    wsum += w;
+  }
+  return wsum > 1e-6 ? acc / wsum : vec4(0.0, 0.0, 0.0, 1.0);
+}
+
 // A road vehicle at one point q of its picture (px from its middle): the colour of the face there, and how much sun
 // that face takes. Roof, sides, windows and wheels. (A, B, U: half its length, width and height on the picture.)
 vec4 vehicleFace(vec2 q, vec2 A, vec2 B, vec2 U, int kind, vec3 paint, float sideSun) {
@@ -295,9 +320,11 @@ void main() {
     vec3 L = alb / PI * (amb + uSunE * Ts * lit * sh * (1.0 - 0.85 * uOvercast) + uMoonE * 0.3);
     float T = exp(-dist * (0.012 + 0.0084 * uValleyHaze * 0.3));
     vec3 skyH = skyLUT(normalize(vec3(rd.x, max(rd.y, 0.02), rd.z)));
-    col = grade(L * T + skyH * (1.0 - T));
-    float fog = volT();                           // cloud or mist between here and the road
-    a *= fog;
+    // Cloud or mist between it and the eye, as the scene has it: it shows through as much as they let through, and
+    // their own light is laid over it (only fading it out, without that light, left it a sharp dark shape in a cloud)
+    vec4 veil = volAt(dist);
+    col = grade((L * T + skyH * (1.0 - T)) * veil.a + veil.rgb);
+    float fog = veil.a;
 
     // Its lamps: one of each on a motorcycle, a pair otherwise. Added to the picture as it is shown, so they read the
     // same through the night's exposure. Whether a lamp is in sight is judged where the lamp is: its glow spreads over

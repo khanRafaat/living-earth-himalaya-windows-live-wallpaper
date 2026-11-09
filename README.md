@@ -1,14 +1,27 @@
 # Living Earth Himalaya: Free Live Wallpaper for Windows
 
+<p align="center">
+  <a href="https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/khanRafaat/living-earth-himalaya-windows-live-wallpaper?label=release&color=f2b56b"></a>
+  <a href="https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/khanRafaat/living-earth-himalaya-windows-live-wallpaper/total?label=downloads&color=2ea44f"></a>
+  <a href="https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/khanRafaat/living-earth-himalaya-windows-live-wallpaper?style=flat&color=e3b341"></a>
+  <a href="https://khanrafaat.github.io/living-earth-himalaya-windows-live-wallpaper/"><img alt="Website" src="https://img.shields.io/badge/website-online-0a84ff"></a>
+  <a href="https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/issues"><img alt="Open issues" src="https://img.shields.io/github/issues/khanRafaat/living-earth-himalaya-windows-live-wallpaper?color=8250df"></a>
+  <a href="https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/blob/main/LICENSE"><img alt="MIT licence" src="https://img.shields.io/github/license/khanRafaat/living-earth-himalaya-windows-live-wallpaper?color=57606a"></a>
+  <a href="https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper#download-and-set-your-wallpaper"><img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4"></a>
+  <a href="https://hits.sh/github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/"><img alt="Visitors" src="https://hits.sh/github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper.svg?label=visitors&color=f2b56b"></a>
+</p>
+
 **One small exe, nothing else to install.** Living Earth Himalaya is a free, open source live wallpaper for Windows. Double-click it and your desktop becomes a real-time Himalayan mountain panorama, where the sun, moon, stars, clouds, wind, rain and snow follow the real sky and your local weather. It works on one monitor and spans dual monitors (3840 × 1080).
 
 You do not need Lively, Wallpaper Engine, Steam, an installer, admin rights or an account.
 
-![Living Earth Himalaya live wallpaper for Windows: snow peaks of the Himalaya at sunrise across two monitors, with a clock and weather panel](docs/images/sunrise.jpg)
+![Living Earth Himalaya, a free live wallpaper for Windows, animated: sunrise on the Himalaya, snow falling on the tree in winter, banner clouds streaming from the peaks, a monsoon storm, and dusk with the first stars, village lights and headlights on the mountain road](docs/images/cover.gif)
+
+<sub>A few hours of each season, sped up. On your desktop it all happens in real time, with your sky and your weather. To see a whole year in two minutes, right-click the tray icon and choose **Play the demo**.</sub>
 
 ## Download and set your wallpaper
 
-### **[Download LivingEarthHimalaya-2.1.0.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.1.0/LivingEarthHimalaya-2.1.0.exe)**
+### **[Download LivingEarthHimalaya-2.2.0.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.2.0/LivingEarthHimalaya-2.2.0.exe)**
 
 About 2.4 MB. For Windows 11 version 24H2 or later.
 
@@ -28,6 +41,7 @@ The mountains now sit behind your desktop icons like a normal wallpaper, with a 
 |---|---|
 | Change settings | Double-click the tray icon. |
 | Pause it | Right-click the tray icon and choose **Pause (keep the current picture)**. |
+| See a whole year in two minutes | Right-click the tray icon and choose **Play the demo: a year in two minutes** (or click **Watch the demo** in the settings window). Every month plays in turn, with its weather and what goes on then. Choose it again to go back to the real time and weather. Good for showing it to someone or filming it. |
 | See the version and who made it | Right-click the tray icon and choose **About Living Earth Himalaya**. |
 | Go back to your normal wallpaper | Right-click the tray icon and choose **Exit (back to the normal wallpaper)**. |
 | Remove it | Turn off **Start with Windows** in the tray menu and exit. Then delete the exe and the folder `%LOCALAPPDATA%\LivingEarth`. |
@@ -36,7 +50,7 @@ The mountains now sit behind your desktop icons like a normal wallpaper, with a 
 |---|---|
 | Location | Found automatically, or choose a place by name or by latitude and longitude. It sets the sun, moon and weather. |
 | Wallpaper mode | **Animate while you look at the desktop** is the lightest. **Animate unless a window is maximized or full screen** moves more often. **Paused** keeps a still picture. In the first two, it keeps moving gently while you work and is never behind the real sky when you come back. |
-| In the scene | Turn each part on or off: the road and its traffic (light, normal or busy), the tree on the rock, flying leaves, birds, shooting stars, village lights, forest mist, village smoke and burning fields. Changing the road shapes the mountains again, which takes a few minutes. |
+| In the scene | Turn each part on or off: the road and its traffic (light, normal or busy), the tree on the rock, flying leaves, birds, shooting stars, village lights, forest mist, clouds on the peaks, village smoke and burning fields. Changing the road shapes the mountains again, which takes a few minutes. |
 | Clock and weather panel | Show it or hide it, and choose its corner and size. |
 | Quality | **Auto** adjusts to your graphics. **Eco** is the lightest, then **Balanced** and **High**. **Ultra** is for powerful graphics only. |
 | Start with Windows | Starts the wallpaper when you sign in, with no window to click through. |
@@ -87,7 +101,7 @@ All versions are listed on the [releases page](https://github.com/khanRafaat/liv
 
 ## Two monitors
 
-In Windows **Display settings**, choose **Extend these displays**, put the monitors in the same order as on your desk, line up their top edges, and give both the same scale. The app then spans both screens by itself.
+In Windows **Display settings**, choose **Extend these displays**, put the monitors in the same order as on your desk, line up their top edges, and give both the same scale. The app then spans both screens by itself, and turns the view a little so that the gap between the monitors falls on a low ridge instead of the middle of a great peak.
 
 ## System requirements
 
@@ -103,16 +117,17 @@ In Windows **Display settings**, choose **Extend these displays**, put the monit
 
 ## Features
 
-![A storm over the Himalaya in the animated desktop wallpaper, with heavy cloud over the snow peaks](docs/images/storm.jpg)
+![Living Earth Himalaya live wallpaper for Windows: snow peaks of the Himalaya at sunrise across two monitors, with a clock and weather panel](docs/images/sunrise.jpg)
 
 - **Light follows the real sky.** The sun and moon are calculated for your location and your PC clock, so sunrise, golden hour, sunset, blue hour and night happen at the true times. The moon shows its real phase, and the stars turn around the pole through the night.
 - **Real positions only.** The sun and moon are drawn exactly where they really are. When they are out of view you still see their light, such as pink alpenglow or moonlit snow, but nothing is faked into view.
 - **Weather follows your location.** Live data from [Open-Meteo](https://open-meteo.com/) (free, no key) sets the mood of the mountain sky: cloud cover, rain, storms, fog, mist and wind. The panel always names the place, so it is not presented as Himalayan weather.
 - **Clouds move with the real wind.** Low, middle and high cloud each follow the live wind at their own height and at true speed.
+- **Banner clouds on the peaks.** On humid, windy days a cloud streams from the top of the highest summits, the way real "cloud factories" form in the lee of a peak. Each streams downwind with the real wind at that height, forms and fades on its own rhythm, and is lit by the sun like the rest of the sky.
 - **Weather changes play out naturally.** Clouds build first and then the rain starts. Rain stops before the sky clears. A change arrives from the side the wind is coming from.
-- **Wind in the trees.** Gusts travel across the forest and meadows in the real wind direction. A tree rhododendron on the cliff edge moves with the live wind speed and direction, gets wet in rain, turns white in snow, changes colour with the season and flowers red in spring. Its fallen leaves drift past on the wind.
+- **Wind in the trees.** Gusts travel across the forest and meadows in the real wind direction. A tree rhododendron on the cliff edge moves with the live wind speed and direction, gets wet in rain, turns white in snow, changes colour with the season and flowers red in spring. Its fallen leaves drift past on the wind. Where it really snows, snow settles on the tree, the rock and the hills within a quarter of an hour. Snow only falls when the weather at your location says so: in a warm country such as Bangladesh it never does, while the highest summits keep their snow all year, as the real Himalaya does.
 - **A mountain road with traffic.** Buses, jeeps and motorcycles wind along a road through the forest. They slow for hairpins, overtake when the road ahead is clear, and stop for passengers. At night their headlights light the road and the trees ahead, with red tail lights that brighten when they brake.
-- **Mist and smoke in 3D.** After rain or on humid mornings, mist lifts off the forest in soft patches and drifts with the real wind. Wood smoke gathers over the villages as a thin blue-grey haze and drifts downwind, each village's its own shape, and now and then a field burns on a hill, its smoke glowing from below at night.
+- **Mist and smoke in 3D.** After rain or on humid mornings, mist lifts off the forest in soft patches and drifts with the real wind. Wood smoke rises from villages all across the valley, near and far, and drifts downwind as a thin blue-grey haze. Each village keeps its own hours: fires are lit one after another around breakfast and supper, die down slowly, and some keep a fire in all day. On a calm morning the smoke lies in flat layers; in the afternoon sun it climbs and thins out. Now and then a field burns on a hill, its smoke glowing from below at night.
 - **Wildlife and village life,** following the real clock, season and weather:
   - Vultures and eagles circle in thermals on sunny, calm middays.
   - Flocks of mountain choughs swoop past the ridge after sunrise and before sunset.
@@ -122,13 +137,22 @@ In Windows **Display settings**, choose **Extend these displays**, put the monit
   - Shooting stars follow the real meteor-shower calendar, and satellites glide across the sky in twilight.
 - **Light on your PC.** It runs at below-normal priority and can rest whenever a window is in front. With no rain or snow, it redraws the land and sky about twice a second and fades between the pictures, while the tree and birds keep moving. It sends the graphics chip one frame at a time and spaces its frames to leave at least half of the chip's time for your other work.
 - **Works offline.** The last forecast is saved, and the panel tells you what it is using.
+- **A demo of the whole year.** A year in two minutes, over and over, for showing it off or filming it: snow on the tree in January, sunrise on fresh snow, spring blossom with banner clouds, a starry night with meteors, fog lifting from the valleys, the monsoon's thunder and rain, harvest fires, the Orionid meteors and snow at dusk in December.
+- **Gentle with your PC.** At sign-in it waits until Windows has settled before it starts. While the PC is locked, asleep or just woken, it draws nothing at all.
+
+<p>
+  <img src="docs/images/banners.jpg" width="49%" alt="Banner clouds streaming from the Himalayan summits on a windy spring afternoon, in the live wallpaper for Windows">
+  <img src="docs/images/winter-snow.jpg" width="49%" alt="Snow falling on the tree on the cliff edge and on the hills in winter, in the Himalaya live wallpaper">
+  <img src="docs/images/storm.jpg" width="49%" alt="A storm over the Himalaya in the animated desktop wallpaper, with heavy cloud over the snow peaks">
+  <img src="docs/images/night-road.jpg" width="49%" alt="Dusk in the Himalaya live wallpaper: the first stars, village lights coming on and headlights on the mountain road">
+</p>
 
 ![Rain at night in the Himalaya live wallpaper, across a dual monitor desktop](docs/images/night-rain.jpg)
 
 ## Frequently asked questions
 
 ### How do I get a live wallpaper on Windows 11?
-On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.1.0.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
+On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.2.0.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
 
 ### Do I need Lively or Wallpaper Engine?
 No. The exe sets the wallpaper by itself on Windows 11 version 24H2 or later, with nothing else to install. Lively is only for older versions of Windows.

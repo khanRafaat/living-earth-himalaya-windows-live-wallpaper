@@ -668,6 +668,377 @@ test('sun and moon times match the Naval Observatory for Dhaka', () => {
   }
 });
 
+// ---------------------------------------------------------------- day into night and back
+/** A whole day in Dhaka in steps of `step` seconds: the state after each, with the time it is for. */
+function dayOfLight(date, step, each) {
+  const h = load(['config.js', 'services/astronomy.js', 'engine/environment.js']);
+  const env = new h.LE.Environment(h.LE.config);
+  env.setLocation({ lat: 23.8103, lon: 90.4125, name: 'Dhaka' });
+  env.setWeather(h.LE.weatherPresets.clear, 'preset');
+  const start = new Date(`${date}T00:00:00+06:00`).getTime();
+  let t = 0;
+  for (let k = 0; k <= 86400 / step; k++) {
+    const now = new Date(start + k * step * 1000);
+    env.update(now, 0.6, (t += 0.6)); // half a second on: the sun and moon are worked out again
+    each(env.state, now);
+  }
+}
+// new moon, first quarter (up at dusk, sets near midnight), full moon (sets at dawn, rises at dusk), last quarter
+const MOON_DAYS = ['2026-11-08', '2026-11-17', '2026-11-24', '2026-12-01'];
+
+test('the light changes hands from the sun to the moon only twice a day, where the sun has nothing left to light', () => {
+  // the sun drops below the horizon of a point h km up at sqrt(2h/R) radians down; the sky's transmittance then
+  // softens that edge by about a quarter of a degree. The highest things in the scene: peaks of about 9 km and the
+  // tops of storm clouds at about 11 km.
+  const gone = (Math.sqrt((2 * 11) / 6360) * 180) / Math.PI + 0.25;
+  for (const date of MOON_DAYS) {
+    let prev = null;
+    const changes = [];
+    dayOfLight(date, 30, (s, now) => {
+      assert.deepEqual(Array.from(s.lightMarchDir), Array.from(s.keyDir), 'clouds are lit through along the key light');
+      if (prev !== null && s.keyIsSun !== prev) changes.push({ sun: s.astro.sunAltDeg, moon: s.astro.moonAltDeg, now });
+      prev = s.keyIsSun;
+    });
+    assert.equal(changes.length, 2, `${date}: once at dusk and once at dawn, not at moonrise or moonset: ${JSON.stringify(changes)}`);
+    for (const c of changes) {
+      assert.ok(c.sun < -gone && c.sun > -4.2, `${date} ${c.now.toISOString()}: the sun is ${c.sun.toFixed(2)}° down, past ${gone.toFixed(2)}°`);
+    }
+  }
+});
+
+test('the twilight glow fades in and out with the sun, never all at once', () => {
+  // in steps of 5 s: a fade over minutes changes little in each, a cut is as big however small the step
+  for (const date of MOON_DAYS.slice(0, 2)) {
+    let prev = null;
+    let most = 0;
+    dayOfLight(date, 5, (s) => {
+      // the glow as a share of the light the picture is exposed for, as the eye sees it
+      const glow = s.twilightE / s.exposure;
+      if (prev !== null) most = Math.max(most, Math.abs(glow - prev));
+      prev = glow;
+    });
+    // it stopped dead at the sun's first degree with 0.015 left, and came on at once at sunset
+    assert.ok(most < 0.002, `${date}: the glow changed by ${most.toFixed(4)} of the exposure in 5 s`);
+  }
+});
+
+test('the light through the clouds changes from the full march to the quick look over a band of overcast, not at one value', () => {
+  const vol = readFileSync(new URL('../src/engine/shaders/volume.js', import.meta.url), 'utf8');
+  // switched at overcast 0.7, the clouds turned a twentieth darker in one frame (CPU render, 960x270, 10:00)
+  assert.ok(!/if \(uOvercast < 0\.7\)/.test(vol), 'no switch at one value');
+  assert.ok(vol.includes('float thick = smoothstep(0.6, 0.7, uOvercast);'), 'a band below 0.7, so a thick deck costs no more than before');
+  assert.ok(vol.includes('od = mix(od, cloudBulk(p + uLightMarchDir * 0.6) * 1.5, thick)'), 'the two meet in it');
+});
+
+test('wet ground shows no single-pixel glints where the surface turns within a pixel', () => {
+  const comp = readFileSync(new URL('../src/engine/shaders/composite.js', import.meta.url), 'utf8');
+  // In rain the sharp wet highlight lit single pixels along the rim of the rock and the edges of the road, as rows of
+  // pale flecks (seen on the desktop 2026-11-09; CPU render 3840x1080, rain, 13:00). The highlight widens by how much
+  // the surface normal turns to the next pixel, so the flecks go and flat wet faces keep their gloss.
+  const spec = comp.slice(comp.indexOf('// specular: wet rock / snow'), comp.indexOf('float specMask'));
+  assert.ok(/if \(wet > 0\.01\) \{/.test(spec), 'only while wet: dry ground and snow are as before');
+  assert.ok(spec.includes('texelFetch(uG0, min(ic + ivec2(1, 0), last), 0)') && spec.includes('texelFetch(uG0, min(ic + ivec2(0, 1), last), 0)'), 'the normal of the next pixel across and up, kept inside the picture');
+  assert.ok(/a2 \+= min\(0\.5 \* \(dot\(dnx, dnx\) \+ dot\(dny, dny\)\), 0\.18\) \* wet;/.test(spec), 'widened by the turn, with a limit');
+  assert.ok(spec.indexOf('a2 +=') < spec.indexOf('float dd'), 'before the highlight is worked out');
+});
+
+// ---------------------------------------------------------------- the range across two screens, banner clouds
+const RENDER_FILES = ['config.js', 'engine/gl.js', 'engine/quality.js', 'engine/foreground.js', 'engine/renderer.js'];
+const readSrc = (f) => readFileSync(new URL('../src/' + f, import.meta.url), 'utf8');
+
+test('across two screens the great range turns so no peak stands on the bezel; a single screen keeps its picture', () => {
+  const h = load(RENDER_FILES);
+  const r = new h.LE.Renderer({}, h.LE.config);
+  // The sharp peak in the middle of the panorama stood exactly on the bezel of the user's two screens (their photo,
+  // 2026-11-09). The skyline read from the bake (CPU, 180 degrees wide): that peak tops out at 12.2 degrees at 0 and is
+  // about 3 degrees wide each way; 12 degrees to its left the skyline is a low ridge (4.4 to 6 degrees, no summit
+  // within 3), and turning the range by that puts the ridge on the bezel and the peak 320 px into the right screen.
+  near(r.rangeTurn(3840, 1080), (12 * Math.PI) / 180, 1e-9, 'two 1920x1080 screens side by side');
+  assert.equal(r.rangeTurn(1920, 1080), 0, 'one screen: the peak stays in its middle');
+  assert.equal(r.rangeTurn(2560, 1080), 0, 'one ultrawide screen has no bezel');
+  const off = load(RENDER_FILES, { search: '?spanturn=0' });
+  assert.equal(new off.LE.Renderer({}, off.LE.config).rangeTurn(3840, 1080), 0, 'the address can turn it off');
+  // only the great range turns: the foothills, the road, the rock and the tree stay where they are
+  const chunks = readSrc('engine/shaders/chunks.js');
+  assert.ok(chunks.includes('float foot = fbmEroded(q * 0.24, oct);'), 'the foothills are not turned');
+  assert.ok(chunks.includes('float angM = atan(pm.x, pm.y);') && chunks.includes('ridged(qm * 0.072') && chunks.includes('noise2(qm * 0.024'), 'the range is');
+  assert.ok(chunks.includes('* front;\n  if (m > 0.0005)'), 'and it still rises in front of the eye, not behind');
+  // every program that draws the land sets the camera, and with it the turn
+  assert.ok(readSrc('engine/renderer.js').includes("prog.set('uRangeTurn', [Math.cos(turn), Math.sin(turn)]);"));
+});
+
+test('banner clouds come with moist air and wind at the clouds, not under a closed deck, in rain or in fog', () => {
+  const amount = (rec, seconds = 1) => {
+    const { env, advance } = newEnv();
+    env.setWeather(rec, 'live');
+    return advance(seconds).weather.banner;
+  };
+  const { LE } = newEnv();
+  const P = LE.weatherPresets;
+  assert.ok(amount({ code: 1, cloud: 20, humidity: 80, windSpeed: 12 }) > 0.9, 'moist and windy: plenty');
+  const partly = amount(P.partly);
+  assert.ok(partly > 0.3 && partly < 0.7, 'a partly cloudy day: some ' + partly.toFixed(2));
+  assert.ok(amount({ code: 1, cloud: 20, humidity: 30, windSpeed: 12 }) < 0.01, 'dry air: none');
+  const still = { code: 1, cloud: 20, humidity: 80, cloudLow: 10, cloudMid: 5, wind850: 3, dir850: 270, wind700: 4, dir700: 270 };
+  assert.ok(amount(still) < 0.01, 'still air at the clouds: none');
+  for (const k of ['overcast', 'rain', 'storm', 'fog', 'snow']) assert.ok(amount(P[k]) < 0.01, k + ': none');
+  // they form over minutes, not at once
+  const { env, advance } = newEnv();
+  env.setWeather({ code: 1, cloud: 20, humidity: 30, windSpeed: 12 }, 'live');
+  advance(1);
+  env.setWeather({ code: 1, cloud: 20, humidity: 80, windSpeed: 12 }, 'live');
+  assert.ok(advance(30).weather.banner < 0.15, 'half a minute later: hardly begun');
+  assert.ok(advance(900).weather.banner > 0.8, 'a quarter of an hour later: there');
+});
+
+test('banner clouds stream along the wind at the clouds, the way the deck drifts, and turn with it', () => {
+  const { env, advance, cfg, LE } = newEnv();
+  cfg.render.heading = 0;
+  env.setWeather({ ...WIND, humidity: 80 }, 'live');
+  const d = driftPerSecond(env, advance);
+  const r = new (load(RENDER_FILES).LE.Renderer)({}, cfg);
+  r.peaks = [{ x: 0, y: 8, z: 25, sharp: 1, periods: [1e9, 1e9], phases: [Math.PI / 2, 0], seed: 1 }];
+  const s = env.state;
+  const [b] = r.bannerState(s);
+  assert.ok(b && b.strength > 0.5, 'a banner flies');
+  // the deck's noise offset runs against the wind, so the clouds themselves drift the other way
+  const drift = [-d.deck[0], -d.deck[1]];
+  const dl = Math.hypot(drift[0], drift[1]);
+  near(b.wx, drift[0] / dl, 1e-6, 'along the drift, x');
+  near(b.wz, drift[1] / dl, 1e-6, 'along the drift, z');
+  // the wind turns round to come from the north: the banner turns with it, the short way, over minutes
+  env.setWeather({ ...WIND, humidity: 80, dir850: 0, dir700: 0 }, 'live');
+  advance(5);
+  const soon = r.bannerState(s)[0];
+  assert.ok(soon.wx > 0.9, 'not at once');
+  advance(900);
+  const later = r.bannerState(s)[0];
+  near(later.wx, 0, 0.05, 'blowing south now, x');
+  near(later.wz, -1, 0.05, 'blowing south now, z');
+  assert.ok(later.len > 1.6 && later.len < 4.5, 'a few km long: ' + later.len.toFixed(2));
+  // and the switch takes them away
+  cfg.banners = false;
+  assert.equal(r.bannerState(s).length, 0, 'off');
+});
+
+test('banner clouds come and go on each summit by itself, not all together', () => {
+  const h = load(RENDER_FILES);
+  const r = new h.LE.Renderer({}, h.LE.config);
+  r.peaks = [0, 1, 2, 3].map((n) => {
+    const u = [0.13, 0.42, 0.77, 0.91][n];
+    return { x: n, y: 8, z: 25, sharp: 0.9, periods: [1200 + 1500 * u, 1700 + 1300 * ((u * 7.3) % 1)], phases: [u * 40, u * 17 + n], seed: n };
+  });
+  let some = 0, all = 0, n = 0;
+  const each = [0, 0, 0, 0];
+  for (let t = 0; t < 86400; t += 60, n++) {
+    const list = r.bannerState({ weather: { banner: 0.7, deckX: 20, deckZ: 0 }, time: t });
+    if (list.length) some++;
+    if (list.length === 4) all++;
+    for (const b of list) each[r.peaks.indexOf(b.p)]++;
+  }
+  assert.ok(some / n > 0.8, 'in moist, windy weather nearly always one somewhere: ' + (some / n).toFixed(2));
+  assert.ok(all / n < 0.6, 'not all four the whole time: ' + (all / n).toFixed(2));
+  for (const c of each) assert.ok(c / n > 0.3 && c / n < 0.97, 'each comes and goes: ' + (c / n).toFixed(2));
+});
+
+test('the summits that fly banners are the tallest, sharpest ones in view, well apart, and never one hidden behind a ridge', () => {
+  const h = load(RENDER_FILES);
+  const r = new h.LE.Renderer({}, h.LE.config);
+  r.w = 3840;
+  r.h = 1080;
+  r.floatTargets = true;
+  r.gl = { FRAMEBUFFER: 0, bindFramebuffer() {} };
+  const D = Math.PI / 180;
+  const at = (deg, km) => [Math.sin(deg * D) * km, Math.cos(deg * D) * km];
+  // a made-up range: cones on a high plain, and a long ridge in front of one of them
+  const cones = [
+    { p: at(0, 25), top: 8.6, slope: 1.3, name: 'sharp, middle' },
+    { p: at(30, 20), top: 8.9, slope: 1.2, name: 'sharp, right' },
+    { p: at(4, 30), top: 7.6, slope: 1.2, name: 'too near the middle one' },
+    { p: at(-40, 22), top: 8.1, slope: 1.1, name: 'sharp, left' },
+    { p: at(-20, 38), top: 7.8, slope: 1.3, name: 'behind the ridge' },
+    { p: at(55, 26), top: 6.8, slope: 0.15, name: 'a dome' },
+  ];
+  const ground = (x, z) => {
+    const r0 = Math.hypot(x, z), a = Math.atan2(x, z) / D;
+    let y = 3.5;
+    if (a > -27 && a < -13 && r0 > 11 && r0 < 21) y = 5.9; // the ridge
+    for (const c of cones) y = Math.max(y, c.top - c.slope * Math.hypot(x - c.p[0], z - c.p[1]));
+    return y - (r0 * r0) / (2 * 6371);
+  };
+  r._groundHeights = (pts, w, hh) => Float32Array.from({ length: w * hh }, (_, i) => ground(pts[i * 2], pts[i * 2 + 1]));
+  r._findPeaks();
+  const got = Array.from(r.peaks, (p) => cones.find((c) => Math.hypot(p.x - c.p[0], p.z - c.p[1]) < 0.06));
+  assert.ok(got.every(Boolean), 'each found on a real summit, within 60 m');
+  assert.deepEqual(got.map((c) => c.name).sort(), ['sharp, left', 'sharp, middle', 'sharp, right']);
+  for (const p of r.peaks) near(p.y, ground(p.x, p.z), 1e-5, 'at the height of the land there');
+});
+
+// ---------------------------------------------------------------- snow on the tree, and the demo
+const treeSnow = (s, cfg) => {
+  const x = (cfg.render.cameraAltitude - (s.snowLine - 0.18)) / 0.46;
+  const k = Math.min(1, Math.max(0, x));
+  return k * k * (3 - 2 * k); // as foreground.js works out uSnowTree (before its 0.92)
+};
+
+test('snow falling here settles on the tree and the rock within a quarter of an hour, in any season', () => {
+  for (const date of ['2026-01-15T06:00:00Z', '2026-03-20T06:00:00Z', '2026-10-25T06:00:00Z']) {
+    const { env, advance, cfg, LE } = newEnv();
+    const when = new Date(date);
+    let t = 0;
+    const run = (seconds) => {
+      for (let i = 0; i < seconds / 5; i++) env.update(when, 5, (t += 5));
+      return env.state;
+    };
+    env.setWeather(LE.weatherPresets.clear, 'live');
+    run(5);
+    assert.ok(treeSnow(env.state, cfg) < 0.05, date + ': green before');
+    env.setWeather(LE.weatherPresets.snow, 'live');
+    assert.ok(treeSnow(run(240), cfg) < 0.5, date + ': still settling after 4 minutes');
+    assert.ok(treeSnow(run(1200), cfg) > 0.9, date + ': white after 24 minutes (it stayed green in a snowfall outside deep winter)');
+    env.setWeather(LE.weatherPresets.clear, 'live');
+    assert.ok(treeSnow(run(1800), cfg) > 0.9, date + ': and stays a while after the snow stops');
+    void advance;
+  }
+  const tree = readSrc('engine/shaders/tree.js');
+  assert.ok(tree.includes('float lodged = smoothstep(-0.05 + 0.25 * vr, 0.45 + 0.2 * vr, n.y);'), 'on every leaf that faces up at all, more on some');
+});
+
+test('snow falls only where it snows: a whole year of Dhaka weather never brings it, and the summits keep theirs', () => {
+  const { env, cfg } = newEnv();
+  // Dhaka through the year as the weather service gives it: winter fog and rain at 12 to 15 degrees, the monsoon
+  const dhaka = [
+    ['2026-01-10T01:00:00Z', { code: 45, cloud: 20, humidity: 98, visibility: 400, windSpeed: 4, windDir: 320, precip: 0, temp: 12 }],
+    ['2026-01-20T08:00:00Z', { code: 61, cloud: 100, humidity: 90, visibility: 6000, windSpeed: 9, windDir: 320, precip: 0.8, temp: 14 }],
+    ['2026-02-05T08:00:00Z', { code: 80, cloud: 85, humidity: 80, visibility: 9000, windSpeed: 12, windDir: 300, precip: 1.2, temp: 15 }],
+    ['2026-04-20T10:00:00Z', { code: 95, cloud: 100, humidity: 88, visibility: 4000, windSpeed: 40, windDir: 310, precip: 9, temp: 27 }],
+    ['2026-07-15T06:00:00Z', { code: 65, cloud: 100, humidity: 97, visibility: 2500, windSpeed: 20, windDir: 160, precip: 12, temp: 28 }],
+    ['2026-12-25T02:00:00Z', { code: 51, cloud: 90, humidity: 96, visibility: 1500, windSpeed: 3, windDir: 330, precip: 0.1, temp: 13 }],
+  ];
+  let t = 0;
+  for (const [date, rec] of dhaka) {
+    env.setWeather(rec, 'live');
+    for (let i = 0; i < 400; i++) env.update(new Date(date), 5, (t += 5));
+    const s = env.state;
+    assert.equal(s.weather.snow, 0, date + ': no snow falls');
+    assert.ok(env.freshSnow < 1e-6, date + ': none lies');
+    assert.ok(treeSnow(s, cfg) < 1e-6, date + ': the tree stays green');
+    assert.ok(s.snowLine >= 3.85 && s.snowLine <= 5.05, date + ': the high peaks keep their snow, as the Himalaya does');
+  }
+  // and the rule itself: snow only from a snow report, or rain below freezing where you are
+  const env2 = readSrc('engine/environment.js');
+  assert.ok(env2.includes('const isSnow = snowCode || (precipI > 0 && temp < 0.5 && !rainCode);'));
+});
+
+test('the demo plays a year in two minutes: every month in order, its own hours racing by, a dip between them', () => {
+  const h = load(['services/demo.js']);
+  const Demo = h.LE.Demo;
+  const d = new Demo();
+  assert.ok(Demo.length >= 100 && Demo.length <= 125, 'about two minutes: ' + Demo.length);
+  d.start(0, 2027);
+  const months = [];
+  const summoned = new Set();
+  let lastNow = null;
+  let dips = 0;
+  for (let ms = 0; ms < Demo.length * 1000; ms += 50) {
+    const s = d.step(ms);
+    if (s.changed) {
+      months.push(s.now.getMonth() + 1);
+      lastNow = null;
+    }
+    if (lastNow) assert.ok(s.now >= lastNow, 'the clock only runs forward within a month');
+    lastNow = s.now;
+    s.summons.forEach((k) => summoned.add(k));
+    if (s.dip > 0.99) dips++;
+    if (s.share > 0.2 && s.share < 0.8) assert.equal(s.dip, 0, 'clear in the middle of a month');
+  }
+  assert.deepEqual(months, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  assert.ok(dips >= 11, 'dark at the change of each month');
+  // October's night runs through midnight into the next morning
+  const oct = new Demo();
+  oct.start(0, 2027);
+  const end = oct.step((9 * Demo.CHAPTER_S + Demo.CHAPTER_S * 0.99) * 1000).now;
+  assert.equal(end.getMonth(), 9);
+  assert.equal(end.getDate(), 22);
+  assert.ok(end.getHours() === 4, 'just before half past four: ' + end.getHours());
+  // all that goes on in the year, called up once each time round
+  for (const k of ['geese', 'flock', 'meteor', 'satellite', 'raptor', 'mist', 'fire', 'smoke', 'bus']) assert.ok(summoned.has(k), 'calls up ' + k);
+  // and every kind of weather, by day and by night
+  const codes = new Set(Demo.CHAPTERS.flatMap((c) => [c.weather.code, c.then && c.then[1].code]).filter((c) => c != null));
+  for (const [what, code] of [['snow', 73], ['clear', 0], ['fog', 45], ['thunderstorm', 95], ['rain', 63], ['partly cloudy', 2]]) assert.ok(codes.has(code), what);
+  const hours = Demo.CHAPTERS.map((c) => +c.from.split(':')[0]);
+  assert.ok(hours.some((x) => x < 7) && hours.some((x) => x >= 18), 'sunrises and nights');
+  // round again after December
+  const again = d.step(Demo.length * 1000 + 100);
+  assert.ok(again.changed && again.pass === 1 && again.now.getMonth() === 0, 'and over again');
+});
+
+test('in the demo the land wets, whitens and thaws within a month, and banner clouds fly in its windy months', () => {
+  const h = load(['config.js', 'services/astronomy.js', 'engine/environment.js', 'services/demo.js']);
+  const env = new h.LE.Environment(h.LE.config);
+  const cfg = h.LE.config;
+  cfg.atmosphere.transitionSeconds = 4; // as main.js sets them for the demo
+  env.pace = 120;
+  const demo = new h.LE.Demo();
+  demo.start(0, 2027);
+  const seen = {};
+  let t = 0;
+  for (let ms = 0; ms < h.LE.Demo.length * 1000; ms += 100) {
+    const s = demo.step(ms);
+    if (s.changed || s.weatherChanged) env.setWeather(s.weather, 'preview');
+    if (s.changed) env.w = null;
+    const st = env.update(s.now, 0.1, (t += 0.1));
+    if (s.changed) {
+      env.wet = s.wet;
+      env.freshSnow = s.snow;
+    }
+    const m = s.now.getMonth() + 1;
+    const k = `${m}@${s.share < 0.1 ? 'start' : s.share > 0.9 ? 'end' : 'mid'}`;
+    seen[k] = { tree: treeSnow(st, cfg), wet: st.weather.wet, banner: st.weather.banner, flash: Math.max(seen[k] ? seen[k].flash : 0, st.weather.flash) };
+  }
+  assert.ok(seen['1@start'].tree < 0.2 && seen['1@end'].tree > 0.9, 'January: the tree goes white as the snow settles');
+  assert.ok(seen['2@mid'].tree > 0.9, 'February: still white with fresh snow');
+  assert.ok(seen['3@mid'].tree < 0.05 && seen['3@mid'].banner > 0.8, 'March: green again, banner clouds');
+  assert.ok(seen['6@mid'].flash > 0 || seen['6@end'].flash > 0, 'June: lightning');
+  assert.ok(seen['7@mid'].wet > 0.9, 'July: wet');
+  assert.ok(seen['8@mid'].banner > 0.8, 'August: banner clouds');
+  assert.ok(seen['12@end'].tree > 0.6, 'December: snow settling at dusk');
+});
+
+test('the demo can be played from the app, from Lively and from the address, and is never saved', () => {
+  assert.equal(load(['config.js']).LE.config.demo, false, 'off to start with');
+  assert.equal(load(['config.js'], { search: '?demo=1' }).LE.config.demo, true, 'on from the address');
+  const lively = JSON.parse(readFileSync(new URL('../LivelyProperties.json', import.meta.url), 'utf8'));
+  assert.equal(lively.demo.type, 'checkbox');
+  assert.equal(lively.demo.value, false);
+  const main = readSrc('main.js');
+  assert.ok(main.includes("case 'demo':") && main.includes('setDemo(!!cfg.demo)'), 'the page follows it');
+  assert.ok(readSrc('services/host.js').includes("demo: [c.demo, 'demo'],"), 'the app passes it on');
+  const cs = readFileSync(new URL('../host/LivingEarthHost.cs', import.meta.url), 'utf8');
+  assert.ok(cs.includes('js.Append(", demo: ").Append(demo ? "true" : "false");'), 'in state.js');
+  assert.ok(cs.includes('"Play the demo: a year in two minutes"') && cs.includes('Text = "Watch the demo"'), 'in the tray menu and the setup window');
+  assert.ok(!cs.includes('"demo="'), 'not saved: the next start is the real time and weather');
+  assert.ok(readFileSync(new URL('../index.html', import.meta.url), 'utf8').includes('src/services/demo.js'), 'on the page');
+});
+
+test('banner clouds are drawn in the volume pass between the mist and the deck, in front of cloud beyond them', () => {
+  const vol = readSrc('engine/shaders/volume.js');
+  const main = vol.slice(vol.indexOf('void main()'));
+  const banner = main.indexOf('// ---------------- banner clouds on the high summits');
+  assert.ok(main.indexOf('// ---------------- mist & fog') < banner && banner < main.indexOf('// ---------------- clouds ----'), 'after the mist, before the deck');
+  // laid into the deck where the ray meets them, or after it when no deck cloud lies in front
+  assert.ok(/if \(s > sB\) \{[^}]*L \+= T \* Lb;\s*T \*= Tb;\s*sB = 1e9;/.test(main), 'into the deck at their distance');
+  assert.ok(/if \(sB < 1e8\) \{[^}]*L \+= T \* Lb;\s*T \*= Tb;/.test(main), 'or after it');
+  // the cloud stays at the summit while the air flows through it, drawn out along the wind in its own frame; the flow
+  // wraps at 2 km, where its noise repeats along the wind (0.5 and 1.0 per km), so the wrap never shows
+  assert.ok(vol.includes('vec3 q = vec3((l.x - uBannerFlow) * 0.5, l.y * 2.2, l.z * 1.6) + B.w;'), 'lumps drawn out along the wind, flowing through');
+  assert.ok(vol.includes('q * vec3(2.0, 3.2, 3.2) + 0.37'), 'its wisps too');
+  for (const k of [0.5, 0.5 * 2.0]) assert.ok(Math.abs(2 * k - Math.round(2 * k)) < 1e-9, 'the flow wraps unseen: ' + k);
+  const R = readSrc('engine/renderer.js');
+  assert.ok(R.includes('this._bannerFlow = ((this._bannerFlow || 0) + (dt * kmh) / 3600) % 2;'), 'at the cloud wind speed, wrapped at 2 km');
+  assert.ok(vol.includes('float st = textureLod(uNoise3D, vec3(l.z * 2.4 + B.w, l.y * 3.0, fc * 0.35 + B.w * 0.7), 0.0).b;'), 'streaks along the wind');
+});
+
 // ---------------------------------------------------------------- quality governor
 function newGovernor() {
   const h = load(['engine/quality.js']);
@@ -1419,8 +1790,13 @@ function testRoad() {
   return { R, line, road: R.finish(line, ys) };
 }
 
+/** Makes Math.random in a fake browser give the same numbers every run, for tests of what chance decides. */
+function seedRandom(ctx, seed) {
+  vm.runInContext(`(() => { let a = ${seed >>> 0}; Math.random = () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; })()`, ctx);
+}
+
 function testLife(hour = 12, over = {}) {
-  const { LE } = load(['engine/road.js', 'engine/life.js']);
+  const { LE, ctx } = load(['engine/road.js', 'engine/life.js']);
   const R = LE.Road;
   const line = R.plan(testHillside(R), 2.8, -0.2757);
   const road = R.finish(line, new Float32Array(line.length / 2).fill(2.3));
@@ -1438,7 +1814,7 @@ function testLife(hour = 12, over = {}) {
   };
   const hfov = (140 * Math.PI) / 180;
   const view = { w: 3840, h: 1080, hfov, pxAng: hfov / 3840, horizonY: 0.4, camY: 2.8 };
-  return { LE, life, road, state, view };
+  return { LE, ctx, life, road, state, view };
 }
 
 /** What life wrote for the picture, one entry per sprite. */
@@ -1563,7 +1939,7 @@ test('traffic is busy by day, thin at night, keeps its distance and slows for be
     assert.ok(a.s >= 0 && a.s <= road.length, 'stays on the road');
     assert.ok(a.v >= 0 && a.v < 0.02, 'a sane speed: ' + a.v);
     const i = Math.min(Math.round(a.s / road.step), road.n - 1);
-    assert.ok(a.v <= road.limit[i] + 0.002, `no faster than the bend allows: ${a.v} at ${road.limit[i]}`);
+    assert.ok(a.v <= road.limit[i] * a.bend + 0.002, `no faster than the bend allows it: ${a.v} at ${road.limit[i]} x ${a.bend}`);
     for (const b of life.vehicles) {
       if (a === b || a.dir !== b.dir) continue;
       assert.ok(Math.abs(a.s - b.s) > 0.001, 'no two in the same place going the same way');
@@ -1758,11 +2134,13 @@ test('mist lifts off the forest when the air is humid or it has rained, one wisp
 
 test('village smoke rises through the day, most at cooking times, and a cooking fire glows at its foot after dark', () => {
   const morning = hills(10, { mist: 0.2 });
+  seedRandom(morning.ctx, 7);
   morning.life._nextFire = 1e9;
   morning.run(200);
   const midMorning = morning.kinds()[0] || 0;
   assert.ok(midMorning >= 1, 'some smoke outside cooking times too: ' + midMorning);
   const cooking = hills(18, { mist: 0.2 });
+  seedRandom(cooking.ctx, 7);
   cooking.life._nextFire = 1e9;
   cooking.run(200);
   assert.ok((cooking.kinds()[0] || 0) > midMorning, 'more at cooking time');
@@ -1772,6 +2150,97 @@ test('village smoke rises through the day, most at cooking times, and a cooking 
   dusk.run(200);
   const lit = dusk.life.smoke.filter((s) => s.kind === 0);
   assert.ok(lit.length && lit.every((s) => s.fire > 0.1), 'cooking fires glow after dark');
+});
+
+test('every village in view has a chimney, across the whole picture and the far side of the valley, not just the nearest', () => {
+  const h = load(RENDER_FILES);
+  const hfov = (140 * Math.PI) / 180;
+  // a big village close by on the right (the one that used to take all ten), and smaller ones everywhere else
+  const villages = [[50, 2.4, 40], [-62, 9, 5], [-48, 7.5, 4], [-30, 11, 6], [-15, 5.5, 5], [-3, 13, 3], [12, 8, 4], [28, 6.5, 6], [40, 14, 3], [60, 4, 5]];
+  const houses = [];
+  for (const [azDeg, km, n] of villages) {
+    for (let i = 0; i < n; i++) {
+      const a = ((azDeg + (i % 5) * 0.4 - 0.8) * Math.PI) / 180;
+      const t = km + Math.floor(i / 5) * 0.05;
+      houses.push({ t, a, x: Math.sin(a) * t, y: 2.4, z: Math.cos(a) * t });
+    }
+  }
+  const chimneys = h.LE.Renderer.villageChimneys(houses, hfov);
+  assert.equal(chimneys.length, villages.length, 'one for each village, and only one: ' + chimneys.length);
+  for (const [azDeg, km] of villages) {
+    const near = chimneys.filter((c) => Math.abs((Math.atan2(c.x, c.z) * 180) / Math.PI - azDeg) < 2 && Math.abs(Math.hypot(c.x, c.z) - km) < 0.6);
+    assert.equal(near.length, 1, `the village at ${azDeg}°, ${km} km`);
+  }
+  // many villages: no more than 14, but still from every part of the view
+  const many = [];
+  for (let k = 0; k < 60; k++) {
+    const a = ((-66 + k * 2.2) * Math.PI) / 180;
+    const t = 2 + (k % 7) * 1.7;
+    many.push({ t, a, x: Math.sin(a) * t, y: 2.4, z: Math.cos(a) * t });
+  }
+  const some = h.LE.Renderer.villageChimneys(many, hfov);
+  assert.equal(some.length, 14);
+  const parts = new Set(some.map((c) => Math.floor(((Math.atan2(c.x, c.z) / hfov) + 0.5) * 7)));
+  assert.equal(parts.size, 7, 'all seven slices of the view');
+  // the finder hands over what this gives, out to 16 km
+  const src = readSrc('engine/renderer.js');
+  assert.ok(src.includes('this.smokeSources = Renderer.villageChimneys(found, w * v.pxAng);') && src.includes('if (!(t > 1.5 && t < 16)) continue;'));
+});
+
+test('village smoke across the valley: each village its own hours, lit one after another, none flickering, all in a day', () => {
+  const h = hills(5, { mist: 0.1 });
+  seedRandom(h.ctx, 3);
+  h.life._nextFire = 1e9;
+  h.state.astro.dayOfYear = 15;
+  const start = new Date(2026, 0, 15, 5, 0, 0).getTime();
+  const smoked = new Set();
+  const firstLit = new Map();
+  const changes = [];
+  const seen = new Set();
+  let midday = [99, 0, 0, 0]; // fewest, most, sum, samples
+  let supper = 0;
+  for (let t = 0; t < 17 * 3600; t++) {
+    const hr = 5 + t / 3600;
+    h.state.now = new Date(start + t * 1000);
+    h.state.astro.sunAltDeg = hr > 7 && hr < 17.5 ? 30 : -10;
+    for (const s of h.life.smoke) if (s.kind === 0 && s.fading && !s.out) {
+      s.out = true;
+      changes.push(t);
+      assert.ok(s.age >= 479 || s.age > s.life, 'a fire burns a good while once lit: ' + Math.round(s.age));
+    }
+    h.life.update(1, h.state, h.view);
+    const on = h.life.smoke.filter((s) => s.kind === 0 && !s.fading);
+    for (const s of on) {
+      smoked.add(s.src);
+      if (seen.has(s)) continue;
+      seen.add(s);
+      if (t > 0) changes.push(t);
+      if (t > 0 && hr < 9.5 && !firstLit.has(s.src)) firstLit.set(s.src, hr);
+    }
+    if (hr > 10 && hr < 16) midday = [Math.min(midday[0], on.length), Math.max(midday[1], on.length), midday[2] + on.length, midday[3] + 1];
+    if (hr > 18 && hr < 19) supper = Math.max(supper, on.length);
+  }
+  assert.equal(smoked.size, 8, 'every village smokes some time in the day: ' + smoked.size);
+  const mornings = [...firstLit.values()];
+  assert.ok(mornings.length >= 3 && Math.max(...mornings) - Math.min(...mornings) > 0.5, 'the morning fires lit over the best part of an hour or more: ' + mornings.map((x) => x.toFixed(2)));
+  changes.sort((p, q) => p - q);
+  const gaps = changes.slice(1).map((c, i) => c - changes[i]).filter((g) => g < 14);
+  assert.ok(gaps.length <= changes.length * 0.05, 'one village at a time, not together: ' + gaps.length + ' of ' + changes.length + ' within 14 s');
+  // in January a village keeps a fire in much of the day, some more than others, and they come and go
+  const mean = midday[2] / midday[3];
+  assert.ok(midday[0] >= 1 && midday[1] - midday[0] >= 2 && mean >= 2.5 && mean <= 6.5, 'through the day, coming and going: ' + midday.slice(0, 2) + ', ' + mean.toFixed(1) + ' on average');
+  assert.ok(supper >= 6, 'nearly all at supper in winter: ' + supper);
+  // each its own: not one look for all of them
+  const looks = new Set([...seen].map((s) => [s.rise, s.width, s.target, s.seed].map((x) => x.toFixed(3)).join()));
+  assert.equal(looks.size, seen.size, 'no two alike');
+  // when the scene first shows, those already smoking are each at their own stage
+  const first = hills(18, { mist: 0.1 });
+  seedRandom(first.ctx, 5);
+  first.life._nextFire = 1e9;
+  first.state.astro.dayOfYear = 15;
+  first.run(2);
+  const ages = first.life.smoke.filter((s) => s.kind === 0).map((s) => s.age).sort((p, q) => p - q);
+  assert.ok(ages.length >= 4 && ages[ages.length - 1] - ages[0] > 600, 'already going, each at its own stage: ' + ages.map(Math.round));
 });
 
 test('now and then a field burns on a hill: a tall plume, glowing by night, and put out by rain', () => {
@@ -1863,7 +2332,7 @@ test('smoke is drawn in 3D and leans the way the weather blows, and a field fire
       const H = L.plumeA[i * 4 + 3];
       const [r, amt, sx, sz] = L.plumeB.slice(i * 4, i * 4 + 4);
       assert.ok(sx * Math.sin(toward) + sz * Math.cos(toward) > 0.5 * H, 'its top carried downwind: ' + [toward, sx, sz, H]);
-      assert.ok(r > 0.01 && r <= 0.1 && amt > 0 && H > 0.03, 'a column: ' + [r, amt, H]);
+      assert.ok(r > 0.01 && r <= 0.16 && amt > 0 && H > 0.03, 'a column, not a sheet: ' + [r, amt, H]);
     }
     assert.ok(smoke >= 2, 'houses and the field: ' + smoke);
     assert.ok(!sprites(L).some((x) => x.type === 5 && x.f[2] > 30), 'no flat pictures of smoke');
@@ -1913,11 +2382,11 @@ test('mist, smoke and fire all go when life is turned off', () => {
 
 test('everything in the scene can be turned off, from the address, the app and Lively, and the scene follows', () => {
   const on = load(['config.js']).LE.config;
-  for (const k of ['mist', 'smoke', 'fires', 'lights', 'shootingStars', 'road', 'birds', 'leaves']) assert.equal(on[k], true, k + ' on to start with');
+  for (const k of ['mist', 'banners', 'smoke', 'fires', 'lights', 'shootingStars', 'road', 'birds', 'leaves']) assert.equal(on[k], true, k + ' on to start with');
   assert.equal(on.render.tree, true);
   assert.equal(on.ui.showPanel, true);
-  const off = load(['config.js'], { search: '?mist=0&smoke=0&fires=0&lights=0&stars=0&tree=0&panel=0' }).LE.config;
-  for (const k of ['mist', 'smoke', 'fires', 'lights', 'shootingStars']) assert.equal(off[k], false, k + ' off from the address');
+  const off = load(['config.js'], { search: '?mist=0&banners=0&smoke=0&fires=0&lights=0&stars=0&tree=0&panel=0' }).LE.config;
+  for (const k of ['mist', 'banners', 'smoke', 'fires', 'lights', 'shootingStars']) assert.equal(off[k], false, k + ' off from the address');
   assert.equal(off.render.tree, false);
   assert.equal(off.ui.showPanel, false);
 
@@ -1928,30 +2397,30 @@ test('everything in the scene can be turned off, from the address, the app and L
   const calls = [];
   a.ctx.livelyPropertyListener = (name, v) => calls.push([name, v]);
   const all = {
-    quality: 'auto', road: true, traffic: 'normal', birds: true, leaves: true, tree: true, mist: true, smoke: true, fires: true,
+    quality: 'auto', road: true, traffic: 'normal', birds: true, leaves: true, tree: true, mist: true, banners: true, smoke: true, fires: true,
     lights: true, stars: true, panel: true, corner: 'right-bottom', panelSize: 'medium',
   };
   a.ctx.leHostState('live', all);
   a.tick();
   assert.deepEqual(calls, []);
-  a.ctx.leHostState('live', { ...all, tree: false, mist: false, smoke: false, fires: false, lights: false, stars: false, panel: false });
+  a.ctx.leHostState('live', { ...all, tree: false, mist: false, banners: false, smoke: false, fires: false, lights: false, stars: false, panel: false });
   a.tick();
   const names = calls.map((c) => c[0]).sort();
-  assert.deepEqual(names, ['fires', 'lights', 'mist', 'showPanel', 'smoke', 'stars', 'tree']);
+  assert.deepEqual(names, ['banners', 'fires', 'lights', 'mist', 'showPanel', 'smoke', 'stars', 'tree']);
   assert.ok(calls.every((c) => c[1] === false));
 
   // Lively offers each one, on to start with, and the page knows each name
   const read = (f) => readFileSync(new URL(f, new URL('../', import.meta.url)), 'utf8');
   const lively = JSON.parse(read('LivelyProperties.json'));
   const main = read('src/main.js');
-  for (const k of ['tree', 'mist', 'smoke', 'fires', 'lights', 'stars', 'birds', 'leaves', 'road', 'showPanel']) {
+  for (const k of ['tree', 'mist', 'banners', 'smoke', 'fires', 'lights', 'stars', 'birds', 'leaves', 'road', 'showPanel']) {
     assert.equal(lively[k] && lively[k].type, 'checkbox', 'Lively has ' + k);
     assert.equal(lively[k].value, true, k + ' on in Lively');
     assert.ok(main.includes(`case '${k}':`), 'main.js handles ' + k);
   }
   // the app keeps each one, and passes it to the page at start and while running
   const cs = read('host/LivingEarthHost.cs');
-  for (const k of ['tree', 'mist', 'smoke', 'fires', 'lights', 'stars', 'panel']) {
+  for (const k of ['tree', 'mist', 'banners', 'smoke', 'fires', 'lights', 'stars', 'panel']) {
     assert.ok(cs.includes(`"${k}="`), 'saved: ' + k);
     assert.ok(cs.includes(`TryGetValue("${k}"`), 'read back: ' + k);
     assert.ok(cs.includes(`"&${k}=0"`), 'in the address: ' + k);
@@ -2149,6 +2618,76 @@ test('a faster vehicle overtakes a slow bus on a straight when nothing is coming
   assert.ok(bike.side < 0.05 && !bike.pass, 'and back in its own lane');
 });
 
+// each kind as it comes, without the spread every driver gets
+const AS_BUILT = {
+  bus: { cruise: 0.0078, bend: 0.78, accel: 0.6e-3, stopIn: Infinity },
+  jeep: { cruise: 0.011, bend: 1.0, accel: 1.2e-3 },
+  motorcycle: { cruise: 0.0145, bend: 1.22, accel: 2.0e-3 },
+};
+/** Seconds until the last of `kinds` (a line, front first, 40 m apart, all at their pace) is past all the others, or -1. */
+function secondsToPass(kinds, at, dir, limit, each) {
+  const h = quietRoad(12);
+  const start = dir > 0 ? at : h.road.n - 1 - at;
+  const line = kinds.map((k, j) => {
+    const c = h.put(k, dir, start - dir * 5 * j, AS_BUILT[k]); // the default wait before it thinks of overtaking
+    c.v = Math.min(c.cruise, h.road.limit[start - dir * 5 * j] * c.bend);
+    return c;
+  });
+  const last = line[line.length - 1];
+  for (let t = 0; t < limit; t += 0.25) {
+    h.life.update(0.25, h.state, h.view);
+    if (each) each(h, line);
+    if (line.slice(0, -1).every((o) => (last.s - o.s) * dir > (last.len + o.len) / 2)) return t;
+  }
+  return -1;
+}
+
+test('on an empty road a faster vehicle caught behind a slower one gets past it soon, every time and anywhere', () => {
+  // the places: the far end of the road, the long straight, a winding stretch near the start; both ways
+  for (const kinds of [['jeep', 'motorcycle'], ['bus', 'jeep'], ['bus', 'motorcycle']]) {
+    for (const at of [150, STRAIGHT, 1250]) {
+      for (const dir of [1, -1]) {
+        const t = secondsToPass(kinds, at, dir, 120);
+        assert.ok(t >= 0 && t < 100, `${kinds[1]} behind a ${kinds[0]} at ${at}, going ${dir}: past in ${t} s`);
+      }
+    }
+  }
+});
+
+test('a motorcycle behind a bus with a jeep close behind it gets past both in one go', () => {
+  for (const at of [150, STRAIGHT]) {
+    for (const dir of [1, -1]) {
+      let outs = 0;
+      let wasOut = false;
+      const t = secondsToPass(['bus', 'jeep', 'motorcycle'], at, dir, 120, (h, line) => {
+        const bike = line[2];
+        const out = bike.side > 0.5;
+        if (out && !wasOut) outs++;
+        wasOut = out;
+      });
+      assert.ok(t >= 0 && t < 100, `past both at ${at}, going ${dir}: ${t} s`);
+      assert.equal(outs, 1, 'out once, not in between them');
+    }
+  }
+});
+
+test('overtaking never ends in a bus standing at a stop just beyond the one it passes', () => {
+  // a slow jeep, and the bus far enough on that it passes the jeep alone, then near enough that it can't stop for it
+  // (without the room to slow down in, the motorcycle ran into the bus in each of these)
+  for (const [jv, gap] of [[0.004, 12], [0.006, 14], [0.008, 18], [0.007, 6]]) {
+    const h = quietRoad(12);
+    const jeep = h.put('jeep', 1, STRAIGHT + 5, { ...AS_BUILT.jeep, cruise: jv, v: jv, cool: 1e9 });
+    const bus = h.put('bus', 1, STRAIGHT + 5 + gap, { ...AS_BUILT.bus, v: 0, side: -0.5, sideTarget: -0.5, stopFor: 1e9, blink: 3, blinkFor: 99 });
+    const bike = h.put('motorcycle', 1, STRAIGHT, { ...AS_BUILT.motorcycle, v: jv, cool: 0 });
+    h.run(90, () => {
+      for (const [a, b] of [[bike, bus], [bike, jeep], [jeep, bus]]) {
+        if (a.side < 0.7 && b.side < 0.7) assert.ok(Math.abs(a.s - b.s) >= (a.len + b.len) / 2 - 5e-4, `${a.kind} into the ${b.kind} (bus ${gap * 8} m on)`);
+      }
+    });
+    assert.ok(bike.s > bus.s + (bike.len + bus.len) / 2 && bike.side < 0.05, `past the jeep and the bus, and back in (bus ${gap * 8} m on)`);
+  }
+});
+
 test('nobody overtakes towards something coming the other way', () => {
   const h = quietRoad(12);
   h.put('bus', 1, STRAIGHT + 4, { cruise: 0.005, stopIn: Infinity });
@@ -2174,10 +2713,13 @@ test('a bus stops with its hazard lights on, then indicates right and pulls out'
   assert.ok(bus.v > 0.004 && Math.abs(bus.side) < 0.05, 'and is on its way again in its lane');
 });
 
-test('a busy day on the road: nothing ever drives through anything, and overtaking and stops happen', () => {
+test('a busy day on the road: nothing ever drives through anything, overtaking and stops happen, and nobody is stuck', () => {
   const { life, state, view } = testLife(12);
   let passes = 0;
   let stops = 0;
+  // seconds of driving, and of those caught behind a clearly slower one with nothing coming the other way for a km
+  let driving = 0;
+  let stuck = 0;
   // lanes a vehicle takes up: its own, the other, or both while it moves across
   const lanes = (c) => (c.side < 0.7 ? 1 : 0) | (c.side > 0.3 ? 2 : 0);
   for (let k = 0; k < 4000; k++) {
@@ -2191,6 +2733,18 @@ test('a busy day on the road: nothing ever drives through anything, and overtaki
         c.stopCounted = true;
         stops++;
       }
+      if (c.side > 0.05 || c.stopFor > 0 || c.stopping) continue;
+      driving += 0.5;
+      let ahead = null;
+      let gap = 1e9;
+      let coming = 1e9;
+      for (const o of life.vehicles) {
+        const g = (o.s - c.s) * c.dir - (o.len + c.len) / 2;
+        if (o === c || g <= 0) continue;
+        if (o.dir !== c.dir) coming = Math.min(coming, g);
+        else if (o.side < 0.7 && g < gap) [ahead, gap] = [o, g];
+      }
+      if (ahead && gap < 0.06 && ahead.cruise < c.cruise * 0.9 && c.v < c.cruise * 0.9 && coming > 1) stuck += 0.5;
     }
     const vs = life.vehicles;
     for (let a = 0; a < vs.length; a++) {
@@ -2208,6 +2762,8 @@ test('a busy day on the road: nothing ever drives through anything, and overtaki
   }
   assert.ok(passes > 0, 'someone overtook: ' + passes);
   assert.ok(stops > 0, 'a bus stopped: ' + stops);
+  // it was near a fifth of all driving when they waited for a long straight at full passing speed
+  assert.ok(stuck < driving * 0.05, `stuck behind a slower one on an empty road: ${((100 * stuck) / driving).toFixed(1)}% of driving`);
 });
 
 test('at night beams are dipped for oncoming traffic and go back up on an empty road', () => {

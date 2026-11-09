@@ -24,7 +24,7 @@
     "applicationCategory": "DesktopEnhancementApplication",
     "operatingSystem": "Windows 11, Windows 10",
     "url": "https://khanrafaat.github.io/living-earth-himalaya-windows-live-wallpaper/",
-    "downloadUrl": "https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.1.0/LivingEarthHimalaya-2.1.0.exe",
+    "downloadUrl": "https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.2.0/LivingEarthHimalaya-2.2.0.exe",
     "image": "https://khanrafaat.github.io/living-earth-himalaya-windows-live-wallpaper/images/social-preview.jpg",
     "license": "https://opensource.org/licenses/MIT",
     "isAccessibleForFree": true,
@@ -37,7 +37,9 @@
     :root { --bg: #0f1a26; --panel: #17263a; --ink: #eef3f8; --soft: #b4c3d3; --line: #2a3e57; --accent: #f2b56b; --accent-ink: #231605; }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.6 "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif; }
-    img { display: block; width: 100%; height: auto; border-radius: 8px; }
+    img, video { display: block; width: 100%; height: auto; border-radius: 8px; }
+    video.hero { aspect-ratio: 32 / 9; background: #1b2a3c; }
+    .caption { margin-top: 8px; }
     a { color: var(--accent); }
     main, header, footer { max-width: 960px; margin: 0 auto; padding: 0 20px; }
     header { padding-top: 56px; }
@@ -53,27 +55,46 @@
     .btn.main { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
     .btn.main small { color: var(--accent-ink); }
     .note { color: var(--soft); font-size: .92rem; }
-    .gallery { display: grid; gap: 14px; margin-top: 20px; }
+    .gallery { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 20px; }
+    .gallery .wide { grid-column: 1 / -1; }
+    .badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 0; }
+    .badges a { line-height: 0; }
+    .badges img { display: inline-block; width: auto; height: 20px; border-radius: 0; }
     ul, ol { padding-left: 22px; margin: 0 0 14px; }
     li { margin-bottom: 8px; }
     table { width: 100%; border-collapse: collapse; }
     th, td { text-align: left; vertical-align: top; padding: 10px 12px 10px 0; border-bottom: 1px solid var(--line); }
     th { font-weight: 600; white-space: nowrap; }
     footer { margin-top: 64px; padding-top: 24px; padding-bottom: 48px; border-top: 1px solid var(--line); color: var(--soft); font-size: .92rem; }
-    @media (max-width: 600px) { .btn { width: 100%; } th { white-space: normal; } }
+    @media (max-width: 600px) { .btn { width: 100%; } th { white-space: normal; } .gallery { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <header>
     <h1>Living Earth Himalaya: free live wallpaper for Windows</h1>
     <p class="lead">Turn your desktop into a real-time Himalayan mountain panorama. The sun, moon, stars, clouds, wind, rain and snow follow the real sky and your local weather. It works on one monitor and spans dual monitors (3840 × 1080). One small exe, with no Lively, Wallpaper Engine, Steam, installer or account needed.</p>
+    <p class="badges">
+      <a href="https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/khanRafaat/living-earth-himalaya-windows-live-wallpaper?label=release&color=f2b56b" height="20" referrerpolicy="no-referrer"></a>
+      <a href="https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/khanRafaat/living-earth-himalaya-windows-live-wallpaper/total?label=downloads&color=2ea44f" height="20" referrerpolicy="no-referrer"></a>
+      <a href="https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/khanRafaat/living-earth-himalaya-windows-live-wallpaper?style=flat&color=e3b341" height="20" referrerpolicy="no-referrer"></a>
+      <a href="https://khanrafaat.github.io/living-earth-himalaya-windows-live-wallpaper/"><img alt="Website" src="https://img.shields.io/badge/website-online-0a84ff" height="20" referrerpolicy="no-referrer"></a>
+      <a href="https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/issues"><img alt="Open issues" src="https://img.shields.io/github/issues/khanRafaat/living-earth-himalaya-windows-live-wallpaper?color=8250df" height="20" referrerpolicy="no-referrer"></a>
+      <a href="https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/blob/main/LICENSE"><img alt="MIT licence" src="https://img.shields.io/github/license/khanRafaat/living-earth-himalaya-windows-live-wallpaper?color=57606a" height="20" referrerpolicy="no-referrer"></a>
+      <a href="https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper#download-and-set-your-wallpaper"><img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4" height="20" referrerpolicy="no-referrer"></a>
+      <a href="https://hits.sh/github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/"><img alt="Visitors" src="https://hits.sh/github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper.svg?label=visitors&color=f2b56b" height="20" referrerpolicy="no-referrer"></a>
+    </p>
     <div class="downloads">
-      <a class="btn main" href="https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.1.0/LivingEarthHimalaya-2.1.0.exe">Download for Windows<small>LivingEarthHimalaya-2.1.0.exe, about 2.4 MB</small></a>
+      <a class="btn main" href="https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.2.0/LivingEarthHimalaya-2.2.0.exe">Download for Windows<small>LivingEarthHimalaya-2.2.0.exe, about 2.4 MB</small></a>
       <a class="btn" href="https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/latest/download/LivingEarthHimalaya-Lively.zip">For Lively Wallpaper<small>Windows 10 and older Windows 11</small></a>
       <a class="btn" href="https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/archive/refs/heads/main.zip">Full source code<small>Zip, MIT licence</small></a>
     </div>
     <p class="note">The exe needs Windows 11 version 24H2 or later. It is not code-signed, so Windows may show "Windows protected your PC": click <b>More info</b>, then <b>Run anyway</b>. The code is open on <a href="https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper">GitHub</a> if you want to read it or build it yourself.</p>
-    <img class="hero" src="images/sunrise.jpg" width="1920" height="540" alt="Living Earth Himalaya live wallpaper: snow peaks of the Himalaya at sunrise across two monitors, with a clock and weather panel">
+    <video class="hero" autoplay muted loop playsinline preload="auto" poster="images/cover.jpg" width="1920" height="540" aria-label="Living Earth Himalaya, a free live wallpaper for Windows, animated: sunrise on the Himalaya, snow falling on the tree in winter, banner clouds streaming from the peaks, a monsoon storm, and dusk with the first stars, village lights and headlights on the mountain road">
+      <source src="images/cover.mp4" type="video/mp4">
+      <img src="images/cover.gif" width="1920" height="540" alt="Living Earth Himalaya, a free live wallpaper for Windows, animated: sunrise on the Himalaya, snow falling on the tree in winter, banner clouds streaming from the peaks, a monsoon storm, and dusk with the first stars, village lights and headlights on the mountain road">
+    </video>
+    <script>matchMedia('(prefers-reduced-motion: reduce)').matches && document.querySelector('video.hero').pause();</script>
+    <p class="note caption">A few hours of each season, sped up. On your desktop it all happens in real time, with your sky and your weather. To see a whole year in two minutes, right-click the tray icon and choose <b>Play the demo</b>.</p>
   </header>
 
   <main>
@@ -81,17 +102,23 @@
     <ul>
       <li><b>Real sky.</b> Sunrise, golden hour, sunset and night happen at the true times for your location. The moon shows its real phase and the stars turn through the night.</li>
       <li><b>Live weather.</b> Cloud cover, rain, storms, fog, mist and wind come from your local forecast, and changes build and clear naturally.</li>
-      <li><b>Real wind.</b> Clouds move at the true wind speed for their height. Gusts cross the forest, and a rhododendron on the cliff edge sways, gets wet in rain and flowers red in spring.</li>
+      <li><b>Real wind.</b> Clouds move at the true wind speed for their height. Gusts cross the forest, and a rhododendron on the cliff edge sways, gets wet in rain, flowers red in spring and turns white where it really snows.</li>
+      <li><b>Banner clouds.</b> On humid, windy days clouds stream from the highest summits with the real wind, forming and fading peak by peak.</li>
       <li><b>A mountain road.</b> Buses, jeeps and motorcycles wind through the forest, overtake and stop for passengers. At night their headlights light the road and trees ahead.</li>
-      <li><b>Mist and smoke in 3D.</b> Mist lifts off the wet forest and drifts with the real wind. Wood smoke drifts off the villages with the wind, and now and then a field burns on a hill.</li>
+      <li><b>Mist and smoke in 3D.</b> Mist lifts off the wet forest and drifts with the real wind. Wood smoke rises from villages all across the valley, each keeping its own hours, and now and then a field burns on a hill.</li>
       <li><b>Wildlife and villages.</b> Vultures circle on calm middays, geese cross during the real migrations, chimneys smoke at dinner time and village lights come on at dusk.</li>
-      <li><b>Your choice of scene.</b> Turn the road, its traffic, the tree, leaves, birds, shooting stars, village lights, mist, smoke and fires on or off, and place and size the clock and weather panel.</li>
+      <li><b>Your choice of scene.</b> Turn the road, its traffic, the tree, leaves, birds, shooting stars, village lights, mist, clouds on the peaks, smoke and fires on or off, and place and size the clock and weather panel.</li>
+      <li><b>A year in two minutes.</b> A demo plays every month in turn, with its weather and what goes on then: made for showing it off or filming it.</li>
       <li><b>Light on your PC.</b> It runs at below-normal priority and can rest whenever a window is in front of it. A dedicated graphics card is not needed.</li>
       <li><b>Free and open source.</b> No ads, no account and no paid version, under the MIT licence.</li>
     </ul>
 
     <div class="gallery">
+      <img class="wide" loading="lazy" src="images/sunrise.jpg" width="1920" height="540" alt="Living Earth Himalaya live wallpaper: snow peaks of the Himalaya at sunrise across two monitors, with a clock and weather panel">
+      <img loading="lazy" src="images/banners.jpg" width="1920" height="540" alt="Banner clouds streaming from the Himalayan summits on a windy spring afternoon, in the live wallpaper for Windows">
+      <img loading="lazy" src="images/winter-snow.jpg" width="1920" height="540" alt="Snow falling on the tree on the cliff edge and on the hills in winter, in the Himalaya live wallpaper">
       <img loading="lazy" src="images/storm.jpg" width="1920" height="540" alt="A storm over the Himalaya in the animated desktop wallpaper, with heavy cloud over the snow peaks">
+      <img loading="lazy" src="images/night-road.jpg" width="1920" height="540" alt="Dusk in the Himalaya live wallpaper: the first stars, village lights coming on and headlights on the mountain road">
       <img loading="lazy" src="images/night-rain.jpg" width="1920" height="540" alt="Rain at night in the Himalaya live wallpaper, across a dual monitor desktop">
       <img loading="lazy" src="images/morning.jpg" width="1920" height="540" alt="Clear morning over Himalayan peaks and forest in the dual monitor live wallpaper, with the sun low on the right">
     </div>
@@ -99,7 +126,7 @@
     <h2>How to install</h2>
     <h3>Windows 11 version 24H2 or later</h3>
     <ol>
-      <li><a href="https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.1.0/LivingEarthHimalaya-2.1.0.exe">Download LivingEarthHimalaya-2.1.0.exe</a> and move it somewhere it can stay, such as your Documents folder.</li>
+      <li><a href="https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.2.0/LivingEarthHimalaya-2.2.0.exe">Download LivingEarthHimalaya-2.2.0.exe</a> and move it somewhere it can stay, such as your Documents folder.</li>
       <li>Double-click it. There is no installer and it does not need admin rights.</li>
       <li>Choose your location and options, then click <b>Set wallpaper</b>.</li>
     </ol>

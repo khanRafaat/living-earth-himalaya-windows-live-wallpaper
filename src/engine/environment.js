@@ -11,6 +11,14 @@
   'use strict';
   const LE = (window.LE = window.LE || {});
   const D2R = Math.PI / 180;
+  // how bright a village lamp is at least once dusk has deepened (sun 7° down), in the scene's light units
+  const LAMP_DUSK = 3;
+  // The sun lights nothing in the scene once it is this far down (degrees): the highest peaks (about 9 km) and the tops
+  // of storm clouds (11 km) see it set at about 3.6° below the horizon. Only one light gets the shadow map and the march
+  // through the clouds, the other is drawn unshadowed, so the moon takes them over here, where the sun has nothing left
+  // to light and twilight outshines the moon. Handed over earlier, the last light on the peaks and the haze in shaded
+  // valleys lost their shadows in one frame.
+  const SUN_GONE = -3.8;
   const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
   const smooth = (a, b, x) => {
     const t = clamp((x - a) / (b - a), 0, 1);
@@ -113,6 +121,10 @@
     const haze = 1.3 + 2.2 * smooth(12000, 2500, vis) * (1 - fog) + 2.0 * wetCloud + 0.8 * smooth(70, 98, hum);
     const valleyHaze = 5 + 8 * smooth(15000, 3000, vis) * (1 - fog) + 6 * wetCloud + 4 * smooth(65, 98, hum);
     const winds = cloudWinds(rec);
+    // Banner clouds on the high peaks (volume.js): they need moist air and a steady wind up there to carry it past the
+    // summits. A closed deck, steady rain or snow, or fog hide the peaks instead.
+    const banner = smooth(45, 82, hum) * smooth(8, 25, Math.hypot(winds.deck[0], winds.deck[1]))
+      * (1 - smooth(0.5, 0.85, overcast)) * (1 - smooth(0.2, 0.7, precipI)) * (1 - smooth(0.1, 0.5, fog));
 
     return {
       coverage: cover,
@@ -131,6 +143,7 @@
       fogTop: 1.85 + 0.8 * fog,
       haze,
       valleyHaze,
+      banner,
       windSpeed: Math.max(rec.windSpeed ?? 8, 0),
       windDir: rec.windDir ?? 270,
       gusts: Math.max(rec.gusts ?? (rec.windSpeed ?? 8) * 1.5, rec.windSpeed ?? 8, 0),
@@ -161,6 +174,7 @@
     fogTop: [1.6, 1.2],
     haze: [1.5, 1.5],
     valleyHaze: [1.5, 1.5],
+    banner: [2.0, 1.6], // banner clouds take a few minutes to form, and a little less to dissolve
     windSpeed: [0.6, 0.8],
     gusts: [0.6, 0.8],
   };
@@ -201,6 +215,7 @@
       this.wLead = null; // first smoothing stage: w follows it, which eases each change in and out
       this.wet = 0;
       this.freshSnow = 0;
+      this.pace = 1; // how much faster than real the land wets, dries, takes snow and thaws (the demo raises it)
       this.windOffset = [0, 0, 0];
       this.mistOffset = [0, 0, 0];
       this.coverOffset = [0, 0];
@@ -320,11 +335,12 @@
 
       // wetness: quick to soak, slow to dry
       const wetT = w.rain > 0.05 ? 1 : 0;
-      const wetTau = wetT > this.wet ? 150 : 2400;
+      const wetTau = (wetT > this.wet ? 150 : 2400) / this.pace;
       this.wet += (wetT - this.wet) * (snap ? (wetT ? 1 : 0) : 1 - Math.exp(-dtSec / wetTau));
-      // fresh snow lowers the snow line over ~an hour, melts back over several hours
+      // fresh snow lowers the snow line in a quarter of an hour or so (snow settles on the tree and the rock while it
+      // falls), and melts back over several hours
       const fsT = w.snow > 0.05 ? 1 : 0;
-      const fsTau = fsT > this.freshSnow ? 1800 : 14400;
+      const fsTau = (fsT > this.freshSnow ? 900 : 14400) / this.pace;
       this.freshSnow += (fsT - this.freshSnow) * (snap ? fsT : 1 - Math.exp(-dtSec / fsTau));
 
       // wind → drift (km): each layer moves with the real wind at its height. cloudSpeed 1 is real
@@ -455,10 +471,14 @@
       s.moonDiskE = Math.min(exposure * 1.0 * 0.12 / Math.PI * 1.4, 7.5);
       s.starVis = clamp(exposure * 2.4e-6, 0, 1.15) * (1 - 0.85 * w.overcast);
       s.night = smooth(-3, -12, sunAlt);
-      // nautical/astronomical twilight glow, scaled with the same curve the exposure uses
-      s.twilightE = sunAlt < 1 ? exposure * 0.1 * Math.exp(Math.min(sunAlt, 0) / 1.5) * (1 - smooth(-3, 1, sunAlt) * 0.85) : 0;
-      // village lamps: emissive intensity (pre-exposed) and how dark it is for switching them on
-      s.lampE = Math.min(exposure * 0.6e-6, 10);
+      // nautical/astronomical twilight glow, scaled with the same curve the exposure uses. It fades out as the sun climbs
+      // its first degree: it used to stop dead at 1° (and come on at once at sunset) with a seventh of its glow left.
+      s.twilightE = sunAlt < 1 ? exposure * 0.1 * Math.exp(Math.min(sunAlt, 0) / 1.5) * (1 - smooth(-3, 1, sunAlt) * 0.85) * (1 - smooth(0, 1, sunAlt)) : 0;
+      // village lamps: emissive intensity (pre-exposed) and how dark it is for switching them on. Tied to the exposure
+      // alone they stayed black through dusk, the exposure being low then, and showed only an hour after sunset, all at
+      // once. The eye picks out a lit window as soon as it is switched on, so they never fall below a level that rises
+      // through dusk; deep in the night the exposure takes over as before.
+      s.lampE = Math.min(Math.max(exposure * 0.6e-6, LAMP_DUSK * smooth(-1, -7, sunAlt)), 10);
       s.lampDark = smooth(-1, -9, sunAlt);
       // the discs are drawn only while really above the horizon at your location
       // (same −0.833° rule as the sunrise/sunset times shown in the panel)
@@ -467,7 +487,11 @@
 
       // ---------- seasons & snow line ----------
       const doy = a.dayOfYear;
-      s.snowLine = 4.45 + 0.55 * Math.cos((2 * Math.PI * (doy - 200)) / 365) - 1.4 * this.freshSnow;
+      // Snow falling here lies here: fresh snow brings the line down to nearly a km below the eye in any season (it
+      // used to stop 1.4 km below the season's line, which left the tree and the rock bare and green in a snowfall
+      // outside deep winter, and for the first hour of one even then)
+      const seasonLine = 4.45 + 0.55 * Math.cos((2 * Math.PI * (doy - 200)) / 365);
+      s.snowLine = seasonLine - this.freshSnow * Math.max(1.4, seasonLine - cfg.render.cameraAltitude + 0.9);
 
       // ---------- pack weather for the GPU ----------
       const wo = s.weather;
@@ -488,6 +512,9 @@
       wo.haze = w.haze;
       wo.valleyHaze = w.valleyHaze;
       wo.wet = this.wet;
+      wo.banner = w.banner;
+      wo.deckX = deckX; // the wind at the clouds (km/h, scene axes): banner clouds stream along it, as the deck drifts
+      wo.deckZ = deckZ;
       wo.flash = this.flash;
       wo.flashPos = this.flashPos;
       wo.windSpeed = w.windSpeed;
@@ -518,10 +545,13 @@
 
       const sunAltDeg = sun.altitude / D2R;
       const moonAltDeg = moon.altitude / D2R;
-      const keyIsSun = sunAltDeg > -1.5 || moonAltDeg < 1;
+      // By night the moon keeps the key light even while it is down, so nothing changes hands as it rises or sets: its
+      // light comes up through its own shadows (before, at moonrise and moonset the key jumped from the moon to a sun far
+      // below the horizon, and the low moon's light lost its shadows at once)
+      const keyIsSun = sunAltDeg > SUN_GONE;
       s.keyIsSun = keyIsSun ? 1 : 0;
       s.keyDir.set(keyIsSun ? s.sunDir : s.moonDir);
-      s.lightMarchDir.set(sunAltDeg > -6 ? s.sunDir : s.moonDir);
+      s.lightMarchDir.set(keyIsSun ? s.sunDir : s.moonDir);
 
       // scene-space compass north
       s.north[0] = Math.sin(-heading * D2R);
@@ -612,7 +642,8 @@
           at += 0.05 + Math.random() * 0.18;
           this._pulses.push({ at, amp: (0.35 + Math.random() * 0.65) * (i === 0 ? 1 : 0.7) });
         }
-        this._nextFlash = t + (5 + Math.random() * 14) / storm;
+        // in the demo a storm has a few seconds to show itself: strikes come about three times as often
+        this._nextFlash = t + (5 + Math.random() * 14) / storm / (this.pace > 1 ? 3 : 1);
       }
       let f = 0;
       for (let i = this._pulses.length - 1; i >= 0; i--) {

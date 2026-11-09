@@ -119,6 +119,16 @@
     "value": true,
     "text": "Mist rising from the forest"
   },
+  "banners": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Clouds streaming from the peaks in the wind"
+  },
+  "demo": {
+    "type": "checkbox",
+    "value": false,
+    "text": "Demo: a year in two minutes, over and over (to see everything, or to film it)"
+  },
   "smoke": {
     "type": "checkbox",
     "value": true,

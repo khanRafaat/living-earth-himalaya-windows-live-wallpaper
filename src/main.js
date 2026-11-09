@@ -18,6 +18,7 @@
   const weather = new LE.WeatherService(cfg.weather);
   const overlay = new LE.Overlay(document.getElementById('panel'), cfg);
   const life = new LE.Life();
+  const demo = new LE.Demo(); // a year in two minutes (src/services/demo.js)
   let renderer = null;
   let governor = null;
   let location = { lat: cfg.location.lat, lon: cfg.location.lon, name: cfg.location.name, source: 'default' };
@@ -28,6 +29,7 @@
   let windOverride = null; // the wind test's values (?windtest=1)
   let testWeather; // what the test panel asks for (?debug=1). Undefined: nothing. Null: as if there were no data
   function weatherRecord() {
+    if (demo.on && demo.weather()) return { rec: demo.weather(), source: 'preview' };
     if (testWeather !== undefined) return { rec: testWeather, source: testWeather ? 'preview' : 'none' };
     const ov = cfg.overrides.weather;
     if (ov && LE.weatherPresets[ov]) {
@@ -73,6 +75,7 @@
   }
 
   function statusText() {
+    if (demo.on) return 'Demo · a year in two minutes';
     const { source } = weatherRecord();
     const parts = [];
     const mode = LE.clock.modeLabel();
@@ -204,7 +207,7 @@
     const w = lastState.weather;
     const lifeOn = cfg.life !== false;
     const busy =
-      w.rain > 0.003 || w.snow > 0.003 || w.flash > 0.01 || cfg.overrides.timelapse > 0 ||
+      w.rain > 0.003 || w.snow > 0.003 || w.flash > 0.01 || cfg.overrides.timelapse > 0 || demo.on ||
       (lifeOn && (life.raptors.length > 0 || !!life.flock || !!life.geese || life.meteors.length > 0 || life.sats.length > 0));
     if (busy) lastBusy = now;
     return now - lastBusy < 3000 ? cap : Math.min(cap, cfg.render.calmFps);
@@ -218,7 +221,7 @@
     if (!cfg.render.smartFps || !cfg.render.calmSceneMs || !lastState || renderer.status !== 'running') return 0;
     const w = lastState.weather;
     // At the full rate while the picture fades in and just after: the sky forms in those seconds
-    if (renderer._fade < 1 || w.rain > 0.003 || w.snow > 0.003 || w.flash > 0.01 || cfg.overrides.timelapse > 0) lastWet = now;
+    if (renderer._fade < 1 || w.rain > 0.003 || w.snow > 0.003 || w.flash > 0.01 || cfg.overrides.timelapse > 0 || demo.on) lastWet = now;
     return now - lastWet < 3000 ? 0 : cfg.render.calmSceneMs;
   }
 
@@ -305,8 +308,16 @@
     const dt = Math.min((nowReal - lastReal) / 1000, slowMs ? 25 : 120);
     lastReal = nowReal;
     const timeSec = (nowReal - simStart) / 1000;
-    const now = LE.clock.now();
+    // the demo, on or off as asked, once the scene is up; while it plays it says what time and weather it is
+    if (renderer.status === 'running' && !!cfg.demo !== demo.on) setDemo(!!cfg.demo);
+    const d = demo.on ? stepDemo(nowReal) : null;
+    const now = d ? d.now : LE.clock.now();
     const state = env.update(now, dt, timeSec);
+    if (d && d.changed) {
+      // a new month begins as wet, or with as much fresh snow, as it should (straight into its weather above)
+      env.wet = d.wet;
+      env.freshSnow = d.snow;
+    }
     lastState = state;
     if (renderer.status === 'running') {
       const view = renderer.viewInfo();
@@ -323,8 +334,9 @@
       life.villageSmoke = cfg.smoke !== false;
       life.fires = cfg.fires !== false;
       life.shootingStars = cfg.shootingStars !== false;
-      life.traffic = cfg.traffic || 'normal';
+      life.traffic = demo.on ? 'busy' : cfg.traffic || 'normal'; // the demo shows a busy road, without touching the setting
       stepLife(state, nowReal);
+      if (d) for (const k of d.summons) life.summon(k);
     } else {
       lastLife = nowReal;
     }
@@ -363,6 +375,59 @@
           `${renderer.gpuInfo()}`;
       }
     }
+  }
+
+  // ---------------------------------------------------------------- the demo
+  // A year in two minutes, over and over. While it plays, the weather changes and the land wets and whitens quickly,
+  // clouds race as in a time-lapse and the road is busy; turned off, everything is as it was and the real weather and
+  // time come back at once.
+  const demoDip = document.getElementById('demo-dip');
+  const demoCaption = document.getElementById('demo-caption');
+  const demoKept = {};
+  function setDemo(on) {
+    if (on === demo.on) return;
+    if (on) {
+      demoKept.trans = cfg.atmosphere.transitionSeconds;
+      demoKept.clouds = cfg.atmosphere.cloudSpeed;
+      cfg.atmosphere.transitionSeconds = 4; // each month's weather forms in its few seconds
+      cfg.atmosphere.cloudSpeed = 8;
+      env.pace = 120;
+      life.pace = 30; // smoke and mist come and go within a month
+      demo.start(performance.now());
+    } else {
+      demo.stop();
+      cfg.atmosphere.transitionSeconds = demoKept.trans;
+      cfg.atmosphere.cloudSpeed = demoKept.clouds;
+      env.pace = 1;
+      life.pace = 1;
+      env.wet = 0;
+      env.freshSnow = 0;
+      env.w = null; // straight back to the real weather
+      pushWeather();
+      demoDip.style.opacity = '0';
+      demoCaption.classList.remove('on');
+    }
+    if (renderer) {
+      renderer._adaptReset = true;
+      renderer._volWarm = 0;
+    }
+  }
+  function stepDemo(nowReal) {
+    const d = demo.step(nowReal);
+    if (d.changed || d.weatherChanged) env.setWeather(d.weather, 'preview');
+    if (d.changed) {
+      env.w = null; // this month's weather at once: the dip hides the change
+      renderer._adaptReset = true;
+      renderer._volWarm = 0;
+      demoCaption.querySelector('.demo-month').textContent = d.caption;
+      demoCaption.querySelector('.demo-line').textContent = d.line;
+      demoCaption.classList.toggle('low', cfg.ui.panelPosition === 'left-top');
+    }
+    // the month's name shows for the first part of it
+    demoCaption.classList.toggle('on', d.dip < 0.5 && d.share < 0.7);
+    const dark = (d.dip * 0.94).toFixed(2);
+    if (demoDip.style.opacity !== dark) demoDip.style.opacity = dark;
+    return d;
   }
 
   // Lively and page visibility pause independently, and a resume needs both to agree: otherwise a
@@ -474,6 +539,9 @@
         cfg.overrides.timelapse = val ? 720 : 0;
         LE.clock.configure(cfg.overrides);
         break;
+      case 'demo': // the frame loop starts or ends it
+        cfg.demo = !!val;
+        break;
       case 'useGeolocation':
         if (cfg.location.useGeolocation !== !!val) {
           cfg.location.useGeolocation = !!val;
@@ -500,6 +568,9 @@
         break;
       case 'mist':
         cfg.mist = !!val;
+        break;
+      case 'banners': // the renderer reads it every frame
+        cfg.banners = !!val;
         break;
       case 'smoke':
         cfg.smoke = !!val;

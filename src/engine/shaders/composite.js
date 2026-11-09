@@ -487,6 +487,17 @@ vec3 shadeTerrain(vec3 rd, float t, vec4 g0, ivec2 ic) {
   float vh = max(dot(v, hv), 0.0);
   float rough = mix(mix(0.7, 0.25, wet), 0.42, snow);
   float a2 = pow(rough, 4.0);
+  // Wet ground mirrors the sun in a sharp highlight. Where the surface turns within a pixel (the rim of the rock, the
+  // edges of the road, gaps in the forest) one pixel of it caught the sun alone and showed as a pale fleck, in rows
+  // along the rim. So the highlight widens by how much the surface turns from this pixel to the next (specular
+  // anti-aliasing): flat wet faces and the wet road stay glossy. Only while wet; dry ground and snow are as before.
+  if (wet > 0.01) {
+    ivec2 last = ivec2(uRes) - 1;
+    vec3 n0 = octDecodeY(g0.xy);
+    vec3 dnx = octDecodeY(texelFetch(uG0, min(ic + ivec2(1, 0), last), 0).xy) - n0;
+    vec3 dny = octDecodeY(texelFetch(uG0, min(ic + ivec2(0, 1), last), 0).xy) - n0;
+    a2 += min(0.5 * (dot(dnx, dnx) + dot(dny, dny)), 0.18) * wet;
+  }
   float dd = nh * nh * (a2 - 1.0) + 1.0;
   float D = a2 / (PI * dd * dd);
   float F = 0.03 + 0.97 * pow(1.0 - vh, 5.0);

@@ -8,7 +8,7 @@
   const LE = (window.LE = window.LE || {});
 
   LE.config = {
-    version: '2.1.0',
+    version: '2.2.0',
 
     location: {
       name: 'Dhaka',
@@ -42,6 +42,8 @@
       cameraAltitude: 2.8, // km above sea level
       horizonY: 0.4, // horizon height as a fraction of the screen (0 = bottom)
       maxHFovDeg: 140, // horizontal field of view for a 32:9 span
+      spanTurnDeg: 12, // across two screens, the great range turns this far right: the sharp peak at the centre would stand on
+      // the bezel, and 12 degrees puts the bezel on a low ridge and that peak well inside the right-hand screen
       tree: true, // the tree on the rock at the left, and the leaves the wind carries past
     },
 
@@ -85,6 +87,7 @@
   c.render.renderScale = num('scale', c.render.renderScale);
   c.render.heading = num('heading', c.render.heading);
   c.render.seed = num('seed', c.render.seed);
+  c.render.spanTurnDeg = num('spanturn', c.render.spanTurnDeg);
   c.atmosphere.cloudSpeed = num('clouds', c.atmosphere.cloudSpeed);
   c.atmosphere.treeWind = num('trees', c.atmosphere.treeWind);
   if (q.has('panel')) c.ui.showPanel = q.get('panel') !== '0';
@@ -111,6 +114,8 @@
   c.traffic = ['light', 'normal', 'busy'].includes(q.get('traffic')) ? q.get('traffic') : 'normal'; // how much is on the road
   c.leaves = q.get('leaves') !== '0'; // the leaves the wind carries past. The tree stays
   c.mist = q.get('mist') !== '0'; // mist rising off the forest
+  c.banners = q.get('banners') !== '0'; // banner clouds streaming from the high peaks in the wind
+  c.demo = q.get('demo') === '1'; // the demo: a year in two minutes, over and over (src/services/demo.js)
   c.smoke = q.get('smoke') !== '0'; // smoke from the villages, and their cooking fires after dark
   c.fires = q.get('fires') !== '0'; // a field burning on a hill now and then
   c.lights = q.get('lights') !== '0'; // lights in the villages at night

@@ -7,7 +7,7 @@
  *   rest   the scene every 2 s (you are working), fading smoothly between its pictures with the birds flying
  *   still  no frames at all (locked, or paused from the tray)
  *
- * The second argument carries settings: { quality, road, traffic, birds, leaves, tree, mist, smoke, fires, lights, stars,
+ * The second argument carries settings: { quality, road, traffic, birds, leaves, tree, mist, banners, demo, smoke, fires, lights, stars,
  * panel, corner, panelSize, place: { lat, lon, name } }.
  * They apply at once. Turning the road on or off shapes the mountains again, which takes a few minutes.
  *
@@ -58,6 +58,8 @@
       leaves: [c.leaves, 'leaves'],
       tree: [c.render.tree, 'tree'],
       mist: [c.mist, 'mist'],
+      banners: [c.banners, 'banners'],
+      demo: [c.demo, 'demo'],
       smoke: [c.smoke, 'smoke'],
       fires: [c.fires, 'fires'],
       lights: [c.lights, 'lights'],

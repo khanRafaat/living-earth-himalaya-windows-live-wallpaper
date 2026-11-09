@@ -409,6 +409,7 @@
       this._fading = false;
       this._sceneKey = this.sceneKey();
       this._layRoad();
+      this._findPeaks();
       this.progress = 0;
       this._setStatus('baking');
     }
@@ -466,6 +467,160 @@
       if (this.life) this.life.setRoad(this.road);
     }
 
+    /**
+     * The summits that fly banner clouds (volume.js): the tallest, steepest ones in view, at most four and well apart.
+     * Found from the land itself once per bake, so they follow the landscape variation and the turn of the range. The
+     * land is sampled on a polar grid over the view, every local top above 6 km is looked at again closely, and the
+     * ones the picture shows biggest and sharpest are kept. A failure only costs the banner clouds.
+     */
+    _findPeaks() {
+      this.peaks = [];
+      if (!this.floatTargets) return;
+      try {
+        const v = this.viewInfo();
+        const camY = v.camY;
+        const half = v.hfov / 2 - 2 * D2R;
+        const NA = 320, NR = 128, R0 = 12, R1 = 50;
+        const da = (2 * half) / NA, dr = (R1 - R0) / NR;
+        const pts = new Float32Array(NA * NR * 2);
+        for (let j = 0; j < NR; j++) {
+          for (let i = 0; i < NA; i++) {
+            const a = -half + (i + 0.5) * da, r = R0 + (j + 0.5) * dr;
+            pts[(j * NA + i) * 2] = Math.sin(a) * r;
+            pts[(j * NA + i) * 2 + 1] = Math.cos(a) * r;
+          }
+        }
+        const h = this._groundHeights(pts, NA, NR);
+        const real = (k, r) => h[k] + (r * r) / (2 * 6371); // the land's own height, without the earth's curve
+        // local tops: the highest point within 1.8 km
+        const tops = [];
+        for (let j = 0; j < NR; j++) {
+          const r = R0 + (j + 0.5) * dr;
+          const nj = Math.ceil(1.8 / dr), ni = Math.ceil(1.8 / (r * da));
+          for (let i = 0; i < NA; i++) {
+            const k = j * NA + i;
+            if (real(k, r) < 6) continue;
+            let top = true;
+            for (let y = Math.max(0, j - nj); y <= Math.min(NR - 1, j + nj) && top; y++) {
+              for (let x = Math.max(0, i - ni); x <= Math.min(NA - 1, i + ni); x++) {
+                const kk = y * NA + x;
+                if (kk !== k && (h[kk] > h[k] || (h[kk] === h[k] && kk < k))) { top = false; break; }
+              }
+            }
+            if (top) tops.push({ i, j, k, r, a: -half + (i + 0.5) * da });
+          }
+        }
+        tops.sort((p, q) => h[q.k] - h[p.k]);
+        tops.length = Math.min(tops.length, 16);
+        if (!tops.length) return;
+        // look again closely round each, 40 m apart
+        const F = 16, step = 0.04;
+        const fine = new Float32Array(F * F * tops.length * 2);
+        tops.forEach((t, n) => {
+          const cx = Math.sin(t.a) * t.r, cz = Math.cos(t.a) * t.r;
+          for (let y = 0; y < F; y++) {
+            for (let x = 0; x < F; x++) {
+              const o = ((n * F + y) * F + x) * 2;
+              fine[o] = cx + (x - (F - 1) / 2) * step;
+              fine[o + 1] = cz + (y - (F - 1) / 2) * step;
+            }
+          }
+        });
+        const hf = this._groundHeights(fine, F * F, tops.length);
+        const found = tops.map((t, n) => {
+          let best = n * F * F;
+          for (let m = n * F * F; m < (n + 1) * F * F; m++) if (hf[m] > hf[best]) best = m;
+          const x = fine[best * 2], z = fine[best * 2 + 1], y = hf[best];
+          const r = Math.hypot(x, z), a = Math.atan2(x, z);
+          const el = Math.atan2(y - camY, r);
+          // how sharply it stands up: its height over the ring 1.5 km round it
+          let ring = 0;
+          for (let q = 0; q < 8; q++) {
+            const rx = x + 1.5 * Math.sin((q * Math.PI) / 4), rz = z + 1.5 * Math.cos((q * Math.PI) / 4);
+            const ri = Math.round((Math.atan2(rx, rz) + half) / da - 0.5), rj = Math.round((Math.hypot(rx, rz) - R0) / dr - 0.5);
+            ring += h[Math.min(NR - 1, Math.max(0, rj)) * NA + Math.min(NA - 1, Math.max(0, ri))] / 8;
+          }
+          const drop = y - ring;
+          // hidden behind a nearer ridge? (its own slopes within 1.2 km don't count)
+          let seen = true;
+          for (let jj = 0; jj < NR && seen; jj++) {
+            const rr = R0 + (jj + 0.5) * dr;
+            if (rr > r - 1.2) break;
+            if (Math.atan2(h[jj * NA + t.i] - camY, rr) > el + 0.002) seen = false;
+          }
+          return { x, y, z, r, a, el, drop, seen };
+        });
+        // the ones the picture shows biggest and sharpest, at least 7 degrees apart
+        const score = (p) => p.el * Math.min(1, Math.max(0, (p.drop - 0.25) / 0.9));
+        const keep = [];
+        for (const p of found.filter((f) => f.seen && f.drop > 0.3).sort((p, q) => score(q) - score(p))) {
+          if (keep.length < 4 && keep.every((k) => Math.abs(k.a - p.a) > 7 * D2R)) keep.push(p);
+        }
+        keep.forEach((p, n) => {
+          // each its own rhythm, from where it stands
+          const u = Math.abs(Math.sin(p.x * 12.9898 + p.z * 78.233) * 43758.5453) % 1;
+          p.periods = [1200 + 1500 * u, 1700 + 1300 * ((u * 7.3) % 1)];
+          p.phases = [u * 40, u * 17 + n];
+          p.sharp = Math.min(1, 0.55 + 0.45 * Math.min(1, (p.drop - 0.3) / 1.0));
+          p.seed = 13.7 * (n + 1) + u * 50;
+        });
+        this.peaks = keep;
+      } catch (e) {
+        console.warn('banner clouds: no peaks found', e);
+        this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+      }
+    }
+
+    /**
+     * Banner clouds now. How much each summit makes: the weather's share (environment.js, `banner`), how sharply the
+     * peak stands up, and a slow rhythm of its own (20 to 50 minutes of real time), so they form and dissolve one by one instead
+     * of all together. They stream along the wind at the clouds, the wind the deck drifts with, and grow longer as
+     * it blows harder.
+     */
+    bannerState(state) {
+      const out = [];
+      if (this.cfg.banners === false || !this.peaks || !this.peaks.length) return out;
+      const w = state.weather;
+      const amount = Math.max(w.banner || 0, this.bannerForce || 0);
+      if (amount <= 0.01) return out;
+      const kmh = Math.hypot(w.deckX || 0, w.deckZ || 0);
+      const wx = kmh > 0.5 ? w.deckX / kmh : 1, wz = kmh > 0.5 ? w.deckZ / kmh : 0;
+      // real seconds, not the scene's clock: in a time-lapse or the demo they must not flicker on and off
+      const t = state.time;
+      for (const p of this.peaks) {
+        const beat = 0.5 + 0.5 * Math.sin(t / p.periods[0] * 2 * Math.PI + p.phases[0]) * Math.cos(t / p.periods[1] * 2 * Math.PI + p.phases[1]);
+        // even in the best weather each one is gone for part of its rhythm
+        const x = amount * p.sharp * (0.25 + 0.95 * beat);
+        const s = Math.min(1, Math.max(0, (x - 0.35) / 0.4));
+        const strength = s * s * (3 - 2 * s);
+        if (strength < 0.02) continue;
+        const len = (1.6 + 2.6 * Math.min(1, Math.max(0, (kmh - 10) / 50))) * (0.6 + 0.4 * strength);
+        out.push({ p, strength, len, wx, wz });
+      }
+      return out;
+    }
+
+    _bannerUniforms(p, state) {
+      const list = this.bannerState(state);
+      // how far the air has flowed through them (km, real time at the cloud wind's speed), wrapped at 2 km, where
+      // their noise repeats along the wind, so the wrap never shows
+      const w = state.weather;
+      const kmh = Math.hypot(w.deckX || 0, w.deckZ || 0);
+      const dt = this._bannerT == null ? 0 : Math.min(Math.max(state.time - this._bannerT, 0), 1);
+      this._bannerT = state.time;
+      this._bannerFlow = ((this._bannerFlow || 0) + (dt * kmh) / 3600) % 2;
+      p.set('uBannerFlow', this._bannerFlow);
+      p.set('uBanners', list.length);
+      if (!list.length) return;
+      const A = new Float32Array(16), B = new Float32Array(16);
+      list.forEach((b, i) => {
+        A.set([b.p.x, b.p.y, b.p.z, b.strength], i * 4);
+        B.set([b.wx, b.wz, b.len, b.p.seed], i * 4);
+      });
+      p.set('uBannerA', A);
+      p.set('uBannerB', B);
+    }
+
     /** What the bake and the shadows need to know of the road. Returns the textures to bind. */
     _roadUniforms(p) {
       p.set('uRoadOn', this.roadMap ? 1 : 0);
@@ -485,6 +640,15 @@
       prog.set('uCamPos', [0, r.cameraAltitude, 0]);
       const seed = r.seed | 0;
       prog.set('uSeedOff', [((seed * 127.1) % 1000) + 13.7, ((seed * 311.7) % 1000) + 41.3]);
+      const turn = this.rangeTurn(w, h);
+      prog.set('uRangeTurn', [Math.cos(turn), Math.sin(turn)]);
+    }
+
+    /** How far the great range is turned (radians, positive to the right). A window this wide spans two screens side
+     *  by side (as the card in main.js assumes), and the sharpest peak would stand on the bezel between them. A
+     *  resize bakes the land again, so this follows the window. */
+    rangeTurn(w = this.w, h = this.h) {
+      return w / Math.max(1, h) > 2.5 ? (this.cfg.render.spanTurnDeg || 0) * D2R : 0;
     }
 
     _bind(prog, textures) {
@@ -729,6 +893,7 @@
         p.set('uPlumeB', L.plumeB);
         p.set('uPlumeC', L.plumeC);
       }
+      this._bannerUniforms(p, state); // banner clouds streaming from the high summits
       p.set('uAirExt', 0.004 * w.haze + 0.0022 * w.valleyHaze);
       this._bind(p, {
         uG0: this.gbuf.tex[0],
@@ -906,8 +1071,36 @@
     }
 
     /**
-     * One-time read of the house-light map to pick a few village houses whose
-     * chimneys can smoke at cooking times (positions in world space).
+     * Houses (each {t km away, a its azimuth, x, y, z}) into villages, each smoking from the house nearest its middle; at
+     * most 14 of them, from every part of the view: the nearest village in each of seven slices of it, then the next.
+     */
+    static villageChimneys(houses, hfov) {
+      const sorted = Array.from(houses).sort((p, q) => p.t - q.t);
+      const villages = [];
+      for (const pt of sorted) {
+        const vg = villages.find((g) => Math.hypot(g.x - pt.x, g.z - pt.z) < 0.6);
+        if (vg) vg.houses.push(pt);
+        else villages.push({ x: pt.x, z: pt.z, houses: [pt] });
+      }
+      const slices = Array.from({ length: 7 }, () => []);
+      for (const vg of villages) {
+        const mx = vg.houses.reduce((s, p) => s + p.x, 0) / vg.houses.length;
+        const mz = vg.houses.reduce((s, p) => s + p.z, 0) / vg.houses.length;
+        const home = vg.houses.reduce((p, q) => (Math.hypot(p.x - mx, p.z - mz) <= Math.hypot(q.x - mx, q.z - mz) ? p : q));
+        const k = Math.min(6, Math.max(0, Math.floor((home.a / hfov + 0.5) * 7)));
+        slices[k].push({ x: home.x, y: home.y, z: home.z }); // nearest first in each, as the villages were made
+      }
+      const out = [];
+      for (let round = 0; out.length < 14 && slices.some((s) => s.length > round); round++) {
+        for (const s of slices) if (s[round] && out.length < 14) out.push(s[round]);
+      }
+      return out;
+    }
+
+    /**
+     * One-time read of the house-light map for the villages in view: a chimney in each, across the whole picture and out
+     * to the far side of the valley, so smoke can rise from any of them (life.js decides when and how much). It used to
+     * take the ten nearest houses, which were all in the one or two villages closest by, and the rest never smoked.
      */
     _findSmokeSources() {
       const gl = this.gl;
@@ -936,11 +1129,23 @@
           cands = all.filter((c) => c[2] > least);
           if (cands.length >= 40) break;
         }
-        // need distances (nearest villages first). Read G0 once for just the rows these
-        // candidates and their occlusion test need, instead of hundreds of 1-pixel reads
-        // (each one stalls the page until the GPU catches up)
-        cands.sort((a, b) => a[1] - b[1] + (Math.random() - 0.5) * h * 0.1);
-        const pick = cands.slice(0, 400);
+        // the best covered pixel in each small patch of the picture, so a big village close by leaves room for the rest
+        const cells = new Map();
+        for (const c of cands) {
+          const k = ((c[0] / 8) | 0) * 8192 + ((c[1] / 4) | 0);
+          const o = cells.get(k);
+          if (!o || c[2] > o[2]) cells.set(k, c);
+        }
+        let pick = [...cells.values()];
+        if (pick.length > 2000) {
+          for (let i = pick.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [pick[i], pick[j]] = [pick[j], pick[i]];
+          }
+          pick = pick.slice(0, 2000);
+        }
+        // their distances: G0 read once for just the rows these and their occlusion test need, instead of hundreds of
+        // 1-pixel reads (each one stalls the page until the GPU catches up)
         let y0 = h;
         let y1 = 0;
         for (const c of pick) {
@@ -961,8 +1166,9 @@
         for (const [x, y] of pick) {
           const t = dist(x, y);
           // Villages across the valley too: smoke is drawn in 3D, so from behind a nearer ridge it shows rising above
-          // it, as it would. Only one hidden right up past its first hundred metres or so is no use.
-          if (!(t > 1.5 && t < 20)) continue;
+          // it, as it would. Only one hidden right up past its first hundred metres or so is no use, and beyond 16 km
+          // a village's smoke is lost in the haze.
+          if (!(t > 1.5 && t < 16)) continue;
           let blocked = true;
           for (const up of [5, 12, 22]) {
             if (y + up >= h) break;
@@ -973,16 +1179,10 @@
           const a = (x - 0.5 * w) * v.pxAng;
           const ty = (y - v.horizonY * h) * v.pxAng;
           const n = Math.hypot(Math.sin(a), ty, Math.cos(a));
-          found.push({ t, x: (Math.sin(a) / n) * t, y: v.camY + (ty / n) * t, z: (Math.cos(a) / n) * t });
+          found.push({ t, a, x: (Math.sin(a) / n) * t, y: v.camY + (ty / n) * t, z: (Math.cos(a) / n) * t });
         }
-        // closest houses make the most readable plumes; keep them a few hundred metres apart
-        found.sort((p1, p2) => p1.t - p2.t);
-        const out = [];
-        for (const pt of found) {
-          if (out.every((o) => Math.hypot(o.x - pt.x, o.z - pt.z) > 0.3)) out.push({ x: pt.x, y: pt.y, z: pt.z });
-          if (out.length >= 10) break;
-        }
-        this.smokeSources = out;
+        this.smokeSources = Renderer.villageChimneys(found, w * v.pxAng);
+        const out = this.smokeSources;
         if (this.life) this.life.setSmokeSources(out);
       } catch (e) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);

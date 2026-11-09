@@ -346,6 +346,7 @@
               ['Shooting stars', 'shootingStars', 'Meteors and satellites. The stars stay'],
               ['Village lights', 'lights', 'Lights in the houses at night'],
               ['Forest mist', 'mist', 'Mist rising off the forest when the air is humid or after rain'],
+              ['Peak clouds', 'banners', 'Clouds streaming downwind from the high peaks, when the air is moist and the wind blows up there'],
               ['Village smoke', 'smoke', 'Smoke from the houses, and their cooking fires after dark'],
               ['Burning fields', 'fires', 'Now and then a field burning on a hill'],
             ].map(([label, key, tip]) => ({
@@ -376,6 +377,8 @@
             ['Geese', () => life.summon('geese'), 'Birds leave in rain, snow, fog and at night'],
             ['Meteor', () => life.summon('meteor'), 'Shows in a dark sky'],
             ['Forest mist', () => life.summon('mist'), 'Mist rising off the forest as after rain, drifting with the wind. Stays for a few minutes'],
+            ['Demo', () => (cfg.demo = !cfg.demo), 'A year in two minutes, over and over; press again to end it'],
+            ['Peak clouds', () => { const R = renderer(); if (R) { R.bannerForce = 1; clearTimeout(R._bannerForceEnd); R._bannerForceEnd = setTimeout(() => (R.bannerForce = 0), 600000); } }, 'Clouds streaming from the high peaks along the wind at the clouds, whatever the weather, for ten minutes'],
             ['Village smoke', () => life.summon('smoke'), 'Smoke from houses on the hills, where houses are in view'],
             ['Burning field', () => life.summon('fire'), 'A field burning on a hill: a tall plume, glowing at its foot after dark'],
             ['Satellite', () => life.summon('satellite'), 'Shows in a dark sky'],

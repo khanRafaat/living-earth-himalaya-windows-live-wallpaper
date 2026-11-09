@@ -98,6 +98,10 @@ uniform vec4 uPlumeC[16];  // its own noise, its foot on the picture (px), which
 uniform int uPlumeSteps;
 uniform float uTime;       // s, wrapped at 2400
 uniform float uHeadE;      // how bright a lamp's light is against this exposure (renderer.js): the glow of a fire
+uniform int uBanners;      // banner clouds streaming from the high summits now (renderer.js _bannerUniforms)
+uniform vec4 uBannerA[4];  // the summit (km, scene axes), how much cloud it makes now (0..1)
+uniform vec4 uBannerB[4];  // which way the wind blows there (unit vector, scene x and z), the banner's length (km), its own noise
+uniform float uBannerFlow; // how far the air has flowed through them (km), wrapped at 2 km where their noise repeats
 out vec4 o;
 
 vec2 slab(float y0, float ry, float a, float b) {
@@ -227,7 +231,8 @@ float smokeDensity(vec3 p, vec4 A, vec4 B, float seed, float field) {
   vec2 d = vec2(dot(rel, wd) / sqrt(1.0 + slope * slope), dot(rel, vec2(-wd.y, wd.x)) / (1.0 - 0.5 * spread)) / (B.x * rk);
   float top = field > 0.5 ? 0.7 : mix(0.3, 0.65, k2.z);
   // a village's is thin where it leaves the chimneys and gathers as it rises; a field's pours up thick
-  float env = exp(-dot(d, d) * 2.0) * smoothstep(-0.05, mix(0.45, 0.03, field), h) * (1.0 - smoothstep(top, 1.0, h));
+  // and fades out softly as it climbs, a village's over most of its height (a sharp top read as a flat lid)
+  float env = exp(-dot(d, d) * 2.0) * smoothstep(-0.05, mix(0.45, 0.03, field), h) * (1.0 - smoothstep(top * mix(0.45, 1.0, field), 1.0, h));
   if (env < 0.04) return 0.0;
   float s = field > 0.5 ? 4.0 : mix(4.0, 7.5, k2.y); // puffs of 35 to 60 m in a village's smoke, 60 m in a field's
   vec3 q = (p + uMistWind) * s + seed;
@@ -242,11 +247,11 @@ float smokeDensity(vec3 p, vec4 A, vec4 B, float seed, float field) {
     // torn into streaks a few hundred metres long, drawn out along the wind, that move with it
     vec2 sw = vec2(dot(rel, wd) * 0.35, dot(rel, vec2(-wd.y, wd.x)));
     float big = textureLod(uNoise3D, vec3(sw.x, p.y * 0.8, sw.y) * 1.6 + vec3(seed * 0.37, seed * 0.11, 0.0) + uMistWind * 0.5, 0.0).a;
-    c *= smoothstep(0.35, 0.75, big);
+    c *= mix(0.45, 1.0, smoothstep(0.3, 0.75, big)); // never right through it: a small one far off would show a hole
     float tf = mix(4.0, 10.0, k2.x);                   // a few hearths, or many close together
     float th = textureLod(uNoise3D, vec3(rel.x * tf + seed, 0.37, rel.y * tf + seed * 0.7), 0.0).r;
-    c *= mix(mix(1.0, smoothstep(0.4, 0.75, th), k.x), 1.0, smoothstep(0.1, mix(0.3, 0.6, k2.y), hc));
-    return c * 2.4 / rk;
+    c *= mix(mix(1.0, smoothstep(0.4, 0.75, th), k.x * 0.6), 1.0, smoothstep(0.1, mix(0.3, 0.6, k2.y), hc));
+    return c * 2.4 / rk * (1.0 - 0.45 * hc); // thinning as it rises and spreads
   }
   // a field's smoke pours up whole, in billows
   float c = clamp(remap(n, 1.0 - env * mix(0.82, 0.55, hc), 1.0, 0.0, 1.0), 0.0, 1.0);
@@ -257,6 +262,54 @@ float smokeDensity(vec3 p, vec4 A, vec4 B, float seed, float field) {
 
 float plumeD(vec3 p, vec4 A, vec4 B, float seed, int kind) {
   return kind == 0 ? plumeDensity(p, A, B, seed) : smokeDensity(p, A, B, seed, kind == 2 ? 1.0 : 0.0);
+}
+
+// A banner cloud ("cloud factory"): moist air carried past a steep summit is drawn up in the eddy on its lee side and
+// condenses there, so a cloud streams downwind from the top while the sky around stays clear. The cloud stays where it
+// is and the air flows through it: its envelope is fixed to the summit and along the wind, its billows travel with the
+// cloud wind (uWind) and are torn apart towards the far end, where the air sinks and dries again. It forms in thin
+// shreds right at the top, is fullest a third of the way out, hangs a little below the summit and sinks slowly
+// downstream. In the summit's frame: u along the wind, v across it, y up from the summit (km).
+vec3 bannerFrame(vec3 p, vec4 A, vec4 B) {
+  vec3 rel = p - A.xyz;
+  return vec3(dot(rel.xz, B.xy), rel.y, dot(rel.xz, vec2(-B.y, B.x)));
+}
+float bannerDensity(vec3 p, vec4 A, vec4 B) {
+  vec3 l = bannerFrame(p, A, B);
+  float len = B.z;
+  float f = l.x / len;
+  if (f < -0.15 || f > 1.0) return 0.0;
+  float fc = max(f, 0.0);
+  float yc = -0.08 - 0.16 * len * fc;              // where its middle hangs
+  float hv = 0.09 + 0.2 * len * sqrt(fc);          // half its depth
+  float hw = 0.1 + 0.2 * len * fc;                 // half its width across the wind
+  vec2 e2 = vec2(l.z / hw, (l.y - yc) / hv);
+  // whole right at the summit, where it forms in the eddy behind it, thinning out gradually downwind
+  float env = exp(-dot(e2, e2)) * smoothstep(-0.1, 0.0, f) * (1.0 - smoothstep(0.55, 1.0, f)) * mix(1.0, 0.65, fc) * A.w;
+  if (env < 0.03) return 0.0;
+  // drawn out along the wind into fibres and streaks, as a banner cloud is: the air flows along them, so they need no
+  // carrying, and they bend a little along their length
+  float st = textureLod(uNoise3D, vec3(l.z * 2.4 + B.w, l.y * 3.0, fc * 0.35 + B.w * 0.7), 0.0).b;
+  env *= mix(1.0, 0.3 + 0.7 * smoothstep(0.3, 0.7, st), smoothstep(0.0, 0.25, fc));
+  // In its own frame: long along the wind, fine across it and up, the air flowing through at the wind's speed. So its
+  // lumps are drawn out into the flag shape of a banner cloud instead of round billows.
+  vec3 q = vec3((l.x - uBannerFlow) * 0.5, l.y * 2.2, l.z * 1.6) + B.w;
+  float c = clamp(remap(textureLod(uNoise3D, q, 0.0).r, 1.0 - env * 0.95, 1.0, 0.0, 1.0), 0.0, 1.0);
+  if (c <= 0.0) return 0.0;
+  float w = textureLod(uNoise3D, q * vec3(2.0, 3.2, 3.2) + 0.37, 0.0).g;
+  // fine wisps eat its edges, more of it towards the far end where it falls apart
+  return clamp(remap(c, w * (0.35 + 0.4 * fc), 1.0, 0.0, 1.0), 0.0, 1.0);
+}
+// The summit's own shade: a steep cone under the summit stands in for the peak. 0 in its shadow, 1 in the light.
+float bannerLit(vec3 p, vec4 A, vec3 toL) {
+  float lit = 1.0;
+  for (int k = uZero; k < 3; k++) {
+    float s = 0.25 * pow(2.6, float(k));
+    vec3 q = p + toL * s;
+    float cone = A.y - 1.3 * length(q.xz - A.xz);
+    lit = min(lit, smoothstep(-0.08, 0.08, q.y - cone));
+  }
+  return lit;
 }
 
 void main() {
@@ -414,6 +467,63 @@ void main() {
     }
   }
 
+  // ---------------- banner clouds on the high summits ----------------
+  // Marched here into a light and a transmittance of their own, then laid into the deck below at the distance where
+  // the ray meets them, so deck cloud nearer than the summit passes in front of them and cloud beyond stays behind.
+  vec3 Lb = vec3(0.0);
+  float Tb = 1.0;
+  float sB = 1e9;
+  if (uBanners > 0 && T > 0.01) {
+    float phS = (phaseHG(cosS, 0.62) * 0.7 + phaseHG(cosS, -0.25) * 0.3) * 4.0 * PI;
+    float phM = (phaseHG(cosM, 0.62) * 0.7 + phaseHG(cosM, -0.25) * 0.3) * 4.0 * PI;
+    float darken = mix(1.0, 0.32, uCloudDark);
+    for (int i = uZero; i < 4; i++) {
+      if (i >= uBanners || Tb < 0.02) break;
+      vec4 A = uBannerA[i];
+      vec4 B = uBannerB[i];
+      float len = B.z;
+      // the box it can fill, in its own frame
+      vec3 ol = bannerFrame(uCamPos, A, B);
+      vec3 dl = vec3(dot(rd.xz, B.xy), rd.y, dot(rd.xz, vec2(-B.y, B.x)));
+      vec3 il = 1.0 / mix(dl, vec3(1e-6), lessThan(abs(dl), vec3(1e-6)));
+      vec3 lo = vec3(-0.15 * len, -0.3 - 0.62 * len, -0.25 - 0.4 * len);
+      vec3 hi = vec3(len, 0.12 + 0.25 * len, 0.25 + 0.4 * len);
+      vec3 ta = (lo - ol) * il;
+      vec3 tb = (hi - ol) * il;
+      vec3 tn = min(ta, tb);
+      vec3 tf = max(ta, tb);
+      float a0 = max(max(tn.x, tn.y), max(tn.z, 0.0));
+      float b0 = min(min(tf.x, tf.y), min(tf.z, tEnd));
+      if (b0 <= a0) continue;
+      sB = min(sB, a0);
+      float dtb = (b0 - a0) / float(uPlumeSteps + 4);
+      for (int k = uZero; k < 20; k++) {
+        if (k >= uPlumeSteps + 4 || Tb < 0.02) break;
+        float s = a0 + (float(k) + jit) * dtb;
+        vec3 p = uCamPos + rd * s;
+        float d = bannerDensity(p, A, B);
+        if (d < 1e-3) continue;
+        float sigma = d * 6.0;
+        // its own billows shade it, and the peak shades its far side from the light
+        float od = (bannerDensity(p + uLightMarchDir * 0.12, A, B) * 0.12 + bannerDensity(p + uLightMarchDir * 0.4, A, B) * 0.28) * 6.0;
+        float odUp = bannerDensity(p + vec3(0.0, 0.25, 0.0), A, B) * 0.25 * 6.0;
+        float Tl = (exp(-od * 1.4) + 0.3 * exp(-od * 0.45) + 0.08 * exp(-od * 0.15)) / 1.38;
+        float powder = mix(1.0 - 0.5 * exp(-(od + sigma * 0.1) * 5.0), 1.0, smoothstep(0.3, 0.95, max(cosS, cosM)));
+        float peakSh = bannerLit(p, A, uLightMarchDir);
+        vec3 direct = (uSunE * transmittance(p.y, uSunDir.y) * phS * (uKeyIsSun > 0.5 ? peakSh : 1.0)
+                     + uMoonE * transmittance(p.y, uMoonDir.y) * phM * (uKeyIsSun > 0.5 ? 1.0 : peakSh)) * Tl * powder * 0.26;
+        direct *= mix(1.0, 0.12, uOvercast);
+        float up = clamp((bannerFrame(p, A, B).y + 0.6) / 0.8, 0.0, 1.0);
+        vec3 amb = mix(skyZen * mix(0.45, 1.0, up) + skyHor * 0.22, greyAmb, uOvercast) * mix(0.45, 1.0, exp(-odUp));
+        vec3 Sc = (direct + amb) * darken;
+        Sc = mix(Sc, skyHor, (1.0 - exp(-s * uAirExt)) * 0.8);
+        float Ti = exp(-sigma * dtb);
+        Lb += Tb * Sc * (1.0 - Ti);
+        Tb *= Ti;
+      }
+    }
+  }
+
   // ---------------- clouds ----------------
   if (uCoverage > 0.015 && T > 0.01) {
     vec2 seg = slab(uCamPos.y, rd.y, uCloudBase - 0.9, uCloudTop);
@@ -433,6 +543,11 @@ void main() {
       float belly = -1.0;
       for (int i = uZero; i < uCloudSteps + uCloudFine; i++) {
         if (s >= seg.y || T < 0.015) break;
+        if (s > sB) { // the banner cloud lies in front of the deck from here on
+          L += T * Lb;
+          T *= Tb;
+          sB = 1e9;
+        }
         vec3 p = uCamPos + rd * s;
         if (fine == 0) {
           if (cloudBulk(p) <= 0.0) {
@@ -459,17 +574,19 @@ void main() {
           // The first look towards the light sees the billows, so they shade each other. Further on,
           // only the mass of the cloud matters. Under a thick deck little direct light survives
           // (see below), so that costly work would show no difference.
+          // The two meet over a band of overcast, so a change of weather goes smoothly from one to the other: switched at
+          // one value, the clouds turned a twentieth darker in a single frame as the sky closed in.
           float od = 0.0;
           float ls = 0.2;
-          if (uOvercast < 0.7) {
+          float thick = smoothstep(0.6, 0.7, uOvercast);
+          if (thick < 1.0) {
             od = cloudDensity(p + uLightMarchDir * 0.18) * 0.18;
             for (int j = uZero; j < uLightSteps; j++) {
               od += cloudBulk(p + uLightMarchDir * ls * 1.5) * ls;
               ls *= 2.6;
             }
-          } else {
-            od = cloudBulk(p + uLightMarchDir * 0.6) * 1.5;
           }
+          if (thick > 0.0) od = mix(od, cloudBulk(p + uLightMarchDir * 0.6) * 1.5, thick);
           // Three orders of scattering: crisp shadow from the first, the soft inner glow from the others
           float Tl = (exp(-od * 3.5) + 0.3 * exp(-od * 1.1) + 0.08 * exp(-od * 0.35)) / 1.38;
           // Dark edges where little light has gathered yet, except looking towards the sun (silver lining)
@@ -500,6 +617,10 @@ void main() {
         dt *= 1.3;
       }
     }
+  }
+  if (sB < 1e8) { // no deck cloud in front of it on this ray
+    L += T * Lb;
+    T *= Tb;
   }
 
   vec4 cur = vec4(min(L, vec3(6e4)), T);

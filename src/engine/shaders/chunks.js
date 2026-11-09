@@ -137,6 +137,7 @@ float ridged(vec2 p, int oct) {
   // ---------------- terrain ----------------
   S.terrain = `
 uniform vec2 uSeedOff;
+uniform vec2 uRangeTurn; // cos and sin of the angle the great range is turned by (see terrainBase)
 const float EARTH_R = 6371.0;
 const float TREE_FAR = 6.5;
 
@@ -165,12 +166,17 @@ float terrainBase(vec2 p, int oct) {
   // the forested ridge just below the viewpoint
   float nearR = exp(-pow((r - 2.8) / 1.4, 2.0)) * front;
   h = mix(h, 2.42 + 0.4 * foot + 0.35 * (spur - 0.38), nearR * 0.9);
-  // The Great Himalaya: an arc of 7–8.5 km peaks about 20–28 km away
-  float rr = 21.5 + 2.5 * sin(ang * 2.3 + uSeedOff.y * 0.31) + 1.5 * sin(ang * 5.3 + 1.7);
+  // The Great Himalaya: an arc of 7–8.5 km peaks about 20–28 km away. It can be turned about the eye by uRangeTurn
+  // (cos, sin; turned to the right for a positive angle): across two screens the sharpest peak would otherwise stand
+  // exactly on the bezel. The foothills, the road and the rock stay where they are; the range still rises in front.
+  vec2 pm = vec2(p.x * uRangeTurn.x - p.y * uRangeTurn.y, p.x * uRangeTurn.y + p.y * uRangeTurn.x);
+  vec2 qm = pm + uSeedOff;
+  float angM = atan(pm.x, pm.y);
+  float rr = 21.5 + 2.5 * sin(angM * 2.3 + uSeedOff.y * 0.31) + 1.5 * sin(angM * 5.3 + 1.7);
   float m = smoothstep(rr - 9.0, rr - 0.5, r) * (1.0 - 0.3 * smoothstep(rr + 10.0, rr + 45.0, r)) * front;
   if (m > 0.0005) {
-    float rid = ridged(q * 0.072 + vec2(7.3, 1.9), min(oct + 1, 11));
-    float massif = 0.55 + 0.6 * (noise2(q * 0.024 + 3.3) * 0.5 + 0.5);
+    float rid = ridged(qm * 0.072 + vec2(7.3, 1.9), min(oct + 1, 11));
+    float massif = 0.55 + 0.6 * (noise2(qm * 0.024 + 3.3) * 0.5 + 0.5);
     h += m * (6.4 * pow(clamp(rid, 0.0, 1.2), 1.55) * massif + 0.4 * foot);
   }
   // keep the immediate foreground below the viewpoint

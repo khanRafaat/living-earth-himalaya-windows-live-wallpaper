@@ -1047,7 +1047,7 @@
       p.set('uSeason', state.season);
       p.set('uMieScale', w.haze);
       const snowAt = smooth(state.snowLine - 0.18, state.snowLine + 0.28, R.cfg.render.cameraAltitude);
-      p.set('uSnowTree', snowAt * 0.85);
+      p.set('uSnowTree', snowAt * 0.92);
       const tc = norm([-this.site[0], 0, -this.site[2]]);
       p.set('uToCam', [tc[0], tc[2]]);
       p.set('uNight', state.night);

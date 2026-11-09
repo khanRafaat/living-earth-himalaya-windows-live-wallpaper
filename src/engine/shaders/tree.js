@@ -478,8 +478,10 @@ void main() {
     if (alpha < 0.01) discard;
   }
 
-  // snow on the upper sides, and the dark sheen of wet leaves and bark
-  alb = mix(alb, vec3(0.82, 0.85, 0.9), uSnowTree * smoothstep(0.35, 0.85, n.y));
+  // snow on the upper sides, lying in clumps on every leaf and branch that faces up at all, more on some leaves than
+  // on others; and the dark sheen of wet leaves and bark
+  float lodged = smoothstep(-0.05 + 0.25 * vr, 0.45 + 0.2 * vr, n.y);
+  alb = mix(alb, vec3(0.82, 0.85, 0.9), uSnowTree * lodged);
   alb *= 1.0 - 0.3 * uWet;
 
   vec3 sunL = uTreeL[0].rgb;

@@ -5,8 +5,10 @@
 //
 //   1. Opening the app shows the setup window: location (found automatically or chosen by hand), when to
 //      animate, what is in the scene (each part can be turned off: road and how much traffic, the tree and its flying
-//      leaves, birds, shooting stars, village lights, forest mist, village smoke, burning fields), whether the clock
+//      leaves, birds, shooting stars, village lights, forest mist, clouds on the peaks, village smoke, burning fields), whether the clock
 //      and weather panel shows, its corner and size, quality, Start with Windows, and whether Windows' own background shows the scene too.
+//      "Watch the demo" (and the tray menu's "Play the demo") plays a year in two minutes, over and over, until it is
+//      turned off; it is not saved, so the next start is the real time and weather again.
 //      "Set wallpaper" starts the wallpaper. When Windows starts the app at sign-in (--startup), it goes
 //      straight to the wallpaper with the saved settings.
 //   2. Starts Edge on index.html with its own profile, at below-normal priority.
@@ -46,8 +48,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Khan Rafaat Abtahe")]
 [assembly: AssemblyCopyright("© 2026 Khan Rafaat Abtahe. MIT licence")]
 [assembly: AssemblyDescription("Living Earth Himalaya live wallpaper. Author: Khan Rafaat Abtahe")]
-[assembly: AssemblyVersion("2.1.0.0")]
-[assembly: AssemblyFileVersion("2.1.0.0")]
+[assembly: AssemblyVersion("2.2.0.0")]
+[assembly: AssemblyFileVersion("2.2.0.0")]
 
 namespace LivingEarth
 {
@@ -152,6 +154,7 @@ namespace LivingEarth
         public Place Detected; // the last place found automatically
         public bool Road = true, Birds = true, Leaves = true; // what is in the scene
         public bool Tree = true, Mist = true, Smoke = true, Fires = true, Lights = true, Stars = true;
+        public bool Banners = true; // clouds streaming from the high peaks in the wind
         public bool Panel = true; // the clock and weather panel
         public string Corner = "right-bottom";
         public string PanelSize = "medium";
@@ -201,6 +204,7 @@ namespace LivingEarth
             s.Leaves = !(v.TryGetValue("leaves", out x) && x == "off");
             s.Tree = !(v.TryGetValue("tree", out x) && x == "off");
             s.Mist = !(v.TryGetValue("mist", out x) && x == "off");
+            s.Banners = !(v.TryGetValue("banners", out x) && x == "off");
             s.Smoke = !(v.TryGetValue("smoke", out x) && x == "off");
             s.Fires = !(v.TryGetValue("fires", out x) && x == "off");
             s.Lights = !(v.TryGetValue("lights", out x) && x == "off");
@@ -224,6 +228,7 @@ namespace LivingEarth
             b.Append("leaves=").Append(Leaves ? "on" : "off").Append("\r\n");
             b.Append("tree=").Append(Tree ? "on" : "off").Append("\r\n");
             b.Append("mist=").Append(Mist ? "on" : "off").Append("\r\n");
+            b.Append("banners=").Append(Banners ? "on" : "off").Append("\r\n");
             b.Append("smoke=").Append(Smoke ? "on" : "off").Append("\r\n");
             b.Append("fires=").Append(Fires ? "on" : "off").Append("\r\n");
             b.Append("lights=").Append(Lights ? "on" : "off").Append("\r\n");
@@ -459,6 +464,10 @@ namespace LivingEarth
         private const int BusyPercent = 65;        // whole-PC CPU that counts as "the PC is working hard"
         private const int BusySeconds = 3;         // ...for this long, so a short spike doesn't count
         private const int BusyHoldSeconds = 20;    // stay at the slow pace this long after the CPU calms down
+        private const int WakeQuietSeconds = 20;   // after the PC wakes, no frames for this long: the graphics card and the
+                                                   // lock screen have the screens to themselves while they come back
+        private const int SignInMinSeconds = 15;   // at sign-in, wait at least this long before starting the scene...
+        private const int SignInMaxSeconds = 90;   // ...and then for 3 calm seconds in a row, but no longer than this
         private const int AttachTimeoutSeconds = 60;
         private const int QuickDeathSeconds = 30;  // Edge going away sooner than this counts as failing to start
         private const int MaxQuickDeaths = 3;      // ...and this many in a row stops the trying, so the screen can't keep flashing
@@ -481,19 +490,21 @@ namespace LivingEarth
 
         private readonly System.Windows.Forms.Timer timer;
         private readonly NotifyIcon tray;
-        private readonly ToolStripMenuItem statusItem, desktopItem, maximizedItem, pausedItem, startupItem;
+        private readonly ToolStripMenuItem statusItem, desktopItem, maximizedItem, pausedItem, startupItem, demoItem;
         private readonly Control invoker;
         private readonly EventWaitHandle showEvent;
         private readonly RegisteredWaitHandle showWait;
         private readonly int ownPid = Process.GetCurrentProcess().Id;
         private SetupForm setup;
         private bool running, quitting, detecting, toldUnsupported;
+        private bool demo; // the demo is playing: a year in two minutes. Not saved
         private DateTime nextDetect = DateTime.MinValue;
 
         private IntPtr job, edgeProcess, wallpaper, progman, iconView, workerW, focusBeforeLaunch;
         private DateTime startedAt, nextLaunch = DateTime.MinValue;
         private TimeSpan backoff = TimeSpan.FromSeconds(5);
         private bool attached, handedOver, locked, desktopInFront = true;
+        private DateTime quietUntil = DateTime.MinValue; // no frames before this: going to sleep, or just woken
         private int placeTick, quickDeaths, reorders, placeEvery;
         private readonly WindowsBackground background; // null in tests, which must never change the real one
         private DateTime nextBackground = DateTime.MinValue;
@@ -560,18 +571,25 @@ namespace LivingEarth
             statePath = Path.Combine(hostDir, "state.js");
             settingsPath = Path.Combine(dataDir, "settings.ini");
             logPath = Path.Combine(dataDir, "host.log");
-            // Starting again is what people do after a failure: keep the log of the run that failed
-            try { if (File.Exists(logPath)) File.Copy(logPath, logPath + ".previous", true); }
+            // Starting again is what people do after a failure: keep the logs of the runs before (three, because a restart
+            // with the power button and then another start used to overwrite the one that showed what went wrong)
+            try
+            {
+                string last = logPath + ".previous", second = last + "-2", third = last + "-3";
+                if (File.Exists(second)) File.Copy(second, third, true);
+                if (File.Exists(last)) File.Copy(last, second, true);
+                if (File.Exists(logPath)) File.Copy(logPath, last, true);
+            }
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
             File.WriteAllText(logPath, "");
             LogStart(args);
             settings = Settings.Load(settingsPath);
 
-            bool silent = false;
+            bool silent = false, atSignIn = false;
             foreach (string a in args)
             {
-                if (a == "--startup") silent = true;
+                if (a == "--startup") silent = atSignIn = true;
                 else if (a.StartsWith("--mode=")) { settings.Mode = Settings.ParseMode(a.Substring(7)); saveSettings = false; silent = true; }
                 else if (a.StartsWith("--query=")) { queryOverride = a.Substring(8); saveSettings = false; silent = true; }
                 else if (a.StartsWith("--edge-arg=")) { extraEdgeArgs += " " + a.Substring(11); }
@@ -586,6 +604,7 @@ namespace LivingEarth
             statusItem = new ToolStripMenuItem("Starting...") { Enabled = false };
             var settingsItem = new ToolStripMenuItem("Settings...", null, delegate { ShowSetup(); });
             settingsItem.Font = new Font(settingsItem.Font, FontStyle.Bold);
+            demoItem = new ToolStripMenuItem("Play the demo: a year in two minutes", null, delegate { SetDemo(!demo); });
             desktopItem = ModeItem("Animate only on the empty desktop (lightest)", RestMode.Desktop);
             maximizedItem = ModeItem("Animate unless a window is maximized", RestMode.Maximized);
             pausedItem = ModeItem("Pause (keep the current picture)", RestMode.Paused);
@@ -593,7 +612,7 @@ namespace LivingEarth
             var aboutItem = new ToolStripMenuItem("About Living Earth Himalaya", null, delegate { AboutForm.ShowOnce(); });
             menu.Items.AddRange(new ToolStripItem[]
             {
-                statusItem, new ToolStripSeparator(), settingsItem, new ToolStripSeparator(), desktopItem, maximizedItem, pausedItem,
+                statusItem, new ToolStripSeparator(), settingsItem, demoItem, new ToolStripSeparator(), desktopItem, maximizedItem, pausedItem,
                 new ToolStripSeparator(), startupItem, aboutItem, new ToolStripMenuItem("Exit (back to the normal wallpaper)", null, delegate { Quit(); })
             });
             tray = new NotifyIcon { Icon = AppIcon, Text = "Living Earth Himalaya", ContextMenuStrip = menu, Visible = false };
@@ -613,6 +632,7 @@ namespace LivingEarth
 
             SystemEvents.SessionSwitch += OnSessionSwitch;
             SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
+            SystemEvents.PowerModeChanged += OnPowerModeChanged;
 
             timer = new System.Windows.Forms.Timer { Interval = 1000 };
             timer.Tick += OnTick;
@@ -620,7 +640,8 @@ namespace LivingEarth
             // After the message loop starts, so that quitting from here ends it
             invoker.BeginInvoke(new MethodInvoker(delegate
             {
-                if (silent) StartWallpaper();
+                if (atSignIn) StartWhenSettled();
+                else if (silent) StartWallpaper();
                 else ShowSetup();
             }));
         }
@@ -662,14 +683,24 @@ namespace LivingEarth
                 (p == null ? "default place" : p.Detail + (settings.AutoLocation ? " (automatic)" : " (chosen)")) +
                 ", road " + (settings.Road ? "on, " + settings.Traffic + " traffic" : "off") + ", birds " + (settings.Birds ? "on" : "off") +
                 ", leaves " + (settings.Leaves ? "on" : "off") + ", tree " + (settings.Tree ? "on" : "off") +
-                ", mist " + (settings.Mist ? "on" : "off") + ", smoke " + (settings.Smoke ? "on" : "off") +
+                ", mist " + (settings.Mist ? "on" : "off") + ", peak clouds " + (settings.Banners ? "on" : "off") + ", smoke " + (settings.Smoke ? "on" : "off") +
                 ", fires " + (settings.Fires ? "on" : "off") + ", village lights " + (settings.Lights ? "on" : "off") +
                 ", shooting stars " + (settings.Stars ? "on" : "off") +
                 ", panel " + (settings.Panel ? settings.Corner + " " + settings.PanelSize : "hidden") +
                 ", Windows background " + (settings.WindowsBackground ? "on" : "off"));
             if (background != null && hadBackground && !settings.WindowsBackground && background.Restore()) PlaceSoon();
             nextBackground = DateTime.MinValue; // the place may have changed, and with it the sun
+            if (form.DemoRequested) SetDemo(true);
             if (!running) StartWallpaper(); // otherwise the page picks the change up from state.js within a second
+        }
+
+        // The demo: the page plays a year in two minutes while this is on. It reaches the page through state.js.
+        private void SetDemo(bool on)
+        {
+            demo = on;
+            demoItem.Checked = on;
+            Log(on ? "demo: playing a year in two minutes" : "demo: off, back to the real time and weather");
+            if (!running) StartWallpaper();
         }
 
         // ------------------------------------------------------------------ start
@@ -687,6 +718,30 @@ namespace LivingEarth
             WriteState(Live);
             timer.Start();
             OnTick(null, EventArgs.Empty);
+        }
+
+        // At sign-in Windows starts everything at once. The scene waits until the PC has settled, so the desktop and the
+        // apps that start with Windows come up as quickly as they would without it.
+        private void StartWhenSettled()
+        {
+            DateTime began = DateTime.UtcNow;
+            int calm = 0;
+            SampleCpu();
+            var wait = new System.Windows.Forms.Timer { Interval = 1000 };
+            wait.Tick += delegate
+            {
+                double waited = (DateTime.UtcNow - began).TotalSeconds;
+                calm = SampleCpu() < BusyPercent ? calm + 1 : 0;
+                bool done = quitting || running; // started from the window meanwhile, or quit
+                if (!done && waited < SignInMinSeconds) return;
+                if (!done && calm < 3 && waited < SignInMaxSeconds) return;
+                wait.Stop();
+                wait.Dispose();
+                if (done) return;
+                Log(string.Format("sign-in: starting after {0:0} s{1}", waited, calm >= 3 ? ", the PC has settled" : ", the PC is still busy"));
+                StartWallpaper();
+            };
+            wait.Start();
         }
 
         private void TellUnsupported()
@@ -775,7 +830,7 @@ namespace LivingEarth
 
             RestMode mode = settings.Mode;
             if (mode == RestMode.Always) return Live;
-            if (mode == RestMode.Paused || locked) return Still;
+            if (mode == RestMode.Paused || locked || now < quietUntil) return Still;
             if (now < busyUntil) return Rest;
 
             if (mode == RestMode.Maximized) return ForegroundCoversScreen() ? Rest : Live;
@@ -840,6 +895,8 @@ namespace LivingEarth
                 js.Append(", leaves: ").Append(settings.Leaves ? "true" : "false");
                 js.Append(", tree: ").Append(settings.Tree ? "true" : "false");
                 js.Append(", mist: ").Append(settings.Mist ? "true" : "false");
+                js.Append(", banners: ").Append(settings.Banners ? "true" : "false");
+                js.Append(", demo: ").Append(demo ? "true" : "false");
                 js.Append(", smoke: ").Append(settings.Smoke ? "true" : "false");
                 js.Append(", fires: ").Append(settings.Fires ? "true" : "false");
                 js.Append(", lights: ").Append(settings.Lights ? "true" : "false");
@@ -896,6 +953,7 @@ namespace LivingEarth
             if (!settings.Leaves) q.Append("&leaves=0");
             if (!settings.Tree) q.Append("&tree=0");
             if (!settings.Mist) q.Append("&mist=0");
+            if (!settings.Banners) q.Append("&banners=0");
             if (!settings.Smoke) q.Append("&smoke=0");
             if (!settings.Fires) q.Append("&fires=0");
             if (!settings.Lights) q.Append("&lights=0");
@@ -1354,12 +1412,31 @@ namespace LivingEarth
 
         private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
         {
+            bool was = locked;
             if (e.Reason == SessionSwitchReason.SessionLock || e.Reason == SessionSwitchReason.ConsoleDisconnect ||
                 e.Reason == SessionSwitchReason.RemoteDisconnect)
                 locked = true;
             else if (e.Reason == SessionSwitchReason.SessionUnlock || e.Reason == SessionSwitchReason.ConsoleConnect ||
                      e.Reason == SessionSwitchReason.RemoteConnect)
                 locked = false;
+            if (locked != was) Log(locked ? "locked: no frames until signed in again" : "signed in again");
+        }
+
+        // Asleep, nothing of this wallpaper is on the graphics card; just woken, it waits while Windows brings the screens
+        // and the lock screen back. In the log, so a black screen after waking can be told apart from this app.
+        private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+        {
+            if (e.Mode == PowerModes.Suspend)
+            {
+                quietUntil = DateTime.MaxValue;
+                Log("going to sleep");
+                if (running) WriteState(Still);
+            }
+            else if (e.Mode == PowerModes.Resume)
+            {
+                quietUntil = DateTime.UtcNow.AddSeconds(WakeQuietSeconds);
+                Log("woke up" + (locked ? " (locked)" : "") + ": no frames for " + WakeQuietSeconds + " s");
+            }
         }
 
         private void OnDisplayChanged(object sender, EventArgs e)
@@ -1377,6 +1454,7 @@ namespace LivingEarth
             showWait.Unregister(null);
             SystemEvents.SessionSwitch -= OnSessionSwitch;
             SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
+            SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             StopEdge();
             tray.Visible = false;
             tray.Dispose();
@@ -1428,7 +1506,7 @@ namespace LivingEarth
             open.Activate();
         }
 
-        /// <summary>The version people see: 2.1.0, from the exe's own version.</summary>
+        /// <summary>The version people see: 2.2.0, from the exe's own version.</summary>
         public static string VersionText
         {
             get
@@ -1504,7 +1582,8 @@ namespace LivingEarth
 
     public sealed class SetupForm : Form
     {
-        private const int W = 560, Pad = 24, Indent = 22, BannerH = 150;
+        // wide rather than tall: the scene switches go in four columns, and the links at the bottom stay clear of the buttons
+        private const int W = 760, Pad = 24, Indent = 22, BannerH = 150;
         private static readonly string[] QualityNames =
         {
             "Auto: adjusts to your graphics", "Eco: lightest", "Balanced", "High (recommended)", "Ultra: powerful graphics only"
@@ -1522,7 +1601,7 @@ namespace LivingEarth
         private readonly ListBox results;
         private readonly ComboBox qualityBox, sizeBox, trafficBox;
         private readonly CheckBox startupBox, roadBox, birdsBox, leavesBox, windowsBox;
-        private readonly CheckBox treeBox, mistBox, smokeBox, firesBox, lightsBox, starsBox, panelBox;
+        private readonly CheckBox treeBox, mistBox, bannersBox, smokeBox, firesBox, lightsBox, starsBox, panelBox;
         private readonly RadioButton topLeft, topRight, bottomLeft, bottomRight;
         private Place detected, manual;
         private int detectRun, searchRun;
@@ -1532,6 +1611,7 @@ namespace LivingEarth
         public Settings Result { get { return s; } }
         public bool StartWithWindows { get { return startupBox.Checked; } }
         public bool DetectedNow { get; private set; }
+        public bool DemoRequested { get; private set; } // "Watch the demo" was clicked
 
         public SetupForm(Settings settings, bool startWithWindows, string bannerPath)
         {
@@ -1598,10 +1678,11 @@ namespace LivingEarth
             Controls.Add(modes);
             y += my + 12;
 
-            // ---- what is in the scene: everything can be turned off, in three columns to keep the window short
+            // ---- what is in the scene: everything can be turned off, in four columns to keep the window short. The first
+            // is wider, for the road's traffic list.
             y = Heading("In the scene", y);
-            const int ColW = (W - 2 * Pad) / 3;
-            int c1 = Pad, c2 = Pad + ColW, c3 = Pad + 2 * ColW;
+            const int Col1 = 200, ColW = (W - 2 * Pad - Col1) / 3;
+            int c1 = Pad, c2 = Pad + Col1, c3 = c2 + ColW, c4 = c3 + ColW;
             roadBox = Check("Road", c1, y, s.Road);
             trafficBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(c1 + 62, y - 2), Width = 102 };
             trafficBox.Items.AddRange(new object[] { "Light traffic", "Normal traffic", "Busy traffic" });
@@ -1609,16 +1690,17 @@ namespace LivingEarth
             trafficBox.Enabled = s.Road;
             Controls.Add(trafficBox);
             roadBox.CheckedChanged += delegate { trafficBox.Enabled = roadBox.Checked; };
-            treeBox = Check("Tree on the rock", c2, y, s.Tree);
-            leavesBox = Check("Flying leaves", c3, y, s.Leaves);
+            birdsBox = Check("Birds", c2, y, s.Birds);
+            treeBox = Check("Tree on the rock", c3, y, s.Tree);
+            leavesBox = Check("Flying leaves", c4, y, s.Leaves);
             leavesBox.Enabled = s.Tree; // the leaves come off the tree
             treeBox.CheckedChanged += delegate { leavesBox.Enabled = treeBox.Checked; };
-            birdsBox = Check("Birds", c1, y + 24, s.Birds);
-            starsBox = Check("Shooting stars", c2, y + 24, s.Stars);
-            lightsBox = Check("Village lights", c3, y + 24, s.Lights);
-            mistBox = Check("Forest mist", c1, y + 48, s.Mist);
-            smokeBox = Check("Village smoke", c2, y + 48, s.Smoke);
-            firesBox = Check("Burning fields", c3, y + 48, s.Fires);
+            mistBox = Check("Forest mist", c1, y + 24, s.Mist);
+            bannersBox = Check("Clouds on the peaks", c2, y + 24, s.Banners);
+            smokeBox = Check("Village smoke", c3, y + 24, s.Smoke);
+            firesBox = Check("Burning fields", c4, y + 24, s.Fires);
+            lightsBox = Check("Village lights", c1, y + 48, s.Lights);
+            starsBox = Check("Shooting stars", c2, y + 48, s.Stars);
             y += 76;
 
             // ---- the clock and weather panel: whether it shows, its corner (laid out like the screen) and its size
@@ -1672,6 +1754,16 @@ namespace LivingEarth
             var about = new LinkLabel { Text = "About", Location = new Point(link.Right + 18, y + 9), AutoSize = true };
             about.LinkClicked += delegate { AboutForm.ShowOnce(); };
             Controls.Add(about);
+            var demoLink = new LinkLabel { Text = "Watch the demo", Location = new Point(about.Right + 18, y + 9), AutoSize = true };
+            var tips = new ToolTip();
+            tips.SetToolTip(demoLink, "A year in two minutes, over and over. To stop it, choose Play the demo again in the tray menu.");
+            FormClosed += delegate { tips.Dispose(); };
+            demoLink.LinkClicked += delegate
+            {
+                DemoRequested = true;
+                Apply(); // sets the wallpaper with these settings, then plays the demo on it
+            };
+            Controls.Add(demoLink);
             setButton = new Button
             {
                 Text = "Set wallpaper", Location = new Point(W - Pad - 150, y), Size = new Size(150, 34),
@@ -1835,6 +1927,7 @@ namespace LivingEarth
             s.Leaves = leavesBox.Checked;
             s.Tree = treeBox.Checked;
             s.Mist = mistBox.Checked;
+            s.Banners = bannersBox.Checked;
             s.Smoke = smokeBox.Checked;
             s.Fires = firesBox.Checked;
             s.Lights = lightsBox.Checked;
