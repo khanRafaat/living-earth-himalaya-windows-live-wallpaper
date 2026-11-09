@@ -51,6 +51,74 @@ void main() {
   fragColor = vec4(mix(texelFetch(uFrom, c, 0).rgb, texelFetch(uTo, c, 0).rgb, uMix), 1.0);
 }`;
 
+  // The same fade in rain or snow. The pictures are kept without the falling drops and flakes, and they are put
+  // in front here, every frame, as the scene would: on the light before grading (gradeColor run backwards), so
+  // they look the same as in a scene frame and line up with the tree's own (S.post in tree.js).
+  S.fadeRain = () => `${S.header}
+${S.noise}
+uniform vec2 uRes;
+uniform float uTime;
+uniform float uFlash;
+uniform float uOvercast;
+uniform vec3 uSunDir;
+uniform sampler2D uSkyLUT;
+${S.post}
+uniform sampler2D uFrom;
+uniform sampler2D uTo;
+uniform float uMix;
+out vec4 fragColor;
+
+// gradeColor's tone curve, one channel: ACES by day, 1 - exp(-1.4 x) by night, blended by n
+float toneCurve(float x, float n) {
+  float day = (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
+  return mix(day, 1.0 - exp(-1.4 * x), n);
+}
+float toneSlope(float x, float n) {
+  float num = x * (2.51 * x + 0.03);
+  float den = x * (2.43 * x + 0.59) + 0.14;
+  float day = ((5.02 * x + 0.03) * den - num * (4.86 * x + 0.59)) / (den * den);
+  return mix(day, 1.4 * exp(-1.4 * x), n);
+}
+float toneInverse(float v, float n) {
+  float a = 2.51 - 2.43 * v;
+  float b = 0.03 - 0.59 * v;
+  float day = (-b + sqrt(b * b + 0.56 * v * a)) / (2.0 * a);
+  float night = -log(1.0 - v) / 1.4;
+  float x = mix(day, night, n);
+  if (n > 0.001 && n < 0.999) {
+    // between day and night the blend has no closed form: two Newton steps from there
+    for (int i = 0; i < 2; i++) x = max(x - (toneCurve(x, n) - v) / max(toneSlope(x, n), 1e-4), 0.0);
+  }
+  return x;
+}
+
+// the light a picture's colour was graded from (gradeColor backwards; its dither stays in, a fraction of a step)
+vec3 ungrade(vec3 c) {
+  c /= max(uFade, 1e-3);
+  float l2 = dot(c, vec3(0.299, 0.587, 0.114));
+  c = l2 + (c - l2) / 1.05;
+  c = pow(clamp(c, 0.0, 0.996), vec3(2.2));
+  vec3 y = vec3(toneInverse(c.r, uNight), toneInverse(c.g, uNight), toneInverse(c.b, uNight));
+  // and the night's bluer vision: y = mix(z, lum(z) * k, a)
+  float a = uNight * 0.5;
+  vec3 k = vec3(0.6, 0.74, 1.0) * 1.15;
+  vec3 L = vec3(0.2126, 0.7152, 0.0722);
+  float lumZ = dot(y, L) / (1.0 - a + a * dot(k, L));
+  return (y - a * lumZ * k) / (1.0 - a);
+}
+
+void main() {
+  ivec2 ic = ivec2(gl_FragCoord.xy);
+  vec3 c = mix(texelFetch(uFrom, ic, 0).rgb, texelFetch(uTo, ic, 0).rgb, uMix);
+  vec2 m = precipMask(gl_FragCoord.xy);
+  // most pixels have no drop or flake on them: the picture as it is
+  if (m.x + m.y < 4e-4) {
+    fragColor = vec4(c, 1.0);
+    return;
+  }
+  fragColor = gradeColor(precipApply(ungrade(c), m), gl_FragCoord.xy);
+}`;
+
   S.spriteFragment = () => `${S.header}
 ${S.camera}
 ${S.noise}

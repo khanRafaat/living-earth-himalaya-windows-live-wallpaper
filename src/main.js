@@ -70,7 +70,10 @@
   function reveal(force) {
     if (revealed || !sceneReady || !(force || weatherRecord().rec)) return;
     revealed = true;
-    showVeil(false);
+    // Over the still, the scene's own fade from black (2.5 s, while its sky forms) happens under it, so the still
+    // dissolves straight into the finished scene, never through dark
+    if (cfg.startStill) setTimeout(() => showVeil(false), 3000);
+    else showVeil(false);
     window.__leReady = true;
   }
 
@@ -122,6 +125,13 @@
   // ---------------------------------------------------------------- veil
   function showVeil(on) {
     veil.classList.toggle('hidden', !on);
+  }
+  // Started by the Windows app: the still for this time of day at once, with a small note at the bottom while the
+  // scene is made, and then the live scene dissolves in over it
+  if (cfg.startStill) {
+    veil.style.backgroundImage = `url("host/stills/${cfg.startStill}.jpg")`;
+    veil.classList.add('still');
+    veil.querySelectorAll('.veil-title').forEach((n) => (n.textContent = 'Making the wallpaper live'));
   }
   // Lively "Span" puts one window across both monitors, so a single centred card would be cut
   // in half by the bezel. When the window is that wide, show a copy of the card on each screen.
@@ -193,7 +203,7 @@
   let lifeSeeded = false;
   let lastState = null;
   let lastBusy = -1e9;
-  let lastWet = -1e9;
+  let lastFast = -1e9;
   let targetFps = cfg.render.fpsCap;
 
   /**
@@ -214,15 +224,16 @@
   }
 
   /**
-   * With no rain or snow the land and sky change slowly, so a new scene every half a second, faded from one to the
-   * next, looks the same and takes far less of the GPU. The tree and the birds keep moving on top at the full rate.
+   * The land and sky change slowly, so a new scene every half a second, faded from one to the next, looks the same
+   * and takes far less of the GPU. The tree, the birds and falling rain or snow keep moving on top at the full rate.
+   * Only lightning needs every frame drawn: it lights the whole scene for a moment.
    */
   function calmScene(now) {
     if (!cfg.render.smartFps || !cfg.render.calmSceneMs || !lastState || renderer.status !== 'running') return 0;
     const w = lastState.weather;
     // At the full rate while the picture fades in and just after: the sky forms in those seconds
-    if (renderer._fade < 1 || w.rain > 0.003 || w.snow > 0.003 || w.flash > 0.01 || cfg.overrides.timelapse > 0 || demo.on) lastWet = now;
-    return now - lastWet < 3000 ? 0 : cfg.render.calmSceneMs;
+    if (renderer._fade < 1 || w.flash > 0.01 || cfg.overrides.timelapse > 0 || demo.on) lastFast = now;
+    return now - lastFast < 3000 ? 0 : cfg.render.calmSceneMs;
   }
 
   function stepLife(state, now) {
@@ -244,7 +255,8 @@
         stepLife(lastState, now);
         lastState.time = (now - simStart) / 1000;
         if (!renderer.drawFade(Math.min((now - renderer.pictureAt) / slowMs, 1), lastState)) return;
-        const moving = life.movers > 0 || renderer.foregroundMoving();
+        const w = lastState.weather;
+        const moving = life.movers > 0 || renderer.foregroundMoving() || w.rain > 0.003 || w.snow > 0.003;
         const rate = moving ? (restMs ? cfg.render.calmFps : cfg.render.fpsCap) : renderer.grassMoving() ? cfg.render.calmFps : FADE_FPS;
         // A slow chip gets fewer frames, and never more than its share of the GPU
         nextFade = now + Math.max(1000 / rate, renderer.gpuBusyMs / cfg.render.maxGpuShare);
@@ -689,7 +701,7 @@
         }
       },
       poke() {
-        lastWet = lastBusy = performance.now();
+        lastFast = lastBusy = performance.now();
       },
       resize: onResize,
     });

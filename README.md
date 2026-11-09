@@ -21,13 +21,13 @@ You do not need Lively, Wallpaper Engine, Steam, an installer, admin rights or a
 
 ## Download and set your wallpaper
 
-### **[Download LivingEarthHimalaya-2.2.0.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.2.0/LivingEarthHimalaya-2.2.0.exe)**
+### **[Download LivingEarthHimalaya-2.2.1.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.2.1/LivingEarthHimalaya-2.2.1.exe)**
 
 About 2.4 MB. For Windows 11 version 24H2 or later.
 
 1. **Download the exe** and move it somewhere it can stay, such as your Documents folder. "Start with Windows" remembers where it is.
 2. **Double-click it.** There is nothing to install. If Windows shows "Windows protected your PC", click **More info**, then **Run anyway**.
-3. **Choose your options and click Set wallpaper.** Pick your location, when it should animate, what is in the scene, the clock and weather panel, the quality, and whether to start with Windows.
+3. **Choose your options and click Set wallpaper.** Pick your location, when it should animate, what is in the scene, the clock and weather panel, the quality, what draws it, and whether to start with Windows.
 
 The mountains now sit behind your desktop icons like a normal wallpaper, with a small icon in the system tray. The first start prepares the graphics and shapes the mountains, which can take a few minutes. Later starts take about 15 seconds.
 
@@ -53,6 +53,7 @@ The mountains now sit behind your desktop icons like a normal wallpaper, with a 
 | In the scene | Turn each part on or off: the road and its traffic (light, normal or busy), the tree on the rock, flying leaves, birds, shooting stars, village lights, forest mist, clouds on the peaks, village smoke and burning fields. Changing the road shapes the mountains again, which takes a few minutes. |
 | Clock and weather panel | Show it or hide it, and choose its corner and size. |
 | Quality | **Auto** adjusts to your graphics. **Eco** is the lightest, then **Balanced** and **High**. **Ultra** is for powerful graphics only. |
+| Draw with | **Automatic** looks at your PC: a graphics card draws at full speed; graphics built into the processor (such as Intel UHD) get at most a quarter of the chip's time, so the desktop and your apps stay smooth; with no graphics chip, the processor draws. **Graphics chip (GPU)** always uses the graphics chip, with up to half its time. **Processor (CPU)** leaves the graphics chip free: the picture is softer, the clouds change more slowly, it uses at most a quarter of the processor, and the first picture takes longer after each start. |
 | Start with Windows | Starts the wallpaper when you sign in, with no window to click through. |
 | Show the scene in Windows Settings too | Also sets a still picture of the scene, matching the time of day, as the Windows desktop background, so Settings > Personalization shows it. Your previous background comes back when you exit. |
 
@@ -109,7 +110,7 @@ In Windows **Display settings**, choose **Extend these displays**, put the monit
 |---|---|
 | **Windows** | Windows 11 version 24H2 or later for the app. Windows 10 and older Windows 11 through [Lively](#option-2-lively-wallpaper-for-windows-10-and-older-windows-11). |
 | **Other software** | None to install. The app uses Microsoft Edge, which comes with Windows 11. |
-| **Graphics** | Any graphics chip with WebGL 2. A dedicated graphics card is not needed. If the PC has both, the wallpaper asks for the dedicated one. |
+| **Graphics** | Any graphics chip with WebGL 2. A dedicated graphics card is not needed. If the PC has both, the wallpaper asks for the dedicated one. Without one, **Draw with: Processor** draws on the processor instead. |
 | **Screens** | One or two. Designed for 1920 × 1080 each (3840 × 1080 together). Other sizes adapt. |
 | **Internet** | Optional. Used for live weather and finding your location. Without it, the wallpaper uses the last saved forecast. |
 
@@ -135,7 +136,7 @@ In Windows **Display settings**, choose **Extend these displays**, put the monit
   - Birds shelter in rain, fog, snow and storms, and roost at night.
   - Hill villages have terraced fields, with wood smoke at breakfast and dinner time and lights that come on one by one at dusk, and go off and on again through the night.
   - Shooting stars follow the real meteor-shower calendar, and satellites glide across the sky in twilight.
-- **Light on your PC.** It runs at below-normal priority and can rest whenever a window is in front. With no rain or snow, it redraws the land and sky about twice a second and fades between the pictures, while the tree and birds keep moving. It sends the graphics chip one frame at a time and spaces its frames to leave at least half of the chip's time for your other work.
+- **Light on your PC.** It runs at below-normal priority and can rest whenever a window is in front. It redraws the land and sky about twice a second and fades between the pictures, while the tree, the birds and any rain or snow keep moving at the full rate. It sends the graphics chip one frame at a time and spaces its frames to leave at least half of the chip's time for your other work, and three quarters on graphics built into the processor.
 - **Works offline.** The last forecast is saved, and the panel tells you what it is using.
 - **A demo of the whole year.** A year in two minutes, over and over, for showing it off or filming it: snow on the tree in January, sunrise on fresh snow, spring blossom with banner clouds, a starry night with meteors, fog lifting from the valleys, the monsoon's thunder and rain, harvest fires, the Orionid meteors and snow at dusk in December.
 - **Gentle with your PC.** At sign-in it waits until Windows has settled before it starts. While the PC is locked, asleep or just woken, it draws nothing at all.
@@ -152,7 +153,7 @@ In Windows **Display settings**, choose **Extend these displays**, put the monit
 ## Frequently asked questions
 
 ### How do I get a live wallpaper on Windows 11?
-On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.2.0.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
+On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.2.1.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
 
 ### Do I need Lively or Wallpaper Engine?
 No. The exe sets the wallpaper by itself on Windows 11 version 24H2 or later, with nothing else to install. Lively is only for older versions of Windows.
@@ -194,7 +195,7 @@ The wallpaper needs a rough location for the sun, moon and weather. You can choo
 | The same picture on both screens | Choose **Extend these displays** in Windows Display settings. In Lively, also choose **Span**, not "Duplicate" or "Per screen". |
 | A strip is cut off or not aligned | Align the top edges of the monitors in Windows Display settings. |
 | Black screen with an error message | Update your graphics driver, then restart the wallpaper. |
-| PC feels slow | Use the lightest wallpaper mode, then set Quality to **Eco**. |
+| PC feels slow | Use the lightest wallpaper mode, then set Quality to **Eco**. Keep **Draw with** on **Automatic**, or choose **Processor** to leave the graphics chip to your other apps. |
 | Long "Preparing the renderer…" | Normal on the very first start and after a graphics-driver or Edge update. The shaders are being compiled. Later starts are quick. |
 | Panel says "Offline" | There is no internet, so it is using the saved forecast. It updates by itself when you are back online. |
 | No birds | Normal at night, in rain, fog or storms, and between visits. Flocks come and go every few minutes. |
@@ -218,6 +219,8 @@ index.html?windtest=1                 try any wind speed and direction on the tr
 index.html?debug=1                    a test panel: a slider for time, season, weather, wind, quality and more, plus live numbers
 index.html?quality=eco&fps=24         force a quality level
 index.html?calm=0                     draw the whole scene in every frame
+index.html?device=cpu                 the settings used when the processor draws (start Edge with --use-angle=d3d11-warp)
+index.html?gpushare=0.25              take at most a quarter of the graphics chip's time
 ```
 
 Weather names: `clear, partly, overcast, rain, heavyrain, storm, fog, snow`.

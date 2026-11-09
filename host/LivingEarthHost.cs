@@ -6,7 +6,8 @@
 //   1. Opening the app shows the setup window: location (found automatically or chosen by hand), when to
 //      animate, what is in the scene (each part can be turned off: road and how much traffic, the tree and its flying
 //      leaves, birds, shooting stars, village lights, forest mist, clouds on the peaks, village smoke, burning fields), whether the clock
-//      and weather panel shows, its corner and size, quality, Start with Windows, and whether Windows' own background shows the scene too.
+//      and weather panel shows, its corner and size, quality, what draws it (the graphics chip, the processor, or chosen
+//      for the device), Start with Windows, and whether Windows' own background shows the scene too.
 //      "Watch the demo" (and the tray menu's "Play the demo") plays a year in two minutes, over and over, until it is
 //      turned off; it is not saved, so the next start is the real time and weather again.
 //      "Set wallpaper" starts the wallpaper. When Windows starts the app at sign-in (--startup), it goes
@@ -48,8 +49,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Khan Rafaat Abtahe")]
 [assembly: AssemblyCopyright("© 2026 Khan Rafaat Abtahe. MIT licence")]
 [assembly: AssemblyDescription("Living Earth Himalaya live wallpaper. Author: Khan Rafaat Abtahe")]
-[assembly: AssemblyVersion("2.2.0.0")]
-[assembly: AssemblyFileVersion("2.2.0.0")]
+[assembly: AssemblyVersion("2.2.1.0")]
+[assembly: AssemblyFileVersion("2.2.1.0")]
 
 namespace LivingEarth
 {
@@ -146,9 +147,12 @@ namespace LivingEarth
         public static readonly string[] PanelSizes = { "small", "medium", "large" };
         // How much traffic is on the road. The same order as TRAFFIC in src/main.js.
         public static readonly string[] Traffics = { "light", "normal", "busy" };
+        // What draws the picture: chosen for the device, the graphics chip, or the processor (GraphicsChip.Choose)
+        public static readonly string[] Devices = { "auto", "gpu", "cpu" };
 
         public RestMode Mode = RestMode.Desktop;
         public string Quality = "high";
+        public string Device = "auto";
         public bool AutoLocation = true;
         public Place Manual;   // the place chosen by hand
         public Place Detected; // the last place found automatically
@@ -195,6 +199,7 @@ namespace LivingEarth
             string x;
             if (v.TryGetValue("mode", out x)) s.Mode = ParseMode(x);
             if (v.TryGetValue("quality", out x) && Array.IndexOf(Qualities, x) >= 0) s.Quality = x;
+            if (v.TryGetValue("device", out x) && Array.IndexOf(Devices, x) >= 0) s.Device = x;
             s.AutoLocation = !(v.TryGetValue("location", out x) && x == "manual");
             s.Manual = ReadPlace(v, "manual");
             s.Detected = ReadPlace(v, "detected");
@@ -222,6 +227,7 @@ namespace LivingEarth
             var b = new StringBuilder();
             b.Append("mode=").Append(Mode.ToString().ToLowerInvariant()).Append("\r\n");
             b.Append("quality=").Append(Quality).Append("\r\n");
+            b.Append("device=").Append(Device).Append("\r\n");
             b.Append("location=").Append(AutoLocation ? "auto" : "manual").Append("\r\n");
             b.Append("road=").Append(Road ? "on" : "off").Append("\r\n");
             b.Append("birds=").Append(Birds ? "on" : "off").Append("\r\n");
@@ -466,8 +472,11 @@ namespace LivingEarth
         private const int BusyHoldSeconds = 20;    // stay at the slow pace this long after the CPU calms down
         private const int WakeQuietSeconds = 20;   // after the PC wakes, no frames for this long: the graphics card and the
                                                    // lock screen have the screens to themselves while they come back
-        private const int SignInMinSeconds = 15;   // at sign-in, wait at least this long before starting the scene...
-        private const int SignInMaxSeconds = 90;   // ...and then for 3 calm seconds in a row, but no longer than this
+        private const int SignInMinSeconds = 20;   // at sign-in, wait at least this long before starting the scene...
+        private const int SignInCalmSeconds = 5;   // ...then for this many calm seconds in a row...
+        private const int SignInMaxSeconds = 120;  // ...but no longer than this
+        private const int SignInGentleSeconds = 90; // and once it starts, the slow pace this long: apps are still opening
+        private const int CpuModeShare = 25;       // drawing on the processor: Edge may use this % of all of it, no more
         private const int AttachTimeoutSeconds = 60;
         private const int QuickDeathSeconds = 30;  // Edge going away sooner than this counts as failing to start
         private const int MaxQuickDeaths = 3;      // ...and this many in a row stops the trying, so the screen can't keep flashing
@@ -505,6 +514,10 @@ namespace LivingEarth
         private TimeSpan backoff = TimeSpan.FromSeconds(5);
         private bool attached, handedOver, locked, desktopInFront = true;
         private DateTime quietUntil = DateTime.MinValue; // no frames before this: going to sleep, or just woken
+        private DateTime gentleUntil = DateTime.MinValue; // the slow pace until then: the PC has just been signed in to
+        private GraphicsChip.Choice drawWith; // what draws the picture in the Edge started last (GraphicsChip.Choose)
+        private System.Windows.Forms.Timer placeBurst; // looks at the layers often for a moment after the background changed
+        private int placeBurstLeft;
         private int placeTick, quickDeaths, reorders, placeEvery;
         private readonly WindowsBackground background; // null in tests, which must never change the real one
         private DateTime nextBackground = DateTime.MinValue;
@@ -632,6 +645,7 @@ namespace LivingEarth
 
             SystemEvents.SessionSwitch += OnSessionSwitch;
             SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
+            SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
 
             timer = new System.Windows.Forms.Timer { Interval = 1000 };
@@ -673,13 +687,14 @@ namespace LivingEarth
                 return;
             }
             bool hadBackground = settings.WindowsBackground;
+            string hadDevice = settings.Device;
             settings = form.Result;
             if (form.DetectedNow) nextDetect = DateTime.UtcNow.AddMinutes(30);
             SaveSettings();
             SetStartup(form.StartWithWindows);
             ShowMode();
             Place p = settings.Current;
-            Log("settings: " + settings.Mode + ", quality " + settings.Quality + ", " +
+            Log("settings: " + settings.Mode + ", quality " + settings.Quality + ", draw with " + settings.Device + ", " +
                 (p == null ? "default place" : p.Detail + (settings.AutoLocation ? " (automatic)" : " (chosen)")) +
                 ", road " + (settings.Road ? "on, " + settings.Traffic + " traffic" : "off") + ", birds " + (settings.Birds ? "on" : "off") +
                 ", leaves " + (settings.Leaves ? "on" : "off") + ", tree " + (settings.Tree ? "on" : "off") +
@@ -691,6 +706,14 @@ namespace LivingEarth
             if (background != null && hadBackground && !settings.WindowsBackground && background.Restore()) PlaceSoon();
             nextBackground = DateTime.MinValue; // the place may have changed, and with it the sun
             if (form.DemoRequested) SetDemo(true);
+            if (running && settings.Device != hadDevice && edgeProcess != IntPtr.Zero)
+            {
+                // Edge is told what to draw with when it starts, so it starts again
+                Log("drawing with something else now: Edge starts again");
+                StopEdge();
+                nextLaunch = DateTime.MinValue;
+                return;
+            }
             if (!running) StartWallpaper(); // otherwise the page picks the change up from state.js within a second
         }
 
@@ -726,6 +749,8 @@ namespace LivingEarth
         {
             DateTime began = DateTime.UtcNow;
             int calm = 0;
+            // The still goes up at once: another app may have changed the background since the last time
+            UpdateBackground(began);
             SampleCpu();
             var wait = new System.Windows.Forms.Timer { Interval = 1000 };
             wait.Tick += delegate
@@ -734,11 +759,13 @@ namespace LivingEarth
                 calm = SampleCpu() < BusyPercent ? calm + 1 : 0;
                 bool done = quitting || running; // started from the window meanwhile, or quit
                 if (!done && waited < SignInMinSeconds) return;
-                if (!done && calm < 3 && waited < SignInMaxSeconds) return;
+                if (!done && calm < SignInCalmSeconds && waited < SignInMaxSeconds) return;
                 wait.Stop();
                 wait.Dispose();
                 if (done) return;
-                Log(string.Format("sign-in: starting after {0:0} s{1}", waited, calm >= 3 ? ", the PC has settled" : ", the PC is still busy"));
+                Log(string.Format("sign-in: starting after {0:0} s{1}, at the slow pace for the first {2} s", waited,
+                    calm >= SignInCalmSeconds ? ", the PC has settled" : ", the PC is still busy", SignInGentleSeconds));
+                gentleUntil = DateTime.UtcNow.AddSeconds(SignInGentleSeconds);
                 StartWallpaper();
             };
             wait.Start();
@@ -794,6 +821,27 @@ namespace LivingEarth
         private void PlaceSoon()
         {
             placeEvery = 15;
+            // Explorer puts its new layer in front a moment after the change: look every 100 ms for 3 s, so it shows for
+            // a frame or two instead of up to a second
+            placeBurstLeft = 30;
+            if (placeBurst == null)
+            {
+                placeBurst = new System.Windows.Forms.Timer { Interval = 100 };
+                placeBurst.Tick += delegate
+                {
+                    if (--placeBurstLeft <= 0) placeBurst.Stop();
+                    if (attached && !quitting) Place(false);
+                };
+            }
+            placeBurst.Start();
+        }
+
+        // Something changed the desktop background (Bing Wallpaper, Settings): Explorer makes a new layer, in front of this one
+        private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+        {
+            if (e.Category != UserPreferenceCategory.Desktop) return;
+            try { invoker.BeginInvoke(new MethodInvoker(delegate { if (running) PlaceSoon(); })); }
+            catch (InvalidOperationException) { }
         }
 
         // Every 30 minutes, so a laptop that travels gets its own sky. No prompt: that only comes from the window.
@@ -831,7 +879,7 @@ namespace LivingEarth
             RestMode mode = settings.Mode;
             if (mode == RestMode.Always) return Live;
             if (mode == RestMode.Paused || locked || now < quietUntil) return Still;
-            if (now < busyUntil) return Rest;
+            if (now < busyUntil || now < gentleUntil) return Rest;
 
             if (mode == RestMode.Maximized) return ForegroundCoversScreen() ? Rest : Live;
             bool? inFront = DesktopInFront();
@@ -888,7 +936,7 @@ namespace LivingEarth
             var js = new StringBuilder("window.leHostState && window.leHostState('").Append(pace).Append('\'');
             if (queryOverride == null)
             {
-                js.Append(", { quality: ").Append(Js(settings.Quality));
+                js.Append(", { quality: ").Append(Js(PageQuality()));
                 js.Append(", road: ").Append(settings.Road ? "true" : "false");
                 js.Append(", traffic: ").Append(Js(settings.Traffic));
                 js.Append(", birds: ").Append(settings.Birds ? "true" : "false");
@@ -943,10 +991,24 @@ namespace LivingEarth
             return b.Append('\'').ToString();
         }
 
+        // Drawing on the processor is always the lightest quality: the page sets it, and state.js must not undo that
+        private string PageQuality()
+        {
+            return drawWith != null && drawWith.Cpu ? "eco" : settings.Quality;
+        }
+
         private string PageQuery()
         {
             if (queryOverride != null) return queryOverride;
-            var q = new StringBuilder("quality=").Append(settings.Quality).Append("&fps=24&geo=0");
+            var q = new StringBuilder("quality=").Append(PageQuality()).Append("&fps=24&geo=0");
+            if (drawWith != null)
+            {
+                if (drawWith.Cpu) q.Append("&device=cpu");
+                else q.Append("&gpushare=").Append(Locator.F(drawWith.GpuShare));
+            }
+            // behind the start-up screen: the still Windows shows now, so the scene fades in over it rather than from black
+            Place sp = settings.Current;
+            q.Append("&still=").Append(WindowsBackground.StillFor(DateTime.UtcNow, sp != null ? sp.Lat : 23.7104, sp != null ? sp.Lon : 90.4074));
             if (!settings.Road) q.Append("&road=0");
             q.Append("&traffic=").Append(settings.Traffic);
             if (!settings.Birds) q.Append("&birds=0");
@@ -1056,6 +1118,9 @@ namespace LivingEarth
                 return;
             }
 
+            GraphicsChip.Choice was = drawWith;
+            drawWith = GraphicsChip.Choose(settings.Device);
+            if (was == null || was.Describe() != drawWith.Describe()) Log("draw with: " + drawWith.Describe());
             string url = new Uri(pagePath).AbsoluteUri + "?host=1&" + PageQuery();
             Rectangle vs = SystemInformation.VirtualScreen;
             var cmd = new StringBuilder();
@@ -1068,8 +1133,16 @@ namespace LivingEarth
             cmd.Append(" --no-first-run --no-default-browser-check --hide-crash-restore-bubble");
             cmd.Append(" --disable-extensions --disable-sync --disable-background-networking");
             cmd.Append(" --disable-component-update --disable-default-apps");
-            // Never fall back to drawing on the CPU: an error on the wallpaper is better than a saturated PC.
-            cmd.Append(" --disable-software-rasterizer");
+            if (drawWith.Cpu)
+            {
+                // On the processor: Direct3D's own software adapter (WARP), faster than Edge's fallback. The job caps it.
+                cmd.Append(" --use-angle=d3d11-warp");
+            }
+            else
+            {
+                // Never fall back to drawing on the CPU unasked: an error on the wallpaper is better than a saturated PC.
+                cmd.Append(" --disable-software-rasterizer");
+            }
             // At below-normal priority a busy PC could otherwise make the GPU process look hung.
             cmd.Append(" --disable-gpu-watchdog");
             // A window behind the icons must keep running, and this app decides when it rests.
@@ -1079,7 +1152,7 @@ namespace LivingEarth
             // Never --enable-logging: started from an app without a console, as this is, Edge then opens a console window of its own.
             cmd.Append(extraEdgeArgs);
 
-            CreateJob();
+            CreateJob(drawWith.Cpu ? CpuModeShare : 0);
             focusBeforeLaunch = Native.GetForegroundWindow();
             var si = new Native.STARTUPINFO();
             si.cb = Marshal.SizeOf(si);
@@ -1198,7 +1271,8 @@ namespace LivingEarth
             wallpaper = IntPtr.Zero;
         }
 
-        private void CreateJob()
+        /** cpuShare: the most of the processor Edge may use, in percent of all of it (0: no limit). */
+        private void CreateJob(int cpuShare)
         {
             job = Native.CreateJobObject(IntPtr.Zero, null);
             var info = new Native.JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
@@ -1215,6 +1289,25 @@ namespace LivingEarth
             finally
             {
                 Marshal.FreeHGlobal(mem);
+            }
+            if (cpuShare <= 0) return;
+            // A hard cap: however much the software adapter would like, Windows gives Edge this much of the processor
+            var rate = new Native.JOBOBJECT_CPU_RATE_CONTROL_INFORMATION
+            {
+                ControlFlags = Native.JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | Native.JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP,
+                CpuRate = (uint)(cpuShare * 100),
+            };
+            int rsize = Marshal.SizeOf(rate);
+            IntPtr rmem = Marshal.AllocHGlobal(rsize);
+            try
+            {
+                Marshal.StructureToPtr(rate, rmem, false);
+                if (!Native.SetInformationJobObject(job, Native.JobObjectCpuRateControlInformation, rmem, (uint)rsize))
+                    Log("processor limit not set: " + Marshal.GetLastWin32Error());
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(rmem);
             }
         }
 
@@ -1454,6 +1547,8 @@ namespace LivingEarth
             showWait.Unregister(null);
             SystemEvents.SessionSwitch -= OnSessionSwitch;
             SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
+            SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+            if (placeBurst != null) placeBurst.Dispose();
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             StopEdge();
             tray.Visible = false;
@@ -1506,7 +1601,7 @@ namespace LivingEarth
             open.Activate();
         }
 
-        /// <summary>The version people see: 2.2.0, from the exe's own version.</summary>
+        /// <summary>The version people see: 2.2.1, from the exe's own version.</summary>
         public static string VersionText
         {
             get
@@ -1588,6 +1683,8 @@ namespace LivingEarth
         {
             "Auto: adjusts to your graphics", "Eco: lightest", "Balanced", "High (recommended)", "Ultra: powerful graphics only"
         };
+        // The same order as Settings.Devices
+        private static readonly string[] DeviceNames = { "Automatic", "Graphics chip (GPU)", "Processor (CPU)" };
         private static readonly Color Ink = Color.FromArgb(26, 26, 26);
         private static readonly Color Soft = Color.FromArgb(96, 96, 96);
         private static readonly Color Accent = Color.FromArgb(0, 95, 184);
@@ -1599,7 +1696,7 @@ namespace LivingEarth
         private readonly Button detectButton, searchButton, setButton, cancelButton;
         private readonly TextBox searchBox;
         private readonly ListBox results;
-        private readonly ComboBox qualityBox, sizeBox, trafficBox;
+        private readonly ComboBox qualityBox, deviceBox, sizeBox, trafficBox;
         private readonly CheckBox startupBox, roadBox, birdsBox, leavesBox, windowsBox;
         private readonly CheckBox treeBox, mistBox, bannersBox, smokeBox, firesBox, lightsBox, starsBox, panelBox;
         private readonly RadioButton topLeft, topRight, bottomLeft, bottomRight;
@@ -1730,11 +1827,28 @@ namespace LivingEarth
             y = Heading("Quality and start-up", y);
             var ql = new Label { Text = "Quality", Location = new Point(Pad, y + 4), AutoSize = true };
             Controls.Add(ql);
-            qualityBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(Pad + 72, y), Width = 250 };
+            qualityBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(Pad + 72, y), Width = 214 };
             qualityBox.Items.AddRange(QualityNames);
             qualityBox.SelectedIndex = Math.Max(0, Array.IndexOf(Settings.Qualities, s.Quality));
             Controls.Add(qualityBox);
-            startupBox = new CheckBox { Text = "Start with Windows", Checked = startWithWindows, Location = new Point(Pad + 72 + 250 + 24, y + 3), AutoSize = true };
+            // what draws it, on the same line: the window grows wider, not taller
+            var dl = new Label { Text = "Draw with", Location = new Point(qualityBox.Right + 20, y + 4), AutoSize = true };
+            Controls.Add(dl);
+            deviceBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(dl.Left + dl.PreferredWidth + 8, y), Width = 160 };
+            deviceBox.Items.AddRange(DeviceNames);
+            deviceBox.SelectedIndex = Math.Max(0, Array.IndexOf(Settings.Devices, s.Device));
+            Controls.Add(deviceBox);
+            var deviceTips = new ToolTip { AutoPopDelay = 20000 };
+            string deviceTip =
+                "Automatic: a graphics card draws at full speed. Graphics built into the processor, like Intel UHD, get a\n" +
+                "smaller share, so the desktop and your apps stay smooth. Without a graphics chip, the processor draws.\n\n" +
+                "Graphics chip: always the graphics chip, at full speed.\n\n" +
+                "Processor: the graphics chip stays free. The picture is softer, the clouds change more slowly, and it\n" +
+                "uses at most a quarter of the processor. The first picture can take several minutes after each start.";
+            deviceTips.SetToolTip(deviceBox, deviceTip);
+            deviceTips.SetToolTip(dl, deviceTip);
+            FormClosed += delegate { deviceTips.Dispose(); };
+            startupBox = new CheckBox { Text = "Start with Windows", Checked = startWithWindows, Location = new Point(deviceBox.Right + 20, y + 3), AutoSize = true };
             Controls.Add(startupBox);
             y += 34;
             windowsBox = Check("Show the scene in Windows Settings too, as the desktop background picture", Pad, y, s.WindowsBackground);
@@ -1922,6 +2036,7 @@ namespace LivingEarth
             if (detected != null) s.Detected = detected;
             s.Mode = maximizedRadio.Checked ? RestMode.Maximized : pausedRadio.Checked ? RestMode.Paused : RestMode.Desktop;
             s.Quality = Settings.Qualities[Math.Max(0, qualityBox.SelectedIndex)];
+            s.Device = Settings.Devices[Math.Max(0, deviceBox.SelectedIndex)];
             s.Road = roadBox.Checked;
             s.Birds = birdsBox.Checked;
             s.Leaves = leavesBox.Checked;
@@ -2033,6 +2148,152 @@ namespace LivingEarth
     /// icons, where PrintWindow sees only black. So the stills are rendered ahead of time (host/stills.mjs) and travel in
     /// the exe. What was there before is kept in a file of its own, so a crash or a restart can't lose it.
     /// </summary>
+    /// <summary>
+    /// What draws the picture. Automatic looks at the graphics chips through DXGI, as Edge will: a chip with plenty of
+    /// memory of its own (a graphics card) may take half its time, a smaller one (graphics built into the processor,
+    /// like Intel UHD) a quarter, so the desktop and other apps stay smooth. With no graphics chip at all (a virtual
+    /// machine, a broken driver) the processor draws.
+    /// </summary>
+    public static class GraphicsChip
+    {
+        public const double FullShare = 0.5, SmallShare = 0.25;
+        private const long CardBytes = 2L << 30; // 2 GB of its own: a graphics card, not a chip sharing the PC's memory
+
+        public sealed class Choice
+        {
+            public bool Cpu;
+            public double GpuShare;
+            public string Chip = ""; // what was found, for the log
+            public string Why = "";
+
+            public string Describe()
+            {
+                return Cpu ? "the processor (" + Why + ")" : Chip + ", at most " + (int)Math.Round(GpuShare * 100) + "% of its time (" + Why + ")";
+            }
+        }
+
+        public static Choice Choose(string device)
+        {
+            var c = new Choice();
+            if (device == "cpu")
+            {
+                c.Cpu = true;
+                c.Why = "chosen";
+                return c;
+            }
+            string name;
+            long own;
+            bool found = Best(out name, out own);
+            c.Chip = found ? name + " (" + (own >> 20) + " MB of its own)" : "no graphics chip found";
+            if (device == "gpu")
+            {
+                c.GpuShare = FullShare;
+                c.Why = "chosen";
+                return c;
+            }
+            if (!found)
+            {
+                c.Cpu = true;
+                c.Why = "automatic: no graphics chip found";
+                return c;
+            }
+            bool card = own >= CardBytes;
+            c.GpuShare = card ? FullShare : SmallShare;
+            c.Why = card ? "automatic: a graphics card" : "automatic: graphics built into the processor";
+            return c;
+        }
+
+        /// <summary>The hardware graphics chip with the most memory of its own (where Edge draws, asking for high performance).</summary>
+        public static bool Best(out string name, out long own)
+        {
+            name = "";
+            own = -1;
+            IntPtr factory = IntPtr.Zero;
+            try
+            {
+                Guid iid = typeof(IDXGIFactory1).GUID;
+                if (CreateDXGIFactory1(ref iid, out factory) != 0 || factory == IntPtr.Zero) return false;
+                var f = (IDXGIFactory1)Marshal.GetObjectForIUnknown(factory);
+                for (uint i = 0; i < 16; i++)
+                {
+                    IDXGIAdapter1 a;
+                    if (f.EnumAdapters1(i, out a) != 0 || a == null) break;
+                    try
+                    {
+                        DXGI_ADAPTER_DESC1 d;
+                        if (a.GetDesc1(out d) != 0) continue;
+                        // the software adapter, and Microsoft's remote and basic display adapters, draw on the processor
+                        if ((d.Flags & 2) != 0 || d.VendorId == 0x1414) continue;
+                        long mem = (long)d.DedicatedVideoMemory;
+                        if (mem > own)
+                        {
+                            own = mem;
+                            name = (d.Description ?? "").Trim();
+                        }
+                    }
+                    finally
+                    {
+                        Marshal.ReleaseComObject(a);
+                    }
+                }
+                Marshal.ReleaseComObject(f);
+            }
+            catch (Exception)
+            {
+                return false; // no DXGI: an old or unusual Windows, so treat it as having no chip
+            }
+            finally
+            {
+                if (factory != IntPtr.Zero) Marshal.Release(factory);
+            }
+            return own >= 0;
+        }
+
+        [DllImport("dxgi.dll")]
+        private static extern int CreateDXGIFactory1(ref Guid riid, out IntPtr factory);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct DXGI_ADAPTER_DESC1
+        {
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string Description;
+            public uint VendorId, DeviceId, SubSysId, Revision;
+            public UIntPtr DedicatedVideoMemory, DedicatedSystemMemory, SharedSystemMemory;
+            public uint LuidLow;
+            public int LuidHigh;
+            public uint Flags;
+        }
+
+        // Only the methods called here have real signatures; the others hold their places in the table
+        [ComImport, Guid("770aae78-f26f-4dba-a829-253c83d1b387"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IDXGIFactory1
+        {
+            void SetPrivateData();
+            void SetPrivateDataInterface();
+            void GetPrivateData();
+            void GetParent();
+            void EnumAdapters();
+            void MakeWindowAssociation();
+            void GetWindowAssociation();
+            void CreateSwapChain();
+            void CreateSoftwareAdapter();
+            [PreserveSig] int EnumAdapters1(uint index, out IDXGIAdapter1 adapter);
+            [PreserveSig] bool IsCurrent();
+        }
+
+        [ComImport, Guid("29038f61-3839-4626-91fd-086879011a05"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IDXGIAdapter1
+        {
+            void SetPrivateData();
+            void SetPrivateDataInterface();
+            void GetPrivateData();
+            void GetParent();
+            void EnumOutputs();
+            void GetDesc();
+            void CheckInterfaceSupport();
+            [PreserveSig] int GetDesc1(out DXGI_ADAPTER_DESC1 desc);
+        }
+    }
+
     public sealed class WindowsBackground
     {
         // name: rendered with the sun at this altitude (see host/stills.mjs). StillFor chooses between them.
@@ -2221,7 +2482,8 @@ namespace LivingEarth
         public const short SW_SHOWMINNOACTIVE = 7;
         public const uint CREATE_SUSPENDED = 4, BELOW_NORMAL_PRIORITY_CLASS = 0x4000;
         public const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000, JOB_OBJECT_LIMIT_PRIORITY_CLASS = 0x20;
-        public const int JobObjectExtendedLimitInformation = 9;
+        public const int JobObjectExtendedLimitInformation = 9, JobObjectCpuRateControlInformation = 15;
+        public const uint JOB_OBJECT_CPU_RATE_CONTROL_ENABLE = 0x1, JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP = 0x4;
 
         public const uint SPI_SETDESKWALLPAPER = 0x14, SPIF_UPDATEINIFILE = 1, SPIF_SENDCHANGE = 2;
 
@@ -2262,6 +2524,13 @@ namespace LivingEarth
 
         [StructLayout(LayoutKind.Sequential)]
         public struct IO_COUNTERS { public ulong A, B, C, D, E, F; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct JOBOBJECT_CPU_RATE_CONTROL_INFORMATION
+        {
+            public uint ControlFlags;
+            public uint CpuRate; // hundredths of a percent of all the processors together
+        }
 
         [StructLayout(LayoutKind.Sequential)]
         public struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION

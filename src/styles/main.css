@@ -43,6 +43,39 @@ body {
   opacity: 0;
   pointer-events: none;
 }
+/* Started by the Windows app: the still for the time of day instead of black, a small note at the bottom of each
+   screen while the scene is made, and a slow dissolve into it */
+#veil.still {
+  align-items: end;
+  background-color: #05070b;
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  transition: opacity 4s ease;
+}
+#veil.still .veil-inner {
+  margin-bottom: 8vh;
+  padding: 13px 26px 15px;
+  border-radius: 14px;
+  background: rgba(6, 10, 18, 0.46);
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.22);
+  color: rgba(255, 255, 255, 0.78);
+}
+#veil.still .veil-title {
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: 0.2em;
+  color: #fff;
+}
+#veil.still .veil-sub {
+  margin-top: 6px;
+  font-size: 12px;
+}
+#veil.still .veil-bar {
+  margin-top: 10px;
+  width: 180px;
+  background: rgba(255, 255, 255, 0.2);
+}
 /* spanning two monitors: one loading card centred on each screen instead of one split by the bezel */
 #veil.span {
   grid-template-columns: 1fr 1fr;

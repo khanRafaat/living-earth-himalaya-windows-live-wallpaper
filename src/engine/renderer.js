@@ -223,6 +223,7 @@
         composite: new Program(gl, V, S.composite(), 'composite', X),
         sprites: new Program(gl, S.spriteVertex, S.spriteFragment(), 'sprites', X),
         fade: new Program(gl, V, S.fade(), 'fade', X),
+        fadeRain: new Program(gl, V, S.fadeRain(), 'fadeRain', X),
         roadHeights: new Program(gl, V, S.roadHeights(), 'roadHeights', X),
         noise3D: new Program(gl, V, S.noise3D(), 'noise3D', X),
         noise2D: new Program(gl, V, S.noise2D(), 'noise2D', X),
@@ -949,6 +950,9 @@
       p.set('uNight', state.night);
       p.set('uFade', this._fade);
       p.set('uRainLayers', this.quality.rainLayers);
+      // Slow mode keeps its pictures without the falling drops and flakes: each fade puts them in front (drawFade).
+      // The grass between scenes is drawn on the screen, after that fade, so it has them like a scene frame.
+      p.set('uPrecipOff', this._slow && !meter && !(band && band.grass) ? 1 : 0);
       p.set('uFog', w.fog);
       p.set('uDebugView', this.cfg.debugView | 0);
       p.set('uValleyHaze', w.valleyHaze);
@@ -1403,10 +1407,26 @@
         }
       }
       this._target(null, this.w, this.h);
-      const p = this.prog.fade;
+      const w = state.weather;
+      const falling = w.rain > 0.003 || w.snow > 0.003;
+      const p = falling ? this.prog.fadeRain : this.prog.fade;
       gl.useProgram(p.p);
       p.set('uMix', f);
-      this._bind(p, { uFrom: this.pictureA.tex[0], uTo: this.pictureB.tex[0] });
+      const tex = { uFrom: this.pictureA.tex[0], uTo: this.pictureB.tex[0] };
+      if (falling) {
+        // the drops and flakes as _compositePass draws them, at this frame's time
+        p.set('uRes', [this.w, this.h]);
+        p.set('uTime', state.time % 2400);
+        p.set('uRain', w.rain);
+        p.set('uSnow', w.snow);
+        p.set('uRainSlant', w.rainSlant);
+        p.set('uRainLayers', this.quality.rainLayers);
+        p.set('uFlash', w.flash);
+        p.set('uNight', state.night);
+        p.set('uFade', this._fade);
+        tex.uSkyLUT = this.skyLUT.tex[0];
+      }
+      this._bind(p, tex);
       this._draw();
       this._grassPass(state);
       this._spritePass(state);

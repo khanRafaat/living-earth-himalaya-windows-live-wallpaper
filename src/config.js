@@ -8,7 +8,7 @@
   const LE = (window.LE = window.LE || {});
 
   LE.config = {
-    version: '2.2.0',
+    version: '2.2.1',
 
     location: {
       name: 'Dhaka',
@@ -122,4 +122,22 @@
   c.shootingStars = q.get('stars') !== '0'; // meteors and satellites. The stars themselves stay
   if (['right-bottom', 'right-top', 'left-bottom', 'left-top'].includes(q.get('corner'))) c.ui.panelPosition = q.get('corner');
   if (['small', 'medium', 'large'].includes(q.get('panelsize'))) c.ui.panelSize = q.get('panelsize');
+
+  // ---- what draws the picture, chosen in the Windows app (host/): the graphics chip, or the processor
+  // gpushare: the most of the graphics chip's time this page may take (the app gives a weak chip a smaller share)
+  c.render.maxGpuShare = Math.min(0.9, Math.max(0.1, num('gpushare', c.render.maxGpuShare)));
+  c.render.device = q.get('device') === 'cpu' ? 'cpu' : 'gpu';
+  if (c.render.device === 'cpu') {
+    // Edge draws on the processor (Direct3D's software adapter). A quarter of the pixels, scaled up to the screen,
+    // the lightest quality, a new scene every 2 s and fewer frames between, so it needs a small part of the processor.
+    c.render.renderScale = Math.min(c.render.renderScale, 0.5);
+    c.render.quality = 'eco';
+    c.render.fpsCap = Math.min(c.render.fpsCap, 15);
+    c.render.calmFps = Math.min(c.render.calmFps, 10);
+    if (c.render.calmSceneMs) c.render.calmSceneMs = Math.max(c.render.calmSceneMs, 2000);
+  }
+  // The Windows app's start: the still that is already the desktop background (host/stills), behind the start-up
+  // screen instead of black, so the scene fades in over the same picture
+  const still = q.get('still');
+  c.startStill = ['night', 'dawn', 'morning', 'day', 'golden', 'dusk'].includes(still) ? still : null;
 })();

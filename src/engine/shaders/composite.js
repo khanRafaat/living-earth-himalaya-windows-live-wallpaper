@@ -20,6 +20,9 @@ uniform float uSnow;
 uniform float uRainSlant;
 uniform float uRainLayers;
 uniform float uFade;
+// 1: no falling rain or snow in this picture. Slow mode keeps pictures without them and draws them over each
+// fade instead (fadeRain), so they fall at the full frame rate while the scene is drawn twice a second.
+uniform float uPrecipOff;
 
 // ---------------- precipitation ----------------
 float streaks(vec2 p, float cellW, float len, float speed, float width, float dens, float seed) {
@@ -51,30 +54,41 @@ float flakes(vec2 p, float cell, float speed, float size, float dens, float seed
   return exp(-d * d / (size * size));
 }
 
-vec3 precipitation(vec3 col, vec2 fc) {
-  if (uRain <= 0.003 && uSnow <= 0.003) return col; // most of the time: nothing to do for this pixel
+// how much of this pixel falling rain (x) and snow (y) cover
+vec2 precipMask(vec2 fc) {
   vec2 p = fc / uRes.y * 1080.0;
-  vec3 zen = textureLod(uSkyLUT, vec2(0.5, 1.0), 0.0).rgb; // the zenith, as skyLUT(vec3(0.0, 1.0, 0.0))
-  vec3 skyA = vec3(dot(zen, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.9, 0.95, 1.0) * PI * 0.3;
-  // Drops catch whatever light is around, so rain still shows on a moonless night
-  skyA = max(skyA, vec3(0.036, 0.04, 0.046)) + uFlash * 0.05;
+  vec2 m = vec2(0.0);
   if (uRain > 0.003) {
     float r = 0.0;
     r += streaks(p, 31.0, 170.0, 2300.0, 1.5, 0.14 * uRain, 1.0) * 0.36;
     r += streaks(p, 17.0, 105.0, 1750.0, 1.05, 0.22 * uRain, 2.0) * 0.28;
     if (uRainLayers > 2.5) r += streaks(p, 9.0, 60.0, 1250.0, 0.8, 0.30 * uRain, 3.0) * 0.2;
     if (uRainLayers > 3.5) r += streaks(p, 5.0, 34.0, 900.0, 0.6, 0.36 * uRain, 4.0) * 0.14;
-    r = min(r, 1.0);
-    col = col * (1.0 - 0.3 * r) + skyA * r * 4.0;
+    m.x = min(r, 1.0);
   }
   if (uSnow > 0.003) {
     float s = 0.0;
     s += flakes(p, 70.0, 75.0, 2.6, 0.35 * uSnow, 5.0) * 0.8;
     s += flakes(p, 40.0, 52.0, 1.7, 0.45 * uSnow, 6.0) * 0.55;
     if (uRainLayers > 2.5) s += flakes(p, 22.0, 34.0, 1.1, 0.55 * uSnow, 7.0) * 0.35;
-    col += (skyA * 2.2 + 0.02) * s;
+    m.y = s;
   }
-  return col;
+  return m;
+}
+
+// the drops and flakes of precipMask() in front of the light col
+vec3 precipApply(vec3 col, vec2 m) {
+  vec3 zen = textureLod(uSkyLUT, vec2(0.5, 1.0), 0.0).rgb; // the zenith, as skyLUT(vec3(0.0, 1.0, 0.0))
+  vec3 skyA = vec3(dot(zen, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.9, 0.95, 1.0) * PI * 0.3;
+  // Drops catch whatever light is around, so rain still shows on a moonless night
+  skyA = max(skyA, vec3(0.036, 0.04, 0.046)) + uFlash * 0.05;
+  col = col * (1.0 - 0.3 * m.x) + skyA * m.x * 4.0;
+  return col + (skyA * 2.2 + 0.02) * m.y;
+}
+
+vec3 precipitation(vec3 col, vec2 fc) {
+  if (uPrecipOff > 0.5 || (uRain <= 0.003 && uSnow <= 0.003)) return col; // most of the time: nothing to do
+  return precipApply(col, precipMask(fc));
 }
 
 vec3 aces(vec3 x) {
@@ -102,10 +116,8 @@ vec3 exposeColor(vec3 col, float t) {
   return col;
 }
 
-// rain and snow in front, low-light vision, tone curve, gamma, fade-in and dither (fc: screen pixel)
-vec4 finishColor(vec3 col, vec2 fc) {
-  col = precipitation(col, fc);
-
+// low-light vision, tone curve, gamma, fade-in and dither (fc: screen pixel). fadeRain undoes it (ungrade).
+vec4 gradeColor(vec3 col, vec2 fc) {
   // low-light vision: bluer, less saturated
   float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
   col = mix(col, lum * vec3(0.6, 0.74, 1.0) * 1.15, uNight * 0.5);
@@ -117,6 +129,11 @@ vec4 finishColor(vec3 col, vec2 fc) {
   col *= uFade;
   col += (hash12(fc + fract(uTime * 7.31) * 113.0) - 0.5) / 255.0;
   return vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+
+// rain and snow in front, then gradeColor (fc: screen pixel)
+vec4 finishColor(vec3 col, vec2 fc) {
+  return gradeColor(precipitation(col, fc), fc);
 }
 `;
 

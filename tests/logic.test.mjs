@@ -1448,7 +1448,7 @@ test('a calm scene is drawn a few bands at a time, and shows only when it is who
   r._draw = () => {};
   r._spritePass = () => {};
   r.fg = { draw() {} };
-  const state = { time: 5, treeDir: [1, 0], treeKmh: 0, windAmt: 0 };
+  const state = { time: 5, treeDir: [1, 0], treeKmh: 0, windAmt: 0, weather: { rain: 0, snow: 0 } };
   r._compositePass = (s, meter, band) => {
     bands.push([band.y, band.h]);
     times.push(s.time);
@@ -1475,6 +1475,65 @@ test('a calm scene is drawn a few bands at a time, and shows only when it is who
   assert.equal(r.pictureBusy(), false);
   assert.equal(r.pictureAt, 1100, 'the next fade is timed from now');
   assert.equal(r.pictureNext.tex[0], 'A', 'the oldest picture is drawn over next');
+});
+
+test('in rain or snow the calm scene goes on, and the drops fall over every fade at its own time', () => {
+  const { r, gl } = newRendererWithFence();
+  gl.useProgram = () => {};
+  r.status = 'running';
+  r.w = 100;
+  r.h = 80;
+  r._pictureReady = true;
+  r.pictureA = { tex: ['A'] };
+  r.pictureB = { tex: ['B'] };
+  r.pictureNext = { tex: ['C'] };
+  r.skyLUT = { tex: ['sky'] };
+  r.quality = { rainLayers: 3 };
+  r._fade = 1;
+  const used = [];
+  const seen = {};
+  const prog = (name) => ({ p: name, set: (k, v) => (seen[k] = v) });
+  r.prog = { fade: prog('fade'), fadeRain: prog('fadeRain') };
+  gl.useProgram = (p) => used.push(p);
+  r._target = () => {};
+  let bound = {};
+  r._bind = (p, t) => (bound = t);
+  r._draw = () => {};
+  r._spritePass = () => {};
+  r.fg = { draw() {} };
+  const weather = { rain: 0, snow: 0, rainSlant: 0.1, flash: 0 };
+  const state = { time: 2405, treeDir: [1, 0], treeKmh: 0, windAmt: 0, night: 0.3, weather };
+  r.drawFade(0.5, state);
+  assert.deepEqual(used, ['fade'], 'dry: the plain fade');
+  assert.equal(bound.uSkyLUT, undefined);
+  weather.rain = 0.12; // the light drizzle that kept the whole scene at the full rate before
+  r.drawFade(0.5, state);
+  assert.equal(used[1], 'fadeRain', 'rain: the fade that puts the drops in front');
+  assert.equal(seen.uRain, 0.12);
+  assert.equal(seen.uTime, 5, 'the same wrapped clock as the scene, so the drops line up with the tree\'s');
+  assert.equal(seen.uNight, 0.3);
+  assert.equal(seen.uRainLayers, 3);
+  assert.deepEqual([bound.uFrom, bound.uTo, bound.uSkyLUT], ['A', 'B', 'sky']);
+  weather.rain = 0;
+  weather.snow = 0.4;
+  r.drawFade(0.5, state);
+  assert.equal(used[2], 'fadeRain', 'snow too');
+  assert.equal(seen.uSnow, 0.4);
+});
+
+test('the kept pictures have no falling drops, and the scene\'s own frames and the grass between them do', () => {
+  const src = readFileSync(new URL('engine/renderer.js', SRC), 'utf8');
+  assert.ok(
+    src.includes("p.set('uPrecipOff', this._slow && !meter && !(band && band.grass) ? 1 : 0)"),
+    'slow mode keeps its pictures without them; the grass is drawn on the screen after the fade, so with them'
+  );
+  const comp = readFileSync(new URL('engine/shaders/composite.js', SRC), 'utf8');
+  assert.ok(comp.includes('if (uPrecipOff > 0.5 || (uRain <= 0.003 && uSnow <= 0.003)) return col;'));
+  assert.ok(comp.includes('return gradeColor(precipitation(col, fc), fc);'), 'finishColor: the drops, then the grading');
+  const main = readFileSync(new URL('main.js', SRC), 'utf8');
+  const calm = main.slice(main.indexOf('function calmScene'), main.indexOf('function stepLife'));
+  assert.ok(!/rain|snow/.test(calm), 'rain and snow no longer stop the calm scene');
+  assert.ok(main.includes('renderer.foregroundMoving() || w.rain > 0.003 || w.snow > 0.003'), 'and the fades run at the full rate while they fall');
 });
 
 test('the wind in the grass runs the way the real wind blows, at its speed, and never jumps', () => {
@@ -2017,6 +2076,28 @@ test('flying leaves off clears the air at once and keeps the tree, in autumn win
   fg.r.cfg.leaves = true;
   run(12, 36, [1, 0]);
   assert.ok(fg.drift.length > 5, 'and they come back when turned on');
+});
+
+test('the Windows app can have the processor draw, or give the graphics chip a share, from the address', () => {
+  const gpu = load(['config.js']).LE.config;
+  assert.equal(gpu.render.device, 'gpu');
+  assert.equal(gpu.render.maxGpuShare, 0.5, 'half the graphics chip, as before');
+  assert.equal(gpu.startStill, null);
+  const small = load(['config.js'], { search: '?gpushare=0.25&quality=high' }).LE.config;
+  assert.equal(small.render.maxGpuShare, 0.25);
+  assert.equal(small.render.quality, 'high');
+  assert.equal(load(['config.js'], { search: '?gpushare=5' }).LE.config.render.maxGpuShare, 0.9, 'never all of it');
+  assert.equal(load(['config.js'], { search: '?gpushare=0' }).LE.config.render.maxGpuShare, 0.1);
+  const cpu = load(['config.js'], { search: '?device=cpu&quality=high&fps=24' }).LE.config;
+  assert.equal(cpu.render.device, 'cpu');
+  assert.equal(cpu.render.renderScale, 0.5, 'a quarter of the pixels');
+  assert.equal(cpu.render.quality, 'eco');
+  assert.equal(cpu.render.fpsCap, 15);
+  assert.equal(cpu.render.calmFps, 10);
+  assert.equal(cpu.render.calmSceneMs, 2000);
+  assert.equal(load(['config.js'], { search: '?device=cpu&test=1' }).LE.config.render.calmSceneMs, 0, 'tests still see every frame');
+  assert.equal(load(['config.js'], { search: '?still=golden' }).LE.config.startStill, 'golden');
+  assert.equal(load(['config.js'], { search: '?still=../../x' }).LE.config.startStill, null, 'only the stills there are');
 });
 
 test('birds, leaves and the corner come from the address, and an unknown corner is ignored', () => {
