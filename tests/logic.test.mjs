@@ -2961,3 +2961,197 @@ test('indicators blink at about one and a half times a second, without raising t
   assert.equal(h.life.movers, 0, 'it does not ask for more frames');
   assert.ok(c.blink === 2);
 });
+
+// ---------------------------------------------------------------- the motion's clock (birds, leaves, the tree)
+// A frame that came seconds late moved every bird across the whole gap at once, and a gap over 2 s made the falling
+// leaves start over: on screen, birds and leaves vanished and appeared somewhere else.
+function steady(c, from, n, ms) {
+  let now = from;
+  for (let i = 0; i < n; i++) c.tick((now += ms));
+  return now;
+}
+
+test('a late frame moves birds and leaves on a little, never across the whole gap', () => {
+  const { LE } = load(['services/clock.js']);
+  const c = new LE.SceneClock(0);
+  let now = steady(c, 0, 100, 50);
+  near(c.t, 5, 1e-9, 'frames 50 ms apart keep real time');
+  const before = c.t;
+  c.tick((now += 3000)); // the PC busy for 3 s
+  const moved = c.t - before;
+  assert.ok(moved <= LE.SceneClock.MIN_CAP_MS / 1000 + 1e-9, `3 s late: ${moved} s of motion in one frame`);
+  assert.ok(moved >= 0.05, 'but it does move on');
+  const after = c.t;
+  steady(c, now, 20, 50);
+  near(c.t - after, 1, 1e-9, 'and keeps real time again at once');
+});
+
+test('a pause moves nothing on: the next frame goes on from the held picture', () => {
+  const { LE } = load(['services/clock.js']);
+  const c = new LE.SceneClock(0);
+  let now = steady(c, 0, 40, 50);
+  const held = c.t;
+  now += 10 * 60e3; // ten minutes in an app
+  c.resume(now);
+  c.tick((now += 50));
+  near(c.t - held, 0.05, 1e-9, 'one frame on');
+});
+
+test('a chip that is slow all the time keeps real time', () => {
+  const { LE } = load(['services/clock.js']);
+  const c = new LE.SceneClock(0);
+  const now = steady(c, 0, 15, 600);
+  const t = c.t;
+  steady(c, now, 10, 600);
+  near(c.t - t, 6, 1e-9, 'frames 0.6 s apart, after a few of them');
+  const d = new LE.SceneClock(0);
+  steady(d, 0, 20, 120); // rest mode on a slow chip: fades 120 ms apart
+  near(d.t, 2.4, 1e-9, 'frames 120 ms apart from the first');
+});
+
+test('the page moves birds and leaves on the motion clock, and a pause resumes it', () => {
+  const main = readFileSync(new URL('main.js', SRC), 'utf8');
+  assert.ok(!main.includes('simStart'), 'no clock that runs on through a pause');
+  assert.ok(/lastState\.time = sceneClock\.tick\(now\);\s*stepLife\(lastState\);/.test(main), 'a fade sets the time first, then moves life');
+  assert.ok(main.includes('const timeSec = sceneClock.tick(nowReal);'), 'a scene frame too');
+  assert.ok(/sceneClock\.resume\(lastReal\);\s*env\.refreshSky\(\);/.test(main), 'a resume goes on from the held picture, with the sun where it is now');
+  assert.ok(/renderer\.refreshSky\(\);\s*renderer\.forgetFrame\(\);/.test(main), 'and does not time the pause as a frame on the GPU');
+  assert.ok(/renderer\.forgetFrame\(\);[^}]*renderer\.forgetPictures\(\);/.test(main), 'and draws the next scene whole, not from pictures kept before it');
+  assert.ok(/renderer\.setArea\(restMs \? restArea : null\);\s*const drew = renderer\.render\(state, dt\);/.test(main),
+    'the free screen\'s part of the width reaches the renderer, in the app\'s rest only');
+  // measured on the UHD 730: at 20 fades a second the free screen took 14–16 % of the chip, as much as the old rest
+  assert.ok(/if \(restMs && restArea\) rate = Math\.min\(rate, FADE_FPS\);/.test(main), 'and its fades come at the dissolve\'s rate, 10 a second');
+});
+
+// Two screens, an app in front on one: the other screen stood still too, and a whole screen of desktop not moving
+// beside the app looked wrong (2026-11-10). Now it moves gently, and only its part of the scene is drawn again.
+test('while you work on one screen, rest draws the scene again only where another screen shows the desktop', () => {
+  const { r, gl } = newRendererWithFence();
+  const calls = [];
+  Object.assign(gl, {
+    READ_FRAMEBUFFER: 10,
+    DRAW_FRAMEBUFFER: 11,
+    FRAMEBUFFER: 12,
+    COLOR_BUFFER_BIT: 1,
+    NEAREST: 2,
+    bindFramebuffer: (t, f) => calls.push(['bind', t, f]),
+    blitFramebuffer: (...a) => calls.push(['blit', ...a]),
+  });
+  r.w = 3840;
+  r.h = 1080;
+  r.pictureBands = 8;
+  r.pictureA = { fbo: 'A' };
+  r.pictureB = { fbo: 'B' };
+  r.pictureNext = { fbo: 'N' };
+  const bands = [];
+  r._compositePass = (s, meter, band) => bands.push(band);
+  const picture = () => {
+    calls.length = 0;
+    bands.length = 0;
+    r._pictureJob = { state: { time: 5 }, time: 5, y: 0, fresh: true };
+    r._pictureStep(); // the frame it begins
+    assert.equal(bands.length, 0, 'nothing drawn in the frame that begins it');
+    while (r._pictureJob.y < r.h) r._pictureStep();
+  };
+
+  r.setArea([0.5, 1]);
+  picture();
+  const blits = calls.filter((c) => c[0] === 'blit');
+  assert.equal(blits.length, 1, 'the latest picture is copied into the next one, once');
+  assert.deepEqual(blits[0].slice(1, 9), [0, 0, 3840, 1080, 0, 0, 3840, 1080], 'whole');
+  assert.ok(calls.some((c) => c[0] === 'bind' && c[1] === 10 && c[2] === 'B') && calls.some((c) => c[0] === 'bind' && c[1] === 11 && c[2] === 'N'), 'from the latest, into the next');
+  assert.ok(bands.length >= 8, `${bands.length} bands`);
+  for (const b of bands) assert.deepEqual([b.x, b.w], [1920, 1920], 'only the right-hand screen');
+  assert.equal(bands.reduce((s, b) => s + b.h, 0), 1080, 'all of its height');
+
+  r.setArea([0, 0.5]);
+  picture();
+  for (const b of bands) assert.deepEqual([b.x, b.w], [0, 1920], 'the app went to the other screen');
+
+  r.setArea(null);
+  picture();
+  assert.equal(calls.filter((c) => c[0] === 'blit').length, 0, 'drawn whole: nothing to copy');
+  for (const b of bands) assert.deepEqual([b.x, b.w], [0, 3840], 'all of the width');
+
+  r.setArea([0.7, 0.2]);
+  assert.equal(r._area, null, 'an empty part is no part');
+
+  r._pictureReady = true;
+  r._pictureJob = { y: 0 };
+  r.forgetPictures();
+  assert.equal(r._pictureReady, false, 'after a pause the kept pictures are old');
+  assert.equal(r._pictureJob, null);
+});
+
+test('the app tells the page which part of the width keeps moving while you work on another screen', () => {
+  const h = load(['config.js', 'services/host.js'], { search: '?host=1' });
+  h.ctx.document.createElement = () => ({ remove() {} });
+  h.ctx.document.head = { appendChild: (s) => s.onload() };
+  let now = 1; // the page's clock never reads 0
+  h.ctx.performance = { now: () => now };
+  const got = [];
+  h.ctx.leSetArea = (a) => got.push(['area', a && [...a]]);
+  h.ctx.leSetSlowFrames = (ms) => got.push(['slow', ms]);
+  h.ctx.livelyWallpaperPlaybackChanged = (p) => got.push(['paused', p.IsPaused]);
+  h.ctx.__leReady = true;
+  h.tick();
+  now = 7000; // settled
+  const say = (pace, opts) => {
+    got.length = 0;
+    h.ctx.leHostState(pace, opts);
+    h.tick();
+    return got;
+  };
+  assert.deepEqual(say('rest', { area: [0.5, 1] }), [['area', [0.5, 1]], ['slow', 2000], ['paused', false]]);
+  assert.deepEqual(say('rest', { area: [0.5, 1] }), [], 'the same again changes nothing');
+  assert.deepEqual(say('rest', { area: [0, 0.5] }), [['area', [0, 0.5]], ['slow', 2000], ['paused', false]], 'the app went to the other screen');
+  assert.deepEqual(say('rest', {})[0], ['area', null], 'rest while the PC is busy draws all of it');
+  assert.deepEqual(say('still', {}), [['area', null], ['slow', 0], ['paused', true]], 'an app in front with no free screen');
+  assert.deepEqual(say('live', { area: [0.5, 1] }), [['area', null], ['slow', 0], ['paused', false]], 'an area means nothing outside rest');
+  for (const bad of [[0.6, 0.4], [0, 2], ['a', 1], [0.5], 'left']) {
+    say('rest', { area: [0.25, 0.75] });
+    assert.deepEqual(say('rest', { area: bad })[0], ['area', null], JSON.stringify(bad));
+  }
+});
+
+test('a long step keeps the falling leaves going instead of starting them over', () => {
+  const { fg, run } = newForeground();
+  run(12, 36, [1, 0]);
+  const seeds = fg.drift.map((L) => L.seed);
+  assert.ok(seeds.length > 5, 'leaves in the air');
+  const st = { time: 12 + 2.4, treeKmh: 36, gustDir: [1, 0], season: [0, 1, 0, 0], astro: { dayOfYear: 310 } };
+  fg.update(st); // a chip that draws about once a second: a late frame moves on 2.4 s
+  const still = seeds.filter((k) => fg.drift.some((L) => L.seed === k)).length;
+  assert.ok(still >= seeds.length * 0.5, `${still} of ${seeds.length} still falling, not all gone at once`);
+});
+
+// Measured across a pause, one frame seemed to take many seconds on the GPU, and the frames after it were spaced
+// that far apart: after every return to the desktop the wallpaper stood nearly still for minutes (seen 2026-11-10).
+test('a pause is not counted as time on the GPU', () => {
+  const { r, advance, signal } = newRendererWithFence();
+  r.gpuBusyMs = 12;
+  r._fenceFrame();
+  advance(10);
+  assert.equal(r.frameDone(), false, 'on the GPU when the wallpaper paused');
+  signal(true);
+  advance(60000); // a minute in an app: nobody looks
+  r.forgetFrame(); // the page goes on
+  assert.equal(r.frameDone(), true, 'finished long ago');
+  near(r.gpuBusyMs, 12, 1e-9, 'the minute away is not the frame’s cost');
+  r._fenceFrame();
+  advance(16);
+  assert.equal(r.frameDone(), true);
+  near(r.gpuBusyMs, 12 + (8 - 12) * 0.2, 1e-9, 'the next frame is measured as usual');
+});
+
+test('a slow frame watched at every refresh still counts in full', () => {
+  const { r, advance, signal } = newRendererWithFence();
+  r._fenceFrame();
+  for (let t = 0; t < 400; t += 16) {
+    assert.equal(r.frameDone(), false);
+    advance(16);
+  }
+  signal(true);
+  assert.equal(r.frameDone(), true);
+  near(r.gpuBusyMs, 400 - 8, 1e-9, 'the GPU really was busy that long');
+});

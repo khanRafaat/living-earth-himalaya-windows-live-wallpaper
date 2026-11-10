@@ -187,6 +187,7 @@
   let rafId = 0;
   let slowMs = 0; // slow mode: milliseconds between scenes (0 = off)
   let restMs = 0; // what the Windows app asked for, when the PC is busy with other work
+  let restArea = null; // ...and while you work on another screen, the part of the width that shows the desktop
   let slowTimer = 0;
   let fadeRaf = 0;
   let fadeTimer = 0;
@@ -194,9 +195,10 @@
   const FADE_FPS = 10; // enough for a slow dissolve. Birds on screen raise it to calmFps
   let lastFrame = 0;
   let lastReal = performance.now();
-  let lastLife = performance.now();
   let lastPanel = 0;
-  let simStart = performance.now();
+  // The motion's own time (state.time): real time between frames, but a late frame or a pause never makes a leap
+  const sceneClock = new LE.SceneClock(performance.now());
+  let lifeAt = 0; // the scene time life was last moved on to
   let fpsCount = 0;
   let fpsAt = performance.now();
   let fps = 0;
@@ -236,9 +238,9 @@
     return now - lastFast < 3000 ? 0 : cfg.render.calmSceneMs;
   }
 
-  function stepLife(state, now) {
-    life.update(Math.min((now - lastLife) / 1000, 120), state, renderer.viewInfo());
-    lastLife = now;
+  function stepLife(state) {
+    life.update(Math.min(Math.max(state.time - lifeAt, 0), 120), state, renderer.viewInfo());
+    lifeAt = state.time;
   }
 
   // Slow mode between scenes: a fade between two finished pictures, the birds and the tree, which costs a small
@@ -252,12 +254,15 @@
       const now = performance.now();
       // Right after a scene it can't wait: that frame has neither birds nor the tree until this one adds them
       if (afterScene === true || now >= nextFade) {
-        stepLife(lastState, now);
-        lastState.time = (now - simStart) / 1000;
+        lastState.time = sceneClock.tick(now);
+        stepLife(lastState);
         if (!renderer.drawFade(Math.min((now - renderer.pictureAt) / slowMs, 1), lastState)) return;
         const w = lastState.weather;
         const moving = life.movers > 0 || renderer.foregroundMoving() || w.rain > 0.003 || w.snow > 0.003;
-        const rate = moving ? (restMs ? cfg.render.calmFps : cfg.render.fpsCap) : renderer.grassMoving() ? cfg.render.calmFps : FADE_FPS;
+        let rate = moving ? (restMs ? cfg.render.calmFps : cfg.render.fpsCap) : renderer.grassMoving() ? cfg.render.calmFps : FADE_FPS;
+        // While you work on the other screen every fade still covers the whole width, so they come at the dissolve's own
+        // rate: at 20 a second the free screen cost about as much as the old rest that made the desktop stutter
+        if (restMs && restArea) rate = Math.min(rate, FADE_FPS);
         // A slow chip gets fewer frames, and never more than its share of the GPU
         nextFade = now + Math.max(1000 / rate, renderer.gpuBusyMs / cfg.render.maxGpuShare);
       } else {
@@ -319,7 +324,7 @@
     // Environment.update makes the weather jump after a gap over 30 s, so slow mode stays under that
     const dt = Math.min((nowReal - lastReal) / 1000, slowMs ? 25 : 120);
     lastReal = nowReal;
-    const timeSec = (nowReal - simStart) / 1000;
+    const timeSec = sceneClock.tick(nowReal);
     // the demo, on or off as asked, once the scene is up; while it plays it says what time and weather it is
     if (renderer.status === 'running' && !!cfg.demo !== demo.on) setDemo(!!cfg.demo);
     const d = demo.on ? stepDemo(nowReal) : null;
@@ -347,13 +352,14 @@
       life.fires = cfg.fires !== false;
       life.shootingStars = cfg.shootingStars !== false;
       life.traffic = demo.on ? 'busy' : cfg.traffic || 'normal'; // the demo shows a busy road, without touching the setting
-      stepLife(state, nowReal);
+      stepLife(state);
       if (d) for (const k of d.summons) life.summon(k);
     } else {
-      lastLife = nowReal;
+      lifeAt = timeSec;
     }
     if (restMs) state.weather.flash = 0; // a lightning flash would stay on screen until the next frame
     renderer.setSlowMode(!!slowMs, !!restMs);
+    renderer.setArea(restMs ? restArea : null);
     const drew = renderer.render(state, dt);
 
     if (drew && slowMs) fadeFrame(true);
@@ -461,7 +467,15 @@
     } else {
       clearInterval(pausedPanelTimer);
       lastReal = performance.now();
-      lastLife = lastReal;
+      // the birds and leaves go on from where the held picture shows them; the sun and moon from where they are now
+      sceneClock.resume(lastReal);
+      env.refreshSky();
+      if (renderer) {
+        renderer.refreshSky();
+        renderer.forgetFrame();
+        // pictures kept from before the pause are old: the next scene is drawn whole
+        renderer.forgetPictures();
+      }
       lastFrame = 0;
       rafId = requestAnimationFrame(frame);
     }
@@ -475,6 +489,10 @@
   window.leSetSlowFrames = function (ms) {
     restMs = ms;
     setSlowFrames(ms);
+  };
+  // Used by src/services/host.js: in rest, draw the scene again only in [x0, x1] of the width (null: all of it)
+  window.leSetArea = function (a) {
+    restArea = a ? [a[0], a[1]] : null;
   };
   function setSlowFrames(ms) {
     if (ms === slowMs) return;
@@ -626,7 +644,7 @@
     governor = new LE.QualityGovernor(renderer, cfg.render.quality);
     const [w, h] = targetSize();
     renderer.resize(w, h);
-    window.__le = { renderer, env, weather, cfg, governor };
+    window.__le = { renderer, env, weather, cfg, governor, sceneClock };
   }
 
   canvas.addEventListener('webglcontextlost', (e) => {

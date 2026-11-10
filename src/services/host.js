@@ -4,8 +4,11 @@
  * from disk without a server or an open port.
  *
  *   live   full animation (the empty desktop is in front)
- *   rest   the scene every 2 s (you are working), fading smoothly between its pictures with the birds flying
- *   still  no frames at all (locked, or paused from the tray)
+ *   rest   the scene every 2 s, fading smoothly between its pictures with the birds flying (the desktop is in front
+ *          while the PC is busy, or has just been signed in to). With area: [x0, x1], an app is in front on one screen
+ *          while another shows the desktop: only that part of the width (0 to 1) is drawn again, and the rest keeps its
+ *          picture, so the free screen moves gently and the graphics chip does as little as it can
+ *   still  no frames at all (an app is in front, locked, or paused from the tray)
  *
  * The second argument carries settings: { quality, road, traffic, birds, leaves, tree, mist, banners, demo, smoke, fires, lights, stars,
  * panel, corner, panelSize, place: { lat, lon, name } }.
@@ -17,7 +20,7 @@
   'use strict';
   if (new URLSearchParams(window.location.search).get('host') !== '1') return;
 
-  const POLL_MS = 1000;
+  const POLL_MS = 250; // an app coming to the front stops the frames within a moment: the file is a few hundred bytes
   const SLOW_FRAME_MS = 2000;
   const SETTLE_MS = 6000; // run at full speed first, or the first picture would hold a half-formed sky
   const QUALITY = ['auto', 'eco', 'balanced', 'high', 'ultra']; // the order livelyPropertyListener expects
@@ -27,6 +30,8 @@
 
   let wanted = 'live';
   let applied = 'live';
+  let wantedArea = null; // rest only: [x0, x1]
+  let appliedArea = '';
   let readyAt = 0;
   let options = null;
   let placeKey = '';
@@ -34,6 +39,9 @@
   window.leHostState = function (state, opts) {
     wanted = state;
     options = opts || null;
+    const a = opts && opts.area;
+    const ok = state === 'rest' && Array.isArray(a) && a.length === 2 && a.every((v) => typeof v === 'number' && v >= 0 && v <= 1) && a[1] > a[0];
+    wantedArea = ok ? [a[0], a[1]] : null;
   };
 
   function applyOptions() {
@@ -84,8 +92,11 @@
     if (!window.__leReady) return;
     const now = performance.now();
     if (!readyAt) readyAt = now;
-    if (now - readyAt < SETTLE_MS || wanted === applied) return;
+    const areaKey = wantedArea ? wantedArea.join(',') : '';
+    if (now - readyAt < SETTLE_MS || (wanted === applied && areaKey === appliedArea)) return;
     applied = wanted;
+    appliedArea = areaKey;
+    if (window.leSetArea) window.leSetArea(wantedArea);
     window.leSetSlowFrames(applied === 'rest' ? SLOW_FRAME_MS : 0);
     window.livelyWallpaperPlaybackChanged({ IsPaused: applied === 'still' });
   }

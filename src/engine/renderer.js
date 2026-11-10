@@ -155,6 +155,7 @@
       this.pictureBands = 8; // slow mode: how many parts a new picture is drawn in
       this.pictureAt = 0; // slow mode: when the picture now fading in was ready
       this._pictureJob = null; // slow mode: the picture being drawn
+      this._area = null; // rest while you work on another screen: [x0, x1] of the width drawn again (setArea)
       this._grassAt = null; // the wind in the grass: when it last moved on, and uGrassWind
       this._grassWind = [0, 0, 0, 0];
     }
@@ -1296,6 +1297,35 @@
       this._bgPacer.maxPx = 32768 * ms;
     }
 
+    /**
+     * The Windows app's rest while you work on one screen and another shows the desktop: the scene is drawn again only
+     * in [x0, x1] of the width (0 to 1), and the rest keeps its last picture. null draws all of it.
+     */
+    setArea(a) {
+      this._area = a && a[1] > a[0] ? a : null;
+    }
+
+    /** After a pause: the kept pictures are old, so the next scene is drawn whole and kept again. */
+    forgetPictures() {
+      this._pictureReady = false;
+      this._pictureJob = null;
+    }
+
+    /**
+     * Going on after a pause: the frame sent before it finished long ago. Timed when it is next looked at, the minutes
+     * away made one frame seem many seconds long on the GPU, and the frames after it were spaced that far apart: after
+     * every return to the desktop the wallpaper stood nearly still for minutes (seen 2026-11-10).
+     */
+    forgetFrame() {
+      if (this._frameFence !== null && this.gl) this.gl.deleteSync(this._frameFence);
+      this._frameFence = null;
+    }
+
+    /** After a pause: the sky tables follow the sun at the next scene, not a second of the scene's time later. */
+    refreshSky() {
+      this._lutAt = -1e9;
+    }
+
     /** Slow mode starts: keeps the scene just drawn on the screen, with nothing to fade from yet. */
     _keepPicture() {
       const gl = this.gl;
@@ -1361,18 +1391,33 @@
       return this._pictureJob !== null;
     }
 
-    /** One more band of the next picture. Waits a frame after it is begun: that frame has the clouds to draw. */
+    /**
+     * One more band of the next picture. Waits a frame after it is begun: that frame has the clouds to draw.
+     * With an area, the bands cover only that part of the width, and the rest of the next picture is the latest one.
+     */
     _pictureStep() {
       const job = this._pictureJob;
       if (job.fresh) {
         job.fresh = false;
+        job.x = 0;
+        job.w = this.w;
+        const a = this._area;
+        if (a) {
+          job.x = Math.max(0, Math.floor(a[0] * this.w));
+          job.w = Math.max(1, Math.min(this.w, Math.ceil(a[1] * this.w)) - job.x);
+          const gl = this.gl;
+          gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.pictureB.fbo);
+          gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.pictureNext.fbo);
+          gl.blitFramebuffer(0, 0, this.w, this.h, 0, 0, this.w, this.h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        }
         return;
       }
       if (job.y >= this.h) return;
       const n = Math.min(Math.ceil(this.h / this.pictureBands), this.h - job.y);
       const now = job.state.time;
       job.state.time = job.time; // the fade moves the clock on, and the bands must match each other
-      this._compositePass(job.state, false, { x: 0, y: job.y, w: this.w, h: n });
+      this._compositePass(job.state, false, { x: job.x, y: job.y, w: job.w, h: n });
       job.state.time = now;
       job.y += n;
     }

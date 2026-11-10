@@ -469,5 +469,107 @@ if (want('front')) {
   }
 }
 
+// ---------------------------------------------------------------- motion across a pause and a late frame
+// Birds and falling leaves vanished and appeared somewhere else: a pause, or a frame seconds late, moved them across
+// the whole gap at once, and a gap over 2 s cleared every falling leaf. They now go on from where they were.
+if (want('motion')) {
+  console.log('--- birds and leaves across a pause and a late frame');
+  const page = await open('geo=0&time=10:30&date=2026-11-03&quality=balanced&test=1&lifetest=1&panel=0');
+  try {
+    const say = (expr) => page.evaluate(expr);
+    await say(`T.weather({ code: 2, cloud: 35, cloudLow: 20, cloudMid: 10, humidity: 60, visibility: 30000, temp: 18, windSpeed: 40, gusts: 55, windDir: 270, wind850: 30, dir850: 270, wind700: 35, dir700: 270, wind300: 80, dir300: 270, cloudHigh: 5 })`);
+    await say(`T.frames(4)`);
+    await sleep(8000); // leaves come off the tree in the wind
+    const look = `(() => { const r = __le.renderer; return { time: __le.env.state.time, real: performance.now(),
+      leaves: r.fg.drift.map((L) => L.seed), birds: r.life.raptors.map((b) => ({ id: (b.__id ??= Math.random()), pos: b.pos.slice() })) }; })()`;
+    // about how many seconds of flight a bird was moved on: a raptor flies 12.5 m/s, its thermal drifts at most 3.3 m/s more
+    const moved = (a, b) =>
+      Math.max(0, ...a.birds.map((x) => { const y = b.birds.find((z) => z.id === x.id); return y ? Math.hypot(y.pos[0] - x.pos[0], y.pos[1] - x.pos[1], y.pos[2] - x.pos[2]) / 0.0158 : 0; }));
+    const kept = (a, b) => (a.leaves.length ? a.leaves.filter((k) => b.leaves.includes(k)).length / a.leaves.length : 1);
+
+    const before = await say(look);
+    const busyBefore = await say(`__le.renderer.gpuBusyMs`);
+    check(before.leaves.length > 0 && before.birds.length > 0, `leaves (${before.leaves.length}) and birds (${before.birds.length}) to watch`);
+    await say(`livelyWallpaperPlaybackChanged({ IsPaused: true })`);
+    await sleep(6000);
+    await say(`(livelyWallpaperPlaybackChanged({ IsPaused: false }), T.frames(1))`);
+    const after = await say(look);
+    const away = (after.real - before.real) / 1000;
+    check(after.time - before.time < 1.5, `a ${away.toFixed(1)} s pause moved the scene on ${(after.time - before.time).toFixed(2)} s`);
+    check(kept(before, after) >= 0.5, `the falling leaves went on: ${Math.round(kept(before, after) * 100)}% of them still falling`);
+    check(moved(before, after) < 1.5, `the birds went on from where they were (${moved(before, after).toFixed(2)} s of flight)`);
+    // the pause once counted as one long frame on the GPU, and the frames after it were spaced that far apart
+    await say(`T.frames(2)`);
+    const busyAfter = await say(`__le.renderer.gpuBusyMs`);
+    check(busyAfter < busyBefore * 1.5 + 50, `frames come as often after the pause: ${busyBefore.toFixed(0)} ms a frame on the GPU before, ${busyAfter.toFixed(0)} after`);
+
+    await say(`T.frames(2)`);
+    const usual = await say(`__le.sceneClock._usual`);
+    const late0 = await say(`(() => { const s = ${look}; const t = performance.now(); while (performance.now() - t < 5000); return s; })()`);
+    await say(`T.frames(1)`);
+    const late1 = await say(look);
+    const gap = (late1.real - late0.real) / 1000;
+    check(late1.time - late0.time < gap - 2, `a frame ${gap.toFixed(1)} s late moved the scene on ${(late1.time - late0.time).toFixed(2)} s (frames usually ${usual.toFixed(0)} ms apart)`);
+    check(moved(late0, late1) < gap - 2, `and the birds ${moved(late0, late1).toFixed(2)} s, not the whole gap`);
+    // in those seconds of strong wind some land or blow out of view (46% stayed on SwiftShader); before, none at all
+    check(kept(late0, late1) >= 0.2, `the falling leaves were not cleared: ${Math.round(kept(late0, late1) * 100)}% still falling after ${(late1.time - late0.time).toFixed(1)} s of wind`);
+    noErrors(page);
+  } finally {
+    await page.close();
+  }
+}
+
+// ---------------------------------------------------------------- one screen free while you work on the other
+// Two screens, an app in front on one: the other screen used to stand still too (2026-11-10). The Windows app now asks
+// for rest with the free screen's part of the width: only that part of the scene is drawn again, and the rest keeps
+// its picture, whole, never black.
+if (want('area')) {
+  console.log('--- rest on the free screen only');
+  const page = await open('geo=0&time=10:30&date=2026-11-03&quality=balanced&test=1&panel=0');
+  try {
+    const say = (expr) => page.evaluate(expr);
+    await say(`(() => {
+      window.__bands = [];
+      const r = __le.renderer;
+      const o = r._compositePass;
+      r._compositePass = function (s, meter, band) { if (band && !band.grass) __bands.push([band.x, band.w, r.w]); return o.apply(r, arguments); };
+    })()`);
+    // a row across the middle of the latest kept picture, every 8th pixel
+    const row = `(() => { const r = __le.renderer, gl = r.gl; const px = new Uint8Array(r.w * 4);
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, r.pictureB.fbo); gl.readPixels(0, r.h >> 1, r.w, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      const out = []; for (let x = 0; x < r.w; x += 8) out.push(px[x * 4], px[x * 4 + 1], px[x * 4 + 2]); return { w: r.w, px: out }; })()`;
+    const swaps = async (n) => {
+      for (let i = 0; i < n; i++) {
+        const at = await say(`__le.renderer.pictureAt`);
+        const t0 = Date.now();
+        while ((await say(`__le.renderer.pictureAt`)) === at && Date.now() - t0 < 90000) await sleep(250);
+      }
+    };
+    await say(`(leSetArea([0.5, 1]), leSetSlowFrames(2000), livelyWallpaperPlaybackChanged({ IsPaused: false }))`);
+    await swaps(1); // the first picture after it starts is whole
+    const a = await say(row);
+    await say(`(__bands.length = 0)`);
+    await swaps(2);
+    const b = await say(row);
+    const bands = await say(`__bands`);
+    const half = a.px.length / 2;
+    const left = (r) => r.px.slice(0, half - 3);
+    check(bands.length > 0 && bands.every(([x, w, W]) => x >= Math.floor(W / 2) && x + w <= W),
+      `${bands.length} bands of the scene, all on the right-hand screen (x ${Math.min(...bands.map((v) => v[0]))} and on, of ${a.w})`);
+    check(left(a).every((v, i) => v === left(b)[i]), 'the left-hand screen keeps its picture as it was');
+    const mean = (v) => v.reduce((s, x) => s + x, 0) / v.length;
+    check(mean(left(b)) > 20, `and it is the scene, not black (mean ${mean(left(b)).toFixed(0)})`);
+
+    await say(`(__bands.length = 0, leSetArea(null))`);
+    await swaps(2);
+    const all = await say(`__bands`);
+    check(all.length > 0 && all.some(([x]) => x === 0) && all.every(([x, w, W]) => x === 0 && w === W), 'with no area, the whole width again');
+    noErrors(page);
+  } finally {
+    await page.close();
+  }
+}
+
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nall checks passed');
 process.exitCode = failures ? 1 : 0;

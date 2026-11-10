@@ -862,9 +862,12 @@
       let dt = this._lastT === null ? 0 : t - this._lastT;
       this._lastT = t;
       if (!(dt > 0)) dt = 0;
-      if (dt > 2) {
+      // The page's clock (LE.SceneClock) moves on by little across a pause or a late frame, so a long step only comes
+      // from a chip that is slow all the time, and the leaves go on. Clearing them at 2 s made every leaf vanish at
+      // once and new ones appear elsewhere. Only something far longer, which should never happen, starts them over.
+      if (dt > 30) {
         dt = 0;
-        this.drift.length = 0; // after a long pause, start over rather than jump
+        this.drift.length = 0;
       }
       // The flying leaves can be turned off on their own: the tree stays. Spring blossom goes with them.
       this.leaves = this.r.cfg.leaves !== false;

@@ -285,6 +285,11 @@
       this._astroAt = -1e9;
     }
 
+    /** The sun and moon worked out afresh at the next update: after a pause the scene's time has hardly moved on. */
+    refreshSky() {
+      this._astroAt = -1e9;
+    }
+
     setWeather(rec, source) {
       this.record = rec;
       this.recordSource = source;

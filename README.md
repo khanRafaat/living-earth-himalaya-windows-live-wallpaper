@@ -21,7 +21,7 @@ You do not need Lively, Wallpaper Engine, Steam, an installer, admin rights or a
 
 ## Download and set your wallpaper
 
-### **[Download LivingEarthHimalaya-2.2.1.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.2.1/LivingEarthHimalaya-2.2.1.exe)**
+### **[Download LivingEarthHimalaya-2.3.0.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.3.0/LivingEarthHimalaya-2.3.0.exe)**
 
 About 2.4 MB. For Windows 11 version 24H2 or later.
 
@@ -43,18 +43,20 @@ The mountains now sit behind your desktop icons like a normal wallpaper, with a 
 | Pause it | Right-click the tray icon and choose **Pause (keep the current picture)**. |
 | See a whole year in two minutes | Right-click the tray icon and choose **Play the demo: a year in two minutes** (or click **Watch the demo** in the settings window). Every month plays in turn, with its weather and what goes on then. Choose it again to go back to the real time and weather. Good for showing it to someone or filming it. |
 | See the version and who made it | Right-click the tray icon and choose **About Living Earth Himalaya**. |
+| Get a new version | Nothing to do: it updates itself (see **Update automatically** below). To look right away, right-click the tray icon and choose **Check for updates**. Copies from 2.2.1 and before can't update themselves: download the newest version once. |
 | Go back to your normal wallpaper | Right-click the tray icon and choose **Exit (back to the normal wallpaper)**. |
 | Remove it | Turn off **Start with Windows** in the tray menu and exit. Then delete the exe and the folder `%LOCALAPPDATA%\LivingEarth`. |
 
 | Setting | What it does |
 |---|---|
 | Location | Found automatically, or choose a place by name or by latitude and longitude. It sets the sun, moon and weather. |
-| Wallpaper mode | **Animate while you look at the desktop** is the lightest. **Animate unless a window is maximized or full screen** moves more often. **Paused** keeps a still picture. In the first two, it keeps moving gently while you work and is never behind the real sky when you come back. |
+| Wallpaper mode | **Animate while you look at the desktop** is the lightest. **Animate unless a window is maximized or full screen** moves more often. **Paused** keeps a still picture. When it doesn't animate, the picture holds still and draws nothing, so your apps have the graphics chip to themselves; it moves on with the real sky when you come back. With two screens, while you work in an app on one, the other keeps moving gently if it shows the desktop, and only that screen's scene is drawn again. |
 | In the scene | Turn each part on or off: the road and its traffic (light, normal or busy), the tree on the rock, flying leaves, birds, shooting stars, village lights, forest mist, clouds on the peaks, village smoke and burning fields. Changing the road shapes the mountains again, which takes a few minutes. |
 | Clock and weather panel | Show it or hide it, and choose its corner and size. |
 | Quality | **Auto** adjusts to your graphics. **Eco** is the lightest, then **Balanced** and **High**. **Ultra** is for powerful graphics only. |
 | Draw with | **Automatic** looks at your PC: a graphics card draws at full speed; graphics built into the processor (such as Intel UHD) get at most a quarter of the chip's time, so the desktop and your apps stay smooth; with no graphics chip, the processor draws. **Graphics chip (GPU)** always uses the graphics chip, with up to half its time. **Processor (CPU)** leaves the graphics chip free: the picture is softer, the clouds change more slowly, it uses at most a quarter of the processor, and the first picture takes longer after each start. |
 | Start with Windows | Starts the wallpaper when you sign in, with no window to click through. |
+| Update automatically | Twice a day it looks on GitHub for a new version. A new one is downloaded, checked against the SHA-256 that GitHub gives for it, and put in while the PC is locked, after 20 minutes without use, or at the next sign-in. It takes the place of the old exe, so Start with Windows keeps working. Turn it off to update by hand. |
 | Show the scene in Windows Settings too | Also sets a still picture of the scene, matching the time of day, as the Windows desktop background, so Settings > Personalization shows it. Your previous background comes back when you exit. |
 
 ### What the app uses
@@ -103,6 +105,8 @@ All versions are listed on the [releases page](https://github.com/khanRafaat/liv
 ## Two monitors
 
 In Windows **Display settings**, choose **Extend these displays**, put the monitors in the same order as on your desk, line up their top edges, and give both the same scale. The app then spans both screens by itself, and turns the view a little so that the gap between the monitors falls on a low ridge instead of the middle of a great peak.
+
+While you work in an app on one screen, the other screen keeps moving gently as long as it shows the desktop, and only its part of the scene is drawn again. The screen with your app holds still, so the app keeps the graphics chip.
 
 ## System requirements
 
@@ -153,7 +157,7 @@ In Windows **Display settings**, choose **Extend these displays**, put the monit
 ## Frequently asked questions
 
 ### How do I get a live wallpaper on Windows 11?
-On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.2.1.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
+On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.3.0.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
 
 ### Do I need Lively or Wallpaper Engine?
 No. The exe sets the wallpaper by itself on Windows 11 version 24H2 or later, with nothing else to install. Lively is only for older versions of Windows.
@@ -183,6 +187,7 @@ The wallpaper needs a rough location for the sun, moon and weather. You can choo
 - [Open-Meteo](https://open-meteo.com/): the weather forecast, and the app's place-name search.
 - [ipwho.is](https://ipwho.is/): the app's automatic location, based on your IP address, only when Windows location gives no answer.
 - [OpenStreetMap Nominatim](https://nominatim.openstreetmap.org/): the name of the place at a position, in the app.
+- [GitHub](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases): the app asks for the latest release twice a day and downloads a new version from there. No location or anything else about you goes with it.
 
 ## If something looks wrong
 

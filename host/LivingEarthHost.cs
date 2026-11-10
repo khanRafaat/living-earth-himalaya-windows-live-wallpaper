@@ -14,11 +14,13 @@
 //      straight to the wallpaper with the saved settings.
 //   2. Starts Edge on index.html with its own profile, at below-normal priority.
 //   3. Moves the Edge window behind the desktop icons.
-//   4. Tells the page its pace and settings through host/state.js, so the graphics chip is nearly idle
-//      while you work and setting changes apply without a restart.
+//   4. Tells the page its pace and settings through host/state.js, so the graphics chip draws nothing for the
+//      wallpaper while you work in an app (with two screens, the other one moves gently if it shows the desktop), and
+//      setting changes apply without a restart.
 //   5. Keeps Edge in a job object, so Edge can never outlive this app.
 //   6. Sets the Windows desktop background to a still of the scene for the part of the day, so Settings >
 //      Personalization shows this wallpaper too, and puts the old background back on Exit.
+//   7. Keeps itself up to date from the project's GitHub releases (Updater), unless that is turned off.
 //
 // C# 5 on purpose: that is the language level of the compiler that comes with Windows.
 using System;
@@ -49,15 +51,15 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Khan Rafaat Abtahe")]
 [assembly: AssemblyCopyright("© 2026 Khan Rafaat Abtahe. MIT licence")]
 [assembly: AssemblyDescription("Living Earth Himalaya live wallpaper. Author: Khan Rafaat Abtahe")]
-[assembly: AssemblyVersion("2.2.1.0")]
-[assembly: AssemblyFileVersion("2.2.1.0")]
+[assembly: AssemblyVersion("2.3.0.0")]
+[assembly: AssemblyFileVersion("2.3.0.0")]
 
 namespace LivingEarth
 {
     public enum RestMode
     {
-        Desktop,   // full animation only while the empty desktop is in front (lightest)
-        Maximized, // full animation unless the focused window is maximized or full screen
+        Desktop,   // animation only while the empty desktop is in front, still while an app is (lightest)
+        Maximized, // animation unless the focused window is maximized or full screen, still while it is
         Paused,    // keep the current picture, with no updates
         Always     // always full animation: for measuring only, not offered in the window
     }
@@ -82,9 +84,17 @@ namespace LivingEarth
             {
                 if (!first)
                 {
-                    // Already running: bring up its window, unless Windows started this copy at sign-in
-                    if (Array.IndexOf(args, "--startup") < 0) AskRunningCopyToShow();
-                    return;
+                    // A new version put in by the one running: it closes now, and this one carries on after it
+                    if (Array.Exists(args, delegate(string a) { return a.StartsWith("--updated-from="); }))
+                    {
+                        if (!TakeOver(mutex)) return;
+                    }
+                    else
+                    {
+                        // Already running: bring up its window, unless Windows started this copy at sign-in
+                        if (Array.IndexOf(args, "--startup") < 0) AskRunningCopyToShow();
+                        return;
+                    }
                 }
                 try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); }
                 catch (EntryPointNotFoundException) { Native.SetProcessDPIAware(); }
@@ -96,6 +106,19 @@ namespace LivingEarth
                 Application.Run(new Host(args));
                 GC.KeepAlive(mutex);
             }
+        }
+
+        /// <summary>
+        /// Waits for the copy this one replaces to close (up to a minute), then a second more, so its Edge has gone too
+        /// and the new Edge starts on its own. False if it never closed.
+        /// </summary>
+        internal static bool TakeOver(Mutex mutex)
+        {
+            bool got;
+            try { got = mutex.WaitOne(TimeSpan.FromSeconds(60)); }
+            catch (AbandonedMutexException) { got = true; } // the old copy ended without letting go: it is gone all the same
+            if (got) Thread.Sleep(1000);
+            return got;
         }
 
         private static void AskRunningCopyToShow()
@@ -164,6 +187,7 @@ namespace LivingEarth
         public string PanelSize = "medium";
         public string Traffic = "normal";
         public bool WindowsBackground = true; // Windows' own background shows a still of the scene
+        public bool AutoUpdate = true; // the exe puts in a new version from GitHub by itself (Updater)
 
         /** The place the wallpaper uses, or null for the page's default. */
         public Place Current { get { return !AutoLocation && Manual != null ? Manual : Detected; } }
@@ -219,6 +243,7 @@ namespace LivingEarth
             if (v.TryGetValue("panelsize", out x) && Array.IndexOf(PanelSizes, x) >= 0) s.PanelSize = x;
             if (v.TryGetValue("traffic", out x) && Array.IndexOf(Traffics, x) >= 0) s.Traffic = x;
             s.WindowsBackground = !(v.TryGetValue("windowsbackground", out x) && x == "off");
+            s.AutoUpdate = !(v.TryGetValue("autoupdate", out x) && x == "off");
             return s;
         }
 
@@ -244,6 +269,7 @@ namespace LivingEarth
             b.Append("panelsize=").Append(PanelSize).Append("\r\n");
             b.Append("traffic=").Append(Traffic).Append("\r\n");
             b.Append("windowsbackground=").Append(WindowsBackground ? "on" : "off").Append("\r\n");
+            b.Append("autoupdate=").Append(AutoUpdate ? "on" : "off").Append("\r\n");
             WritePlace(b, "manual", Manual);
             WritePlace(b, "detected", Detected);
             File.WriteAllText(path, b.ToString(), new UTF8Encoding(false));
@@ -461,6 +487,344 @@ namespace LivingEarth
         }
     }
 
+    // ====================================================================== updating itself
+    /// <summary>
+    /// The exe keeps itself up to date from the project's GitHub releases. Twice a day it asks GitHub for the latest
+    /// release. If that one is newer, it downloads its exe and checks it: the size and SHA-256 that GitHub gives, that it
+    /// is this app, and that it is that version. Then, while nobody is looking (the PC locked, a long time without input,
+    /// or at the next sign-in), the new exe takes the place of this one and starts, and this one closes.
+    /// A copy next to the source code never updates itself (git does that), and neither does one started by the tests.
+    /// </summary>
+    public static class Updater
+    {
+        public const string LatestUrl = "https://api.github.com/repos/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/latest";
+        // where a release's files come from: an exe from anywhere else is refused
+        public const string DownloadPrefix = Program.ProjectUrl + "/releases/download/";
+        public const string AppName = "LivingEarthHost"; // the exe's assembly name, whatever the file is called
+        private const string Agent = "LivingEarthHimalaya-updater (+" + Program.ProjectUrl + ")";
+
+        public sealed class Release
+        {
+            public Version Version;
+            public string Url = "", Page = "", Sha256 = ""; // Sha256 in lower-case hex
+            public long Size;
+            public string Text { get { return Updater.Text(Version); } }
+            public string FileName { get { return "LivingEarthHimalaya-" + Text + ".exe"; } }
+        }
+
+        /// <summary>This exe's version, as 2.2.1.</summary>
+        public static Version Current { get { return Short(typeof(Updater).Assembly.GetName().Version); } }
+
+        public static string Text(Version v) { return v.Major + "." + v.Minor + "." + Math.Max(0, v.Build); }
+
+        private static Version Short(Version v) { return new Version(v.Major, v.Minor, Math.Max(0, v.Build)); }
+
+        /// <summary>"v2.3.0" or "2.3" as a version, or null for anything else.</summary>
+        public static Version ParseTag(string tag)
+        {
+            Match m = Regex.Match(tag ?? "", @"^\s*v?(\d{1,5})\.(\d{1,5})(?:\.(\d{1,5}))?\s*$");
+            if (!m.Success) return null;
+            return new Version(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), m.Groups[3].Success ? int.Parse(m.Groups[3].Value) : 0);
+        }
+
+        /// <summary>GitHub's latest release, as it answers. Throws when GitHub can't be reached.</summary>
+        public static Dictionary<string, object> Latest()
+        {
+            var req = (HttpWebRequest)WebRequest.Create(LatestUrl);
+            req.UserAgent = Agent;
+            req.Accept = "application/vnd.github+json";
+            req.Headers["X-GitHub-Api-Version"] = "2022-11-28";
+            req.Timeout = 15000;
+            req.ReadWriteTimeout = 15000;
+            req.AutomaticDecompression = DecompressionMethods.GZip;
+            using (var res = (HttpWebResponse)req.GetResponse())
+            using (var rd = new StreamReader(res.GetResponseStream(), Encoding.UTF8))
+                return new JavaScriptSerializer().DeserializeObject(rd.ReadToEnd()) as Dictionary<string, object>;
+        }
+
+        /// <summary>
+        /// The release to update to, from GitHub's answer: newer than current, not a draft or a pre-release, with the exe
+        /// under its usual name, from this project, with a SHA-256 to check it against. Null otherwise.
+        /// </summary>
+        public static Release Pick(Dictionary<string, object> latest, Version current)
+        {
+            if (latest == null || Flag(latest, "draft") || Flag(latest, "prerelease")) return null;
+            Version v = ParseTag(Str(latest, "tag_name"));
+            if (v == null || v.CompareTo(Short(current)) <= 0) return null;
+            var r = new Release { Version = v, Page = Str(latest, "html_url") };
+            if (!r.Page.StartsWith(Program.ProjectUrl + "/", StringComparison.Ordinal)) r.Page = Program.ProjectUrl + "/releases/latest";
+            object assets;
+            var list = latest.TryGetValue("assets", out assets) ? assets as IEnumerable : null;
+            if (list == null || assets is string) return null;
+            foreach (object o in list)
+            {
+                var a = o as Dictionary<string, object>;
+                if (a == null || !string.Equals(Str(a, "name"), r.FileName, StringComparison.OrdinalIgnoreCase)) continue;
+                r.Url = Str(a, "browser_download_url");
+                Match d = Regex.Match(Str(a, "digest"), "^sha256:([0-9a-fA-F]{64})$");
+                if (!r.Url.StartsWith(DownloadPrefix, StringComparison.Ordinal) || !d.Success ||
+                    !long.TryParse(Str(a, "size"), NumberStyles.None, CultureInfo.InvariantCulture, out r.Size) || r.Size <= 0)
+                    return null;
+                r.Sha256 = d.Groups[1].Value.ToLowerInvariant();
+                return r;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Downloads the release into dir and checks it. Returns the checked file, and notes what it is in ready.ini
+        /// so the next start can put it in. Throws with the reason when it can't, and leaves nothing behind.
+        /// </summary>
+        public static string Download(Release r, string dir)
+        {
+            Directory.CreateDirectory(dir);
+            string file = Path.Combine(dir, r.FileName), part = file + ".part";
+            try
+            {
+                WebRequest req = WebRequest.Create(r.Url); // file:// in the tests
+                var http = req as HttpWebRequest;
+                if (http != null) http.UserAgent = Agent; // GitHub sends it on to its file servers
+                req.Timeout = 30000;
+                using (WebResponse res = req.GetResponse())
+                using (Stream src = res.GetResponseStream())
+                using (FileStream dst = File.Create(part))
+                {
+                    var buf = new byte[81920];
+                    long total = 0;
+                    int n;
+                    while ((n = src.Read(buf, 0, buf.Length)) > 0)
+                    {
+                        total += n;
+                        if (total > r.Size) throw new InvalidDataException("the download is larger than GitHub says the file is");
+                        dst.Write(buf, 0, n);
+                    }
+                }
+                string why = Verify(part, r);
+                if (why != null) throw new InvalidDataException(why);
+                if (File.Exists(file)) File.Delete(file);
+                File.Move(part, file);
+                File.WriteAllText(Path.Combine(dir, "ready.ini"), "version=" + r.Text + "\r\nsize=" + r.Size + "\r\nsha256=" + r.Sha256 +
+                    "\r\npage=" + r.Page + "\r\n", new UTF8Encoding(false));
+                return file;
+            }
+            finally
+            {
+                Delete(part);
+            }
+        }
+
+        /// <summary>Null when the file is that release: its size, its SHA-256, this app, that version. Why not, otherwise.</summary>
+        public static string Verify(string path, Release r)
+        {
+            var info = new FileInfo(path);
+            if (!info.Exists) return "the file is missing";
+            if (info.Length != r.Size) return "it is " + info.Length + " bytes, and GitHub says " + r.Size;
+            if (!Regex.IsMatch(r.Sha256 ?? "", "^[0-9a-f]{64}$")) return "there is no SHA-256 to check it against";
+            string sum;
+            using (SHA256 sha = SHA256.Create())
+            using (FileStream f = File.OpenRead(path))
+                sum = BitConverter.ToString(sha.ComputeHash(f)).Replace("-", "").ToLowerInvariant();
+            if (sum != r.Sha256) return "its SHA-256 is not the one GitHub gives";
+            AssemblyName n;
+            try { n = AssemblyName.GetAssemblyName(path); } // reads it, runs nothing
+            catch (BadImageFormatException) { return "it is not a .NET program"; }
+            catch (FileLoadException) { return "it is not a .NET program"; }
+            if (n.Name != AppName) return "it is " + n.Name + ", not Living Earth Himalaya";
+            if (!Short(n.Version).Equals(r.Version)) return "it is version " + Text(n.Version) + ", not " + r.Text;
+            return null;
+        }
+
+        /// <summary>
+        /// The release downloaded and checked before, still newer than current and still matching its notes; or null,
+        /// and then what was there is cleared away.
+        /// </summary>
+        public static Release Ready(string dir, Version current, out string file)
+        {
+            file = null;
+            Dictionary<string, string> v = ReadIni(Path.Combine(dir, "ready.ini"));
+            string x;
+            var r = new Release();
+            r.Version = v.TryGetValue("version", out x) ? ParseTag(x) : null;
+            if (v.TryGetValue("sha256", out x)) r.Sha256 = x;
+            if (v.TryGetValue("page", out x)) r.Page = x;
+            if (r.Version == null || !v.TryGetValue("size", out x) || !long.TryParse(x, out r.Size) ||
+                r.Version.CompareTo(Short(current)) <= 0 || Verify(Path.Combine(dir, r.FileName), r) != null)
+            {
+                Clear(dir);
+                return null;
+            }
+            file = Path.Combine(dir, r.FileName);
+            return r;
+        }
+
+        /// <summary>
+        /// Where the new exe goes: in place of this one, so the Start with Windows entry and any shortcut keep working.
+        /// When this one still has the name it was downloaded with (LivingEarthHimalaya-2.2.1.exe), next to it, with
+        /// the new version in the name, so the name never says the wrong version.
+        /// </summary>
+        public static string Target(string exe, Version current, Release r)
+        {
+            if (string.Equals(Path.GetFileName(exe), "LivingEarthHimalaya-" + Text(current) + ".exe", StringComparison.OrdinalIgnoreCase))
+                return Path.Combine(Path.GetDirectoryName(exe), r.FileName);
+            return exe;
+        }
+
+        /// <summary>
+        /// Puts the checked file at target. When that is this exe, this one moves aside to .old first: Windows lets a
+        /// running exe be renamed, not replaced. The new copy deletes the old one once this one has gone.
+        /// </summary>
+        public static void PutInPlace(string fresh, string exe, string target)
+        {
+            if (!SamePath(exe, target))
+            {
+                File.Copy(fresh, target, true);
+                return;
+            }
+            string old = exe + ".old";
+            Delete(old);
+            File.Move(exe, old);
+            try
+            {
+                File.Copy(fresh, exe);
+            }
+            catch (Exception)
+            {
+                Delete(exe);
+                File.Move(old, exe);
+                throw;
+            }
+        }
+
+        /// <summary>The new exe did not start: this one goes back as it was.</summary>
+        public static void TakeBack(string exe, string target)
+        {
+            Delete(target);
+            if (SamePath(exe, target) && File.Exists(exe + ".old")) File.Move(exe + ".old", exe);
+        }
+
+        /// <summary>The command line that starts the new exe: it waits for this one to close, then carries on.</summary>
+        public static string HandoverArgs(string exe, bool atSignIn, bool locked)
+        {
+            return "--updated-from=\"" + exe + "\"" + (atSignIn ? " --startup" : "") + (locked ? " --locked" : "");
+        }
+
+        /// <summary>
+        /// In the new exe, after it took over: the old exe goes (the one moved aside, or the one with the old version in
+        /// its name, only if it really is this app and next to this one), and so do the downloads.
+        /// </summary>
+        public static void CleanUp(string exe, string oldExe, string dir, Action<string> log)
+        {
+            Clear(dir);
+            var gone = new List<string>();
+            if (File.Exists(exe + ".old") && IsThisApp(exe + ".old")) gone.Add(exe + ".old");
+            if (!string.IsNullOrEmpty(oldExe) && !SamePath(oldExe, exe) && SamePath(Path.GetDirectoryName(oldExe), Path.GetDirectoryName(exe)) &&
+                Regex.IsMatch(Path.GetFileName(oldExe), @"^LivingEarthHimalaya-\d+\.\d+\.\d+\.exe$", RegexOptions.IgnoreCase) && IsThisApp(oldExe))
+                gone.Add(oldExe);
+            // the old copy may still be closing: a few tries
+            for (int i = 0; i < 40; i++)
+            {
+                gone.RemoveAll(delegate(string f) { return Delete(f); });
+                if (gone.Count == 0) return;
+                Thread.Sleep(250);
+            }
+            foreach (string f in gone) log("update: could not delete " + f);
+        }
+
+        /// <summary>Whether a new exe can be put next to this one: no, for example, under Program Files.</summary>
+        public static bool CanWrite(string dir)
+        {
+            string probe = Path.Combine(dir, ".living-earth-write-test-" + Process.GetCurrentProcess().Id);
+            try
+            {
+                File.WriteAllText(probe, "");
+                File.Delete(probe);
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        // A little memory across starts, in state.ini next to the downloads: "failed" is a version whose new exe did not
+        // start, so it is not tried again; "told" is the version people were last told about, so they are told once.
+        public static string Remember(string dir, string key)
+        {
+            string x;
+            return ReadIni(Path.Combine(dir, "state.ini")).TryGetValue(key, out x) ? x : "";
+        }
+
+        public static void Remember(string dir, string key, string value)
+        {
+            string path = Path.Combine(dir, "state.ini");
+            Dictionary<string, string> v = ReadIni(path);
+            v[key] = value;
+            var b = new StringBuilder();
+            foreach (KeyValuePair<string, string> kv in v) b.Append(kv.Key).Append('=').Append(kv.Value).Append("\r\n");
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(path, b.ToString(), new UTF8Encoding(false));
+        }
+
+        /// <summary>Everything in the download folder but state.ini.</summary>
+        public static void Clear(string dir)
+        {
+            if (!Directory.Exists(dir)) return;
+            foreach (string f in Directory.GetFiles(dir))
+                if (!string.Equals(Path.GetFileName(f), "state.ini", StringComparison.OrdinalIgnoreCase)) Delete(f);
+        }
+
+        private static bool IsThisApp(string path)
+        {
+            try { return AssemblyName.GetAssemblyName(path).Name == AppName; }
+            catch (Exception) { return false; }
+        }
+
+        private static bool SamePath(string a, string b)
+        {
+            return string.Equals(Path.GetFullPath(a).TrimEnd('\\'), Path.GetFullPath(b).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool Delete(string path)
+        {
+            try
+            {
+                if (File.Exists(path)) File.Delete(path);
+                return true;
+            }
+            catch (IOException) { return false; }
+            catch (UnauthorizedAccessException) { return false; }
+        }
+
+        private static Dictionary<string, string> ReadIni(string path)
+        {
+            var v = new Dictionary<string, string>();
+            try
+            {
+                if (File.Exists(path))
+                    foreach (string line in File.ReadAllLines(path, Encoding.UTF8))
+                    {
+                        int eq = line.IndexOf('=');
+                        if (eq > 0) v[line.Substring(0, eq).Trim()] = line.Substring(eq + 1).Trim();
+                    }
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            return v;
+        }
+
+        private static string Str(Dictionary<string, object> d, string key)
+        {
+            object o;
+            return d.TryGetValue(key, out o) && o != null ? Convert.ToString(o, CultureInfo.InvariantCulture).Trim() : "";
+        }
+
+        private static bool Flag(Dictionary<string, object> d, string key)
+        {
+            object o;
+            return d.TryGetValue(key, out o) && o is bool && (bool)o;
+        }
+    }
+
     // ====================================================================== the app
     internal sealed class Host : ApplicationContext
     {
@@ -526,6 +890,27 @@ namespace LivingEarth
         private int busyFor;
         private DateTime busyUntil = DateTime.MinValue;
         private string written;
+        private bool heldForWork; // the picture holds still because an app is in front (the tray says so)
+        private double[] area;    // rest while you work: only this part of the width moves, the screens that show the desktop
+        private Rectangle workScreen; // the screen with the app you work in
+        private IntPtr foregroundHook;
+        private Native.WinEventProc onForeground;
+
+        // Updating itself (Updater)
+        private const int UpdateFirstMinutes = 3; // the first look on GitHub this long after the wallpaper starts...
+        private const int UpdateEveryHours = 12;  // ...then this often
+        private const int UpdateRetryHours = 3;   // after GitHub could not be reached, or the download was not right
+        private const int UpdateIdleMinutes = 20; // no keyboard or mouse for this long: nobody sees the wallpaper start again
+        private readonly bool fromSource;         // next to the source code: git updates it, not this
+        private readonly string updateDir;        // the downloads, and what the updater remembers
+        private readonly string updatedFrom;      // --updated-from: the exe this one took over from
+        private readonly ToolStripMenuItem updateItem;
+        private DateTime nextUpdateCheck = DateTime.MaxValue; // set when the wallpaper starts
+        private bool checkingUpdate;
+        private Updater.Release ready; // downloaded and checked, waiting for a moment nobody is looking
+        private string readyFile;
+        private string balloonUrl;     // where clicking the tray's message goes
+        private string news;           // "now version 2.3.0", told once the wallpaper is up and the PC unlocked
 
         /// <summary>
         /// The page inside this exe, unpacked into a folder under dir named after its contents, so an updated exe
@@ -564,7 +949,9 @@ namespace LivingEarth
             Directory.CreateDirectory(dataDir);
             hostDir = AppDomain.CurrentDomain.BaseDirectory;
             pagePath = Path.GetFullPath(Path.Combine(hostDir, "..", "index.html"));
-            if (!File.Exists(Path.GetFullPath(Path.Combine(hostDir, "..", "src", "main.js"))))
+            updateDir = Path.Combine(dataDir, "update");
+            fromSource = File.Exists(Path.GetFullPath(Path.Combine(hostDir, "..", "src", "main.js")));
+            if (!fromSource)
             {
                 // Downloaded on its own: the page is inside this exe
                 string page = null;
@@ -606,6 +993,8 @@ namespace LivingEarth
                 else if (a.StartsWith("--mode=")) { settings.Mode = Settings.ParseMode(a.Substring(7)); saveSettings = false; silent = true; }
                 else if (a.StartsWith("--query=")) { queryOverride = a.Substring(8); saveSettings = false; silent = true; }
                 else if (a.StartsWith("--edge-arg=")) { extraEdgeArgs += " " + a.Substring(11); }
+                else if (a.StartsWith("--updated-from=")) { updatedFrom = a.Substring(15).Trim('"'); silent = true; }
+                else if (a == "--locked") locked = true; // put in while the PC was locked: it still is
             }
             if (saveSettings) background = new WindowsBackground(Path.Combine(hostDir, "stills"), dataDir, Log);
 
@@ -623,13 +1012,24 @@ namespace LivingEarth
             pausedItem = ModeItem("Pause (keep the current picture)", RestMode.Paused);
             startupItem = new ToolStripMenuItem("Start with Windows", null, delegate { SetStartup(!StartsWithWindows()); }) { Checked = StartsWithWindows() };
             var aboutItem = new ToolStripMenuItem("About Living Earth Himalaya", null, delegate { AboutForm.ShowOnce(); });
+            updateItem = new ToolStripMenuItem("Check for updates", null, delegate
+            {
+                if (ready != null) ApplyUpdate("asked from the tray", false);
+                else LookForUpdate(true);
+            }) { Visible = CanUpdate };
             menu.Items.AddRange(new ToolStripItem[]
             {
                 statusItem, new ToolStripSeparator(), settingsItem, demoItem, new ToolStripSeparator(), desktopItem, maximizedItem, pausedItem,
-                new ToolStripSeparator(), startupItem, aboutItem, new ToolStripMenuItem("Exit (back to the normal wallpaper)", null, delegate { Quit(); })
+                new ToolStripSeparator(), startupItem, updateItem, aboutItem, new ToolStripMenuItem("Exit (back to the normal wallpaper)", null, delegate { Quit(); })
             });
             tray = new NotifyIcon { Icon = AppIcon, Text = "Living Earth Himalaya", ContextMenuStrip = menu, Visible = false };
             tray.DoubleClick += delegate { ShowSetup(); };
+            tray.BalloonTipClicked += delegate
+            {
+                if (balloonUrl == null) return;
+                try { Process.Start(balloonUrl); }
+                catch (Exception) { }
+            };
             ShowMode();
 
             // A second copy of the app (opened from Explorer or the Start menu) asks this one to show its window
@@ -642,8 +1042,11 @@ namespace LivingEarth
 
             // An older entry without --startup would open the window at every sign-in
             if (StartsWithWindows() && !RunCommand().Contains("--startup")) SetStartup(true);
+            StartUpdater();
 
             SystemEvents.SessionSwitch += OnSessionSwitch;
+            // Put in while the PC was locked: still locked? (Asked after listening, so an unlock just now isn't missed.)
+            if (locked && !Native.InputDesktopLocked()) locked = false;
             SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
             SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
@@ -654,6 +1057,12 @@ namespace LivingEarth
             // After the message loop starts, so that quitting from here ends it
             invoker.BeginInvoke(new MethodInvoker(delegate
             {
+                // A new version downloaded before: it goes in now, before anything is on the screen
+                if (atSignIn && ready != null && settings.AutoUpdate)
+                {
+                    ApplyUpdate("at sign-in", true);
+                    if (quitting) return;
+                }
                 if (atSignIn) StartWhenSettled();
                 else if (silent) StartWallpaper();
                 else ShowSetup();
@@ -739,6 +1148,9 @@ namespace LivingEarth
             tray.Visible = true;
             SampleCpu();
             WriteState(Live);
+            HookForeground(true);
+            if (nextUpdateCheck == DateTime.MaxValue) nextUpdateCheck = DateTime.UtcNow.AddMinutes(UpdateFirstMinutes);
+            TellNews();
             timer.Start();
             OnTick(null, EventArgs.Empty);
         }
@@ -793,12 +1205,11 @@ namespace LivingEarth
                 DateTime now = DateTime.UtcNow;
                 KeepEdgeRunning(now);
                 if (quitting) return;
-                string pace = DecidePace(now);
-                WriteState(pace);
+                UpdateBusy(now);
+                ApplyPace(now);
                 if (now >= nextBackground) UpdateBackground(now);
                 if (settings.AutoLocation && !detecting && now >= nextDetect) DetectLocation();
-                string status = !attached ? "Starting..." : pace == Live ? "Animating" : pace == Rest ? "Slow updates" : "Paused";
-                if (statusItem.Text != "Living Earth Himalaya: " + status) statusItem.Text = "Living Earth Himalaya: " + status;
+                UpdateTick(now);
             }
             catch (Exception ex)
             {
@@ -866,7 +1277,8 @@ namespace LivingEarth
             SaveSettings();
         }
 
-        private string DecidePace(DateTime now)
+        /** Once a second, from the tick only: the busy counters count seconds. */
+        private void UpdateBusy(DateTime now)
         {
             if (SampleCpu() >= BusyPercent) busyFor++;
             else busyFor = 0;
@@ -875,16 +1287,185 @@ namespace LivingEarth
                 if (now >= busyUntil) Log("PC busy: slow updates until the CPU calms down");
                 busyUntil = now.AddSeconds(BusyHoldSeconds);
             }
+        }
 
+        /** Tells the page its pace now, and shows it in the tray menu. From the tick, and at once when the focus moves. */
+        private void ApplyPace(DateTime now)
+        {
+            string pace = DecidePace(now);
+            WriteState(pace);
+            string status = !attached ? "Starting..." : pace == Live ? "Animating" :
+                pace == Rest ? (area != null ? "Moving gently on the free screen" : "Slow updates") :
+                heldForWork ? "Still while you work" : "Paused";
+            if (statusItem.Text != "Living Earth Himalaya: " + status) statusItem.Text = "Living Earth Himalaya: " + status;
+        }
+
+        private string DecidePace(DateTime now)
+        {
             RestMode mode = settings.Mode;
-            if (mode == RestMode.Always) return Live;
-            if (mode == RestMode.Paused || locked || now < quietUntil) return Still;
-            if (now < busyUntil || now < gentleUntil) return Rest;
+            bool held = locked || now < quietUntil;
+            bool slow = now < busyUntil || now < gentleUntil;
+            bool work = false;
+            if (mode == RestMode.Maximized) work = ForegroundCoversScreen();
+            else if (mode == RestMode.Desktop)
+            {
+                bool? inFront = DesktopInFront();
+                if (inFront.HasValue) desktopInFront = inFront.Value;
+                work = !desktopInFront;
+            }
+            area = work && !held && !slow && mode != RestMode.Paused && mode != RestMode.Always ? FreeArea() : null;
+            string pace = Pace(mode, held, work, slow, area != null);
+            if (pace != Rest) area = null;
+            heldForWork = pace == Still && work && mode != RestMode.Paused && !held;
+            return pace;
+        }
 
-            if (mode == RestMode.Maximized) return ForegroundCoversScreen() ? Rest : Live;
-            bool? inFront = DesktopInFront();
-            if (inFront.HasValue) desktopInFront = inFront.Value;
-            return desktopInFront ? Live : Rest;
+        /**
+         * held: locked, or going to sleep or just woken. work: what you are working in is in front (for the mode).
+         * slow: the PC is busy, or has just been signed in to. otherFree: another screen shows the desktop.
+         * An app in front gets the graphics chip to itself: drawing even a gentle scene behind it made moving windows,
+         * scrolling and typing stutter on a chip built into the processor, and only no frames at all was as smooth as
+         * Pause. But a whole screen of desktop standing still beside the app looked wrong: that screen moves gently,
+         * and only its part of the scene is drawn again (FreeArea).
+         */
+        internal static string Pace(RestMode mode, bool held, bool work, bool slow, bool otherFree)
+        {
+            if (mode == RestMode.Always) return Live;
+            if (mode == RestMode.Paused || held) return Still;
+            if (work) return otherFree && !slow ? Rest : Still;
+            return slow ? Rest : Live;
+        }
+
+        // ------------------------------------------------------------------ which screens show the desktop
+        private const double FreeShare = 0.25; // a screen with at least this much of it uncovered shows the desktop
+
+        // The part of the wallpaper's width over the screens that show the desktop while you work on another, or null
+        private double[] FreeArea()
+        {
+            if (wallpaper == IntPtr.Zero || !attached) return null;
+            Screen[] all = Screen.AllScreens;
+            if (all.Length < 2) return null;
+            Native.RECT wr;
+            if (!Native.GetWindowRect(wallpaper, out wr)) return null;
+            // the screen you work on: the one with the window in front (the taskbar or this app's own windows keep the last)
+            IntPtr fg = Native.GetForegroundWindow();
+            if (fg != IntPtr.Zero && PidOf(fg) != ownPid && !IsShell(ClassOf(fg))) workScreen = Screen.FromHandle(fg).Bounds;
+            var bounds = new Rectangle[all.Length];
+            var free = new Rectangle[all.Length];
+            int at = -1;
+            for (int i = 0; i < all.Length; i++)
+            {
+                bounds[i] = all[i].Bounds;
+                free[i] = all[i].WorkingArea; // without the taskbar
+                if (bounds[i] == workScreen) at = i;
+            }
+            if (at < 0) return null;
+            return FreeArea(Rectangle.FromLTRB(wr.Left, wr.Top, wr.Right, wr.Bottom), bounds, free, at, CoveringWindows());
+        }
+
+        /**
+         * [x0, x1], from 0 to 1 across the wallpaper: the screens other than the one you work on (index work) that show
+         * the desktop, that is with at least FreeShare of their working area under no window. Null when there are none.
+         */
+        internal static double[] FreeArea(Rectangle wall, Rectangle[] bounds, Rectangle[] workingAreas, int work, List<Rectangle> windows)
+        {
+            if (wall.Width <= 0) return null;
+            int x0 = int.MaxValue, x1 = int.MinValue;
+            for (int i = 0; i < bounds.Length; i++)
+            {
+                if (i == work) continue;
+                Rectangle on = Rectangle.Intersect(bounds[i], wall);
+                if (on.Width <= 0 || on.Height <= 0 || VisibleShare(workingAreas[i], windows) < FreeShare) continue;
+                x0 = Math.Min(x0, on.Left);
+                x1 = Math.Max(x1, on.Right);
+            }
+            if (x0 >= x1) return null;
+            return new[] { (double)(x0 - wall.Left) / wall.Width, (double)(x1 - wall.Left) / wall.Width };
+        }
+
+        /** How much of area no window covers, from 0 to 1. */
+        internal static double VisibleShare(Rectangle area, List<Rectangle> windows)
+        {
+            if (area.Width <= 0 || area.Height <= 0) return 0;
+            using (var r = new Region(area))
+            using (var m = new Matrix())
+            {
+                foreach (Rectangle w in windows) r.Exclude(w);
+                double sum = 0;
+                foreach (RectangleF f in r.GetRegionScans(m)) sum += (double)f.Width * f.Height;
+                return sum / ((double)area.Width * area.Height);
+            }
+        }
+
+        private static bool IsShell(string cls)
+        {
+            switch (cls)
+            {
+                case "Progman":
+                case "WorkerW":
+                case "Shell_TrayWnd":
+                case "Shell_SecondaryTrayWnd":
+                case "NotifyIconOverflowWindow":
+                case "TopLevelWindowForOverflowXamlIsland":
+                case "XamlExplorerHostIslandWindow":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        // The windows that hide the desktop: shown, not minimized, not cloaked (on another virtual desktop, or a Store app
+        // that was closed), not a see-through overlay, and not the desktop, the taskbar or this wallpaper.
+        private List<Rectangle> CoveringWindows()
+        {
+            var list = new List<Rectangle>();
+            Native.EnumWindows(delegate(IntPtr h, IntPtr l)
+            {
+                if (h == wallpaper || !Native.IsWindowVisible(h) || Native.IsIconic(h)) return true;
+                string cls = ClassOf(h);
+                if (cls == "Progman" || cls == "WorkerW" || cls == "Shell_TrayWnd" || cls == "Shell_SecondaryTrayWnd") return true;
+                int ex = Native.GetWindowLong(h, Native.GWL_EXSTYLE);
+                if ((ex & Native.WS_EX_TRANSPARENT) != 0) return true;
+                if ((ex & Native.WS_EX_LAYERED) != 0)
+                {
+                    uint key, flags;
+                    byte alpha;
+                    if (Native.GetLayeredWindowAttributes(h, out key, out alpha, out flags) && (flags & Native.LWA_ALPHA) != 0 && alpha < 16) return true;
+                }
+                int cloaked;
+                if (Native.DwmGetWindowAttribute(h, Native.DWMWA_CLOAKED, out cloaked, 4) == 0 && cloaked != 0) return true;
+                Native.RECT r;
+                // the window as it shows, without the invisible edges for resizing
+                if (Native.DwmGetWindowAttribute(h, Native.DWMWA_EXTENDED_FRAME_BOUNDS, out r, Marshal.SizeOf(typeof(Native.RECT))) != 0 &&
+                    !Native.GetWindowRect(h, out r)) return true;
+                if (r.Right - r.Left > 1 && r.Bottom - r.Top > 1) list.Add(Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom));
+                return true;
+            }, IntPtr.Zero);
+            return list;
+        }
+
+        // While the focus is on another window, a change shows within a moment rather than at the next tick
+        private void OnForegroundChanged(IntPtr hook, uint ev, IntPtr h, int obj, int child, uint thread, uint time)
+        {
+            if (!running || quitting) return;
+            try { ApplyPace(DateTime.UtcNow); }
+            catch (Exception ex) { Log("focus: " + ex.Message); }
+        }
+
+        private void HookForeground(bool on)
+        {
+            if (on && foregroundHook == IntPtr.Zero)
+            {
+                if (onForeground == null) onForeground = OnForegroundChanged; // kept: Windows calls it for as long as the hook lives
+                foregroundHook = Native.SetWinEventHook(Native.EVENT_SYSTEM_FOREGROUND, Native.EVENT_SYSTEM_FOREGROUND, IntPtr.Zero,
+                    onForeground, 0, 0, Native.WINEVENT_OUTOFCONTEXT);
+                if (foregroundHook == IntPtr.Zero) Log("focus: no hook, the pace follows the focus once a second");
+            }
+            else if (!on && foregroundHook != IntPtr.Zero)
+            {
+                Native.UnhookWinEvent(foregroundHook);
+                foregroundHook = IntPtr.Zero;
+            }
         }
 
         private int SampleCpu()
@@ -952,6 +1533,8 @@ namespace LivingEarth
                 js.Append(", panel: ").Append(settings.Panel ? "true" : "false");
                 js.Append(", corner: ").Append(Js(settings.Corner));
                 js.Append(", panelSize: ").Append(Js(settings.PanelSize));
+                if (pace == Rest && area != null)
+                    js.Append(", area: [").Append(Locator.F(area[0])).Append(", ").Append(Locator.F(area[1])).Append(']');
                 Place p = settings.Current;
                 if (p != null)
                     js.Append(", place: { lat: ").Append(Locator.F(p.Lat)).Append(", lon: ").Append(Locator.F(p.Lon))
@@ -1094,6 +1677,7 @@ namespace LivingEarth
 
             Log("stopped trying after " + quickDeaths + " failed starts in a row");
             running = false;
+            HookForeground(false);
             timer.Stop();
             quickDeaths = 0;
             backoff = TimeSpan.FromSeconds(5);
@@ -1113,7 +1697,7 @@ namespace LivingEarth
             {
                 Log("Edge not found");
                 if (nextLaunch == DateTime.MinValue)
-                    tray.ShowBalloonTip(10000, "Living Earth Himalaya", "Microsoft Edge was not found. Living Earth Himalaya uses it to draw the wallpaper.", ToolTipIcon.Warning);
+                    Tell("Microsoft Edge was not found. Living Earth Himalaya uses it to draw the wallpaper.", ToolTipIcon.Warning, null);
                 nextLaunch = now.AddMinutes(5);
                 return;
             }
@@ -1513,6 +2097,7 @@ namespace LivingEarth
                      e.Reason == SessionSwitchReason.RemoteConnect)
                 locked = false;
             if (locked != was) Log(locked ? "locked: no frames until signed in again" : "signed in again");
+            if (!locked) TellNews();
         }
 
         // Asleep, nothing of this wallpaper is on the graphics card; just woken, it waits while Windows brings the screens
@@ -1537,13 +2122,212 @@ namespace LivingEarth
             Place(true);
         }
 
+        // ------------------------------------------------------------------ updating itself
+        private bool CanUpdate { get { return !fromSource && saveSettings && queryOverride == null; } }
+
+        // At start: after an update, the old exe and the downloads go. Otherwise, a new version downloaded before is
+        // made ready to go in, unless it was put in before and did not start.
+        private void StartUpdater()
+        {
+            if (!CanUpdate) return;
+            string exe = Application.ExecutablePath;
+            string handedTo = Updater.Remember(updateDir, "handover");
+            if (updatedFrom != null)
+            {
+                Log("update: now version " + AboutForm.VersionText + ", taken over from " + updatedFrom);
+                news = "Living Earth Himalaya is now version " + AboutForm.VersionText + ". Click here to see what is new.";
+                if (handedTo.Length > 0) Updater.Remember(updateDir, "handover", "");
+                // Start with Windows follows the exe when it has a new name
+                if (StartsWithWindows() && RunCommand().IndexOf(updatedFrom, StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    !string.Equals(updatedFrom, exe, StringComparison.OrdinalIgnoreCase))
+                    SetStartup(true);
+                string old = updatedFrom, dir = updateDir;
+                ThreadPool.QueueUserWorkItem(delegate { Updater.CleanUp(exe, old, dir, Log); });
+                return;
+            }
+            ThreadPool.QueueUserWorkItem(delegate { Updater.CleanUp(exe, null, null, Log); }); // an .old left from before
+            if (handedTo.Length > 0)
+            {
+                Version v = Updater.ParseTag(handedTo);
+                Updater.Remember(updateDir, "handover", "");
+                if (v != null && v.CompareTo(Updater.Current) > 0)
+                {
+                    // this older exe is running again, so the new one never got going: it is not tried again
+                    Log("update: version " + handedTo + " did not start, so this stays on " + AboutForm.VersionText);
+                    Updater.Remember(updateDir, "failed", handedTo);
+                    Updater.Clear(updateDir);
+                }
+            }
+            ready = Updater.Ready(updateDir, Updater.Current, out readyFile);
+            if (ready != null && ready.Text == Updater.Remember(updateDir, "failed"))
+            {
+                Updater.Clear(updateDir);
+                ready = null;
+            }
+            if (ready != null)
+            {
+                updateItem.Text = "Update to version " + ready.Text + " now";
+                Log("update: version " + ready.Text + " is downloaded and waiting to go in");
+            }
+        }
+
+        // Once a second: look on GitHub when it is time, and put a downloaded version in while nobody is looking
+        private void UpdateTick(DateTime now)
+        {
+            if (!CanUpdate || !settings.AutoUpdate || checkingUpdate) return;
+            if (ready != null)
+            {
+                if (NobodyLooking(now)) ApplyUpdate(locked ? "the PC is locked" : "the PC has not been used for " + UpdateIdleMinutes + " minutes", false);
+            }
+            else if (now >= nextUpdateCheck) LookForUpdate(false);
+        }
+
+        // Starting again shows the plain background for a moment: only while the PC is locked, or nobody has used it for a
+        // while. Not while it is going to sleep or just waking, not during the demo, not while the window is open.
+        private bool NobodyLooking(DateTime now)
+        {
+            if (demo || now < quietUntil || (setup != null && !setup.IsDisposed)) return false;
+            return locked || Native.IdleSeconds() >= UpdateIdleMinutes * 60;
+        }
+
+        private void LookForUpdate(bool asked)
+        {
+            if (checkingUpdate || !CanUpdate) return;
+            checkingUpdate = true;
+            nextUpdateCheck = DateTime.UtcNow.AddHours(UpdateEveryHours);
+            string exeDir = Path.GetDirectoryName(Application.ExecutablePath), dir = updateDir;
+            string failed = Updater.Remember(updateDir, "failed");
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                Updater.Release r = null;
+                string file = null, error = null;
+                bool writable = false;
+                try
+                {
+                    r = Updater.Pick(Updater.Latest(), Updater.Current);
+                    writable = r != null && Updater.CanWrite(exeDir);
+                    if (writable && r.Text != failed) file = Updater.Download(r, dir);
+                }
+                catch (Exception ex)
+                {
+                    error = ex.Message;
+                }
+                try { invoker.BeginInvoke(new MethodInvoker(delegate { FoundUpdate(r, file, error, writable, exeDir, asked); })); }
+                catch (InvalidOperationException) { }
+            });
+        }
+
+        private void FoundUpdate(Updater.Release r, string file, string error, bool writable, string exeDir, bool asked)
+        {
+            checkingUpdate = false;
+            if (quitting) return;
+            if (error != null)
+            {
+                Log("update: " + (r == null ? "could not look on GitHub: " : "version " + r.Text + " did not download right: ") + error);
+                nextUpdateCheck = DateTime.UtcNow.AddHours(UpdateRetryHours);
+                if (asked)
+                    Tell(r == null ? "Could not reach GitHub to look for a new version. Check the internet connection, then try again."
+                                   : "Version " + r.Text + " did not download right. It will try again later.", ToolTipIcon.Warning, null);
+                return;
+            }
+            if (r == null)
+            {
+                Log("update: " + AboutForm.VersionText + " is the latest version");
+                if (asked) Tell("This is the latest version, " + AboutForm.VersionText + ".", ToolTipIcon.Info, null);
+                return;
+            }
+            if (file == null)
+            {
+                Log("update: version " + r.Text + " is out, and it does not go in by itself: " +
+                    (writable ? "it did not start here before" : "this folder can't be written to: " + exeDir));
+                if (asked || Updater.Remember(updateDir, "told") != r.Text)
+                {
+                    Updater.Remember(updateDir, "told", r.Text);
+                    Tell("Version " + r.Text + " is out. Click here to download it from GitHub.", ToolTipIcon.Info, r.Page);
+                }
+                return;
+            }
+            ready = r;
+            readyFile = file;
+            updateItem.Text = "Update to version " + r.Text + " now";
+            Log("update: version " + r.Text + " downloaded and checked" + (asked ? "" :
+                "; it goes in when the PC is locked, after " + UpdateIdleMinutes + " minutes without use, or at the next sign-in"));
+            if (asked) ApplyUpdate("asked from the tray", false);
+        }
+
+        // The new exe goes in place of this one and starts; it waits for this one to close, then carries on.
+        private void ApplyUpdate(string why, bool atSignIn)
+        {
+            Updater.Release r = ready;
+            string file = readyFile, exe = Application.ExecutablePath;
+            string target = Updater.Target(exe, Updater.Current, r);
+            ready = null;
+            readyFile = null;
+            updateItem.Text = "Check for updates";
+            try
+            {
+                string changed = Updater.Verify(file, r);
+                if (changed != null) throw new InvalidDataException("the download is not what was checked: " + changed);
+                Updater.PutInPlace(file, exe, target);
+            }
+            catch (Exception ex)
+            {
+                Log("update: could not put version " + r.Text + " in place: " + ex.Message);
+                Updater.Clear(updateDir);
+                nextUpdateCheck = DateTime.UtcNow.AddHours(UpdateRetryHours);
+                return;
+            }
+            try
+            {
+                Updater.Remember(updateDir, "handover", r.Text);
+                Process.Start(new ProcessStartInfo(target, Updater.HandoverArgs(exe, atSignIn, locked))
+                {
+                    UseShellExecute = false,
+                    WorkingDirectory = Path.GetDirectoryName(target)
+                });
+            }
+            catch (Exception ex)
+            {
+                Log("update: version " + r.Text + " did not start (" + ex.Message + "), so this stays on " + AboutForm.VersionText);
+                try { Updater.TakeBack(exe, target); }
+                catch (Exception back) { Log("update: could not put the old exe back: " + back.Message); }
+                Updater.Remember(updateDir, "failed", r.Text);
+                Updater.Remember(updateDir, "handover", "");
+                Updater.Clear(updateDir);
+                return;
+            }
+            Log("update: " + why + ": version " + r.Text + " takes over" + (string.Equals(target, exe, StringComparison.OrdinalIgnoreCase) ? "" : ", as " + target));
+            Quit(true);
+        }
+
+        private void TellNews()
+        {
+            if (news == null || !running || locked) return;
+            Tell(news, ToolTipIcon.Info, Program.ProjectUrl + "/releases/tag/v" + AboutForm.VersionText);
+            news = null;
+        }
+
+        // A message by the tray icon. Clicking it opens url, when there is one.
+        private void Tell(string text, ToolTipIcon icon, string url)
+        {
+            balloonUrl = url;
+            tray.ShowBalloonTip(10000, "Living Earth Himalaya", text, icon);
+        }
+
         private void Quit()
+        {
+            Quit(false);
+        }
+
+        /** handover: a new version takes over at once, so Windows' background stays the scene's. */
+        private void Quit(bool handover)
         {
             if (quitting) return;
             quitting = true;
             if (setup != null && !setup.IsDisposed) setup.Close();
             timer.Stop();
-            if (background != null) background.Restore();
+            HookForeground(false);
+            if (background != null && !handover) background.Restore();
             showWait.Unregister(null);
             SystemEvents.SessionSwitch -= OnSessionSwitch;
             SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
@@ -1697,7 +2481,7 @@ namespace LivingEarth
         private readonly TextBox searchBox;
         private readonly ListBox results;
         private readonly ComboBox qualityBox, deviceBox, sizeBox, trafficBox;
-        private readonly CheckBox startupBox, roadBox, birdsBox, leavesBox, windowsBox;
+        private readonly CheckBox startupBox, roadBox, birdsBox, leavesBox, windowsBox, updateBox;
         private readonly CheckBox treeBox, mistBox, bannersBox, smokeBox, firesBox, lightsBox, starsBox, panelBox;
         private readonly RadioButton topLeft, topRight, bottomLeft, bottomRight;
         private Place detected, manual;
@@ -1768,8 +2552,9 @@ namespace LivingEarth
             my += 24;
             pausedRadio = Radio(modes, "Paused: keep a still picture", Pad, my);
             my += 26;
-            Note(modes, "In the first two modes it keeps moving gently while you work, using very little of the graphics chip, " +
-                        "and it is never behind the real sky when you come back.", Pad, my, W - 2 * Pad, 34);
+            Note(modes, "When it doesn't animate, the picture holds still and draws nothing, so your apps have the graphics " +
+                        "chip to themselves. It moves on with the real sky when you come back. A second screen that shows the " +
+                        "desktop keeps moving gently.", Pad, my, W - 2 * Pad, 34); // two lines at most: measured 30 px
             my += 36;
             modes.Height = my;
             Controls.Add(modes);
@@ -1852,6 +2637,13 @@ namespace LivingEarth
             Controls.Add(startupBox);
             y += 34;
             windowsBox = Check("Show the scene in Windows Settings too, as the desktop background picture", Pad, y, s.WindowsBackground);
+            // on the same line, at the right: the window must not grow taller, or it no longer fits a 1080 screen
+            updateBox = Check("Update automatically", Pad, y, s.AutoUpdate);
+            updateBox.Left = Math.Min(startupBox.Left, W - Pad - updateBox.PreferredSize.Width); // under Start with Windows
+            var updateTips = new ToolTip { AutoPopDelay = 20000 };
+            updateTips.SetToolTip(updateBox, "Looks on GitHub twice a day. A new version is downloaded, checked against the SHA-256 GitHub gives,\n" +
+                                             "and put in while the PC is locked, or at the next start. The tray menu can also check now.");
+            FormClosed += delegate { updateTips.Dispose(); };
             y += 22;
             Note(this, "A still for the time of day, so Personalization shows it. Exit puts your own picture back.", Pad + Indent - 3, y, W - 2 * Pad - Indent, 18);
             y += 28;
@@ -2052,6 +2844,7 @@ namespace LivingEarth
             s.PanelSize = Settings.PanelSizes[Math.Max(0, sizeBox.SelectedIndex)];
             s.Traffic = Settings.Traffics[Math.Max(0, trafficBox.SelectedIndex)];
             s.WindowsBackground = windowsBox.Checked;
+            s.AutoUpdate = updateBox.Checked;
             DialogResult = DialogResult.OK;
             Close();
         }
@@ -2470,6 +3263,39 @@ namespace LivingEarth
 
     internal static class Native
     {
+        [StructLayout(LayoutKind.Sequential)]
+        public struct LASTINPUTINFO
+        {
+            public uint cbSize;
+            public uint dwTime;
+        }
+
+        [DllImport("user32.dll")]
+        public static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+
+        [DllImport("user32.dll")]
+        public static extern bool CloseDesktop(IntPtr desktop);
+
+        /// <summary>While the PC is locked, the screens show Windows' own desktop, which apps can't open.</summary>
+        public static bool InputDesktopLocked()
+        {
+            IntPtr d = OpenInputDesktop(0, false, 0x0001); // DESKTOP_READOBJECTS
+            if (d == IntPtr.Zero) return true;
+            CloseDesktop(d);
+            return false;
+        }
+
+        /// <summary>Seconds since the keyboard or mouse was last used, in this session.</summary>
+        public static double IdleSeconds()
+        {
+            var i = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf(typeof(LASTINPUTINFO)) };
+            if (!GetLastInputInfo(ref i)) return 0;
+            return unchecked((uint)Environment.TickCount - i.dwTime) / 1000.0;
+        }
+
         public const int GWL_STYLE = -16, GWL_EXSTYLE = -20;
         public const int WS_POPUP = unchecked((int)0x80000000), WS_CHILD = 0x40000000, WS_MINIMIZE = 0x20000000, WS_VISIBLE = 0x10000000;
         public const int WS_MAXIMIZE = 0x01000000, WS_CAPTION = 0x00C00000, WS_SYSMENU = 0x00080000, WS_THICKFRAME = 0x00040000;
@@ -2561,8 +3387,19 @@ namespace LivingEarth
         [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr h, ref POINT p);
         [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
         [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
+        [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+        [DllImport("user32.dll")] public static extern bool GetLayeredWindowAttributes(IntPtr h, out uint key, out byte alpha, out uint flags);
+        public const int WS_EX_TRANSPARENT = 0x20, DWMWA_EXTENDED_FRAME_BOUNDS = 9, DWMWA_CLOAKED = 14;
+        [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int value, int size);
+        [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT value, int size);
         [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr h, IntPtr rect, IntPtr rgn, uint flags);
+
+        // Told at once when another window comes to the front (out of context: called on this thread's message loop)
+        public const uint EVENT_SYSTEM_FOREGROUND = 3, WINEVENT_OUTOFCONTEXT = 0;
+        public delegate void WinEventProc(IntPtr hook, uint ev, IntPtr h, int obj, int child, uint thread, uint time);
+        [DllImport("user32.dll")] public static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr module, WinEventProc proc, uint pid, uint thread, uint flags);
+        [DllImport("user32.dll")] public static extern bool UnhookWinEvent(IntPtr hook);
 
         [DllImport("kernel32.dll")] public static extern bool GetSystemTimes(out long idle, out long kernel, out long user);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
