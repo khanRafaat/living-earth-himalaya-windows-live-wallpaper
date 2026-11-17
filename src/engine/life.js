@@ -35,7 +35,12 @@
 
   const SPECIES = {
     raptor: { type: 0, span: 0.0026, flapHz: 2.0 },
+    // the one that sits on the tree: a small falcon, 75 cm across and 32 cm tall sitting. A big soaring bird 30 m
+    // from the eye was a huge flat shape with nothing to it
+    falcon: { type: 0, span: 0.00075, flapHz: 5.5, tall: 0.00032 },
     chough: { type: 1, span: 0.0008, flapHz: 6.5 },
+    // the black kite that hangs over every village in these hills: half a vulture's size, and it beats its wings more
+    kite: { type: 0, span: 0.0015, flapHz: 2.8 },
     goose: { type: 2, span: 0.0016, flapHz: 3.1 },
   };
 
@@ -55,6 +60,10 @@
   // up speed (km/s²).
   const SIZE_ON_SCREEN = 1.3; // a little larger than life, or at this distance a motorcycle would be under a pixel
   const rgb5 = (r, g, b) => r + g * 32 + b * 1024;
+  // the colours of the light that flashing lamps throw on what is round them (_pushGlow)
+  const GLOW_AMBER = [1.0, 0.55, 0.1];
+  const GLOW_RED = [1.0, 0.08, 0.05];
+  const GLOW_BLUE = [0.15, 0.35, 1.0];
   const VEHICLES = {
     // lamp height, how much light it throws, and how far: dipped and on main beam (km), and the beam's spread (cosine)
     bus: {
@@ -72,7 +81,41 @@
       lampH: 0.0009, power: 0.4, low: 0.035, high: 0.085, cone: 0.88,
       paints: [rgb5(22, 5, 4), rgb5(5, 7, 14), rgb5(24, 24, 22), rgb5(9, 12, 6)],
     },
+    // a lorry: a coloured cab and a covered load, slow, and slower still on the bends
+    lorry: {
+      code: 3, len: 0.0075, wid: 0.0025, hgt: 0.0032, cruise: 0.0072, bend: 0.74, accel: 0.5e-3, lane: 0.0017,
+      lampH: 0.001, power: 0.95, low: 0.065, high: 0.16, cone: 0.8,
+      paints: [rgb5(23, 8, 4), rgb5(5, 10, 21), rgb5(25, 18, 4), rgb5(6, 15, 9), rgb5(22, 22, 20), rgb5(24, 12, 3)],
+    },
+    // an army column: olive lorries behind a jeep (see _newConvoy). They come only together.
+    armyLorry: {
+      code: 4, len: 0.0075, wid: 0.0025, hgt: 0.0032, cruise: 0.0068, bend: 0.74, accel: 0.5e-3, lane: 0.0017,
+      lampH: 0.001, power: 0.95, low: 0.065, high: 0.16, cone: 0.8,
+      paints: [rgb5(9, 11, 6), rgb5(10, 12, 7), rgb5(8, 10, 6)],
+    },
+    armyJeep: {
+      code: 5, len: 0.0045, wid: 0.0018, hgt: 0.0019, cruise: 0.0068, bend: 0.74, accel: 0.5e-3, lane: 0.0017,
+      lampH: 0.0008, power: 0.8, low: 0.055, high: 0.14, cone: 0.82,
+      paints: [rgb5(9, 11, 6), rgb5(10, 12, 7)],
+    },
+    // an ambulance on a call: white with a red stripe, a red and blue light on its roof, about 60 km/h where the road
+    // lets it, and it overtakes faster than anyone else may. Everyone makes way for it.
+    ambulance: {
+      code: 6, len: 0.0055, wid: 0.002, hgt: 0.0024, cruise: 0.0165, bend: 1.05, accel: 1.6e-3, lane: 0.0017,
+      lampH: 0.0009, power: 0.9, low: 0.06, high: 0.15, cone: 0.82,
+      paints: [rgb5(29, 29, 28)], spread: 0.05, vPass: 0.019, beacon: true,
+    },
   };
+  const PLANE_V = 0.23; // km/s, an airliner at cruise
+  // km: further off it is behind the mountains, which stand 4 to 15 degrees high on the picture (seen on the first
+  // renders: an aircraft 90 to 120 km away never showed above them)
+  const PLANE_FAR = 120;
+  const TRAIL_W0 = 0.01; // km, how wide a new contrail is, and how fast it spreads (km/s)
+  const TRAIL_SPREAD = 0.0008;
+  const KITE_FAR = 3.2; // km: over a village further off a kite is too small to show
+  // gold, red, green and silver-white: the small rockets sold for Tihar
+  const FIREWORK_COLOURS = [[1.0, 0.72, 0.3], [1.0, 0.25, 0.18], [0.35, 1.0, 0.4], [0.9, 0.92, 1.0]];
+  const HELI_V = 0.045; // km/s, a helicopter making its way up the valley
   const TRAFFIC_MAX = 14; // on the whole road, most of which is in view
   // what rises from the hills: wood smoke from a house, mist off wet forest, smoke from a burning field
   const SMOKE = { village: 0, mist: 1, fire: 2 };
@@ -93,6 +136,11 @@
   const BLINK_LEFT = 1;
   const BLINK_RIGHT = 2;
   const BLINK_BOTH = 3; // hazard lights
+  const BEACON_RED = 4; // an ambulance's roof light, which of its two colours is lit now: sent with the indicators
+  const BEACON_BLUE = 8;
+  const CONVOY_GAP = 0.014; // km between the vehicles of an army column
+  const SIREN_BEHIND = 0.2; // km: those ahead of an ambulance make way for it from here
+  const SIREN_AHEAD = 0.25; // km: those coming towards it slow down from here
   const TMP = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
 
   class Life {
@@ -121,12 +169,35 @@
       this.vehicles = [];
       this._nextVehicle = 0;
       this._trafficSeeded = false;
+      this._nextConvoy = rand(500, 2400); // an army column, now and then by day
+      this._nextAmbulance = rand(600, 3600); // an ambulance, at any hour
+      this._convoy = null; // a column still driving on to the road, one after the other
+      this._groups = 0;
       this.enabled = true;
       this.birds = true; // off: no birds, while the rest of life goes on
       this.mist = true; // mist rising off the forest
       this.villageSmoke = true; // smoke from the villages
       this.fires = true; // a field burning now and then
       this.shootingStars = true; // meteors and satellites
+      // Where a bird of prey can sit: a function giving the tip of the tree's snag now (km, scene axes), or null when
+      // there is no tree (main.js sets it from the foreground). Now and then one that is about comes down to it.
+      this.perchAt = null;
+      this._nextPerch = rand(240, 900);
+      this.nearFrom = 0; // sprites from here on are close to the tree and are drawn after it, in front (renderer.js)
+      this.planes = true; // an airliner crossing high above, with its contrail
+      this.aircraft = [];
+      this._nextPlane = rand(120, 900);
+      this.fireworks = [];
+      this._nextFirework = rand(5, 40);
+      this.lights = true; // the village lights' switch: festival fireworks belong to it
+      this.festForce = 0; // the test panel: a festival night now
+      this._nextKite = rand(20, 120);
+      this.animals = true; // herds grazing on the meadows by day (the switch)
+      this.pastures = []; // [{x, y, z, n}] meadows found after the bake, and the herd on each
+      this.herds = [];
+      this.gompa = null; // {x, y, z}: a monastery on a ridge, whose lamp burns at night
+      this.heli = null;
+      this._nextHeli = rand(900, 3600);
       this.traffic = 'normal'; // light | normal | busy
       this.t = 0;
       this._nextFlock = rand(20, 90);
@@ -237,9 +308,31 @@
       this.smoke = this.smoke.filter((s) => s.kind === SMOKE.village);
     }
 
+    /** Meadows where animals can graze: a small herd on each, every animal with its own colour and its own wandering. */
+    setPastures(list) {
+      this.pastures = list || [];
+      this.herds = this.pastures.map((at) => {
+        const n = Math.floor(rand(4, 9));
+        const animals = [];
+        for (let i = 0; i < n; i++) {
+          const a = rand(0, TAU);
+          const r = Math.sqrt(Math.random()) * 0.025;
+          animals.push({ x: Math.cos(a) * r, z: Math.sin(a) * r, tx: 0, tz: 0, wait: rand(0, 40), shade: Math.random(), face: 1 });
+          animals[i].tx = animals[i].x;
+          animals[i].tz = animals[i].z;
+        }
+        return { at, animals };
+      });
+    }
+
+    setGompa(at) {
+      this.gompa = at || null;
+    }
+
     setRoad(road) {
       this.road = road || null;
       this.vehicles = [];
+      this._convoy = null;
       this._trafficSeeded = false;
     }
 
@@ -264,7 +357,19 @@
       if (!this.birds && (kind === 'raptor' || kind === 'flock' || kind === 'geese')) return;
       if (!this._smokeOn(kind === 'mist' ? SMOKE.mist : kind === 'smoke' ? SMOKE.village : kind === 'fire' ? SMOKE.fire : -1)) return;
       if (!this.shootingStars && (kind === 'meteor' || kind === 'satellite')) return;
-      if (kind === 'raptor') this.raptors.push(this._newRaptor(true));
+      if (kind === 'perch') {
+        // one comes in to the tree from a little way off
+        const at = this.perchAt && this.perchAt();
+        if (!at) return;
+        this.raptors = this.raptors.filter((x) => x.sp !== SPECIES.falcon);
+        this.raptors.push(this._newFalcon(at));
+      } else if (kind === 'raptor') this.raptors.push(this._newRaptor(true));
+      else if (kind === 'kite') {
+        const homes = this._kiteHomes();
+        if (homes.length) this.raptors.push(this._newKite(homes[Math.floor(Math.random() * homes.length)], true));
+      } else if (kind === 'helicopter') {
+        if (this.planes) this.heli = this._newHeli(true);
+      }
       else if (kind === 'flock') this.flock = this._newFlock(true);
       else if (kind === 'geese') this.geese = this._newGeese(this.state, true);
       else if (kind === 'meteor') this.meteors.push(this._newMeteor(null, this.state));
@@ -288,8 +393,22 @@
           this.smoke.push(s);
         }
       }
-      else if (kind === 'satellite') this.sats.push({ az: rand(-0.4, 0.4), el: 0.25, heading: 0.4, speed: 0.0005, age: 5, life: 600, bright: 0.45 });
-      else if (VEHICLES[kind] && this.road) this.vehicles.push(this._newVehicle(kind, Math.random() < 0.5 ? 1 : -1, this._roadInView()));
+      else if (kind === 'firework') {
+        const f = this._newFirework();
+        if (f) this.fireworks.push(f);
+      } else if (kind === 'plane') {
+        if (this.planes) this.aircraft.push(this._newPlane(this.state, true));
+      } else if (kind === 'satellite') this.sats.push({ az: rand(-0.4, 0.4), el: 0.25, heading: 0.4, speed: 0.0005, age: 5, life: 600, bright: 0.45 });
+      else if (kind === 'convoy' && this.road) {
+        // the whole column at once, on the road in view
+        const q = this._newConvoy(Math.random() < 0.5 ? 1 : -1);
+        const s = this._roadInView();
+        for (let back = 0; q.left > 0; ) {
+          const c = this._convoyMember(q, s - q.dir * back);
+          back += c.len / 2 + CONVOY_GAP + (VEHICLES.armyLorry.len * SIZE_ON_SCREEN) / 2;
+          if (c.s > 0.01 && c.s < this.road.length - 0.01) this.vehicles.push(c);
+        }
+      } else if (VEHICLES[kind] && this.road) this.vehicles.push(this._newVehicle(kind, Math.random() < 0.5 ? 1 : -1, this._roadInView()));
     }
 
     // ------------------------------------------------------------ geometry helpers
@@ -431,12 +550,32 @@
       this._nextRaptorCheck -= dt;
       if (this._nextRaptorCheck <= 0) {
         this._nextRaptorCheck = rand(20, 60);
-        const active = this.raptors.filter((r) => r.mode !== 'leave').length;
+        const active = this.raptors.filter((r) => r.mode !== 'leave' && r.sp === SPECIES.raptor).length;
         if (active < raptorTarget) this.raptors.push(this._newRaptor(false));
         else if (active > raptorTarget) {
-          const r = this.raptors.find((x) => x.mode !== 'leave');
+          const r = this.raptors.find((x) => x.mode !== 'leave' && x.sp === SPECIES.raptor);
           if (r) this._leave(r);
         }
+      }
+      // Now and then a small falcon comes in to sit on the top of the tree for a while: by day in fair weather only,
+      // and one at a time
+      this._nextPerch -= dt;
+      if (this._nextPerch <= 0) {
+        this._nextPerch = rand(300, 900);
+        const at = this.perchAt && this.perchAt();
+        const busy = this.raptors.some((r) => r.sp === SPECIES.falcon);
+        if (at && !busy && birdOK > 0.5 && this._perchWeather(state)) this.raptors.push(this._newFalcon(at));
+      }
+      // Black kites: one or two over the villages near enough to see them, whenever birds fly at all. They need no
+      // thermals: they hang over the houses all day
+      this._nextKite -= dt;
+      if (this._nextKite <= 0) {
+        this._nextKite = rand(30, 90);
+        const homes = this._kiteHomes();
+        const kites = this.raptors.filter((r) => r.sp === SPECIES.kite && r.mode !== 'leave');
+        const want = homes.length ? Math.round(2 * birdOK) : 0;
+        if (kites.length < want) this.raptors.push(this._newKite(homes[Math.floor(Math.random() * homes.length)], false));
+        else if (kites.length > want) this._leave(kites[0]);
       }
       for (const r of this.raptors) this._stepRaptor(r, dt, state);
       this.raptors = this.raptors.filter((r) => !r.dead);
@@ -474,6 +613,41 @@
       this._stepSmoke(dt, state);
       this._stepMeteors(dt, state);
       this._stepSatellites(dt, state);
+      this._stepPlanes(dt, state);
+      this._stepFireworks(dt, state);
+      this._stepHerds(dt, daylight);
+      this._stepHeli(dt, state, daylight * shelter);
+    }
+
+    /** The villages a kite can be seen over. */
+    _kiteHomes() {
+      return this.smokeSources.filter((s) => Math.hypot(s.x, s.z) < KITE_FAR);
+    }
+
+    /** Where a kite circles over a village: 50 to 140 m above its roofs. */
+    _overVillage(home) {
+      return [home.x + rand(-0.05, 0.05), home.y + rand(0.05, 0.14), home.z + rand(-0.05, 0.05)];
+    }
+
+    /** A black kite on its way to a village from out of sight, or (the test panel) already circling over it. */
+    _newKite(home, shown) {
+      const r = this._newRaptor(shown);
+      const c = this._overVillage(home);
+      r.sp = SPECIES.kite;
+      r.target = c;
+      r.center = [c[0], c[2]];
+      r.y = c[1];
+      r.R = rand(0.03, 0.07);
+      r.omega = Math.sign(r.omega) * (0.0125 / r.R);
+      r.circleTime = rand(120, 400);
+      r.nextFlap = rand(4, 12);
+      if (shown) r.pos = [c[0] + Math.cos(r.theta) * r.R, c[1], c[2] + Math.sin(r.theta) * r.R];
+      else {
+        const d0 = Math.hypot(c[0], c[2]);
+        const az = (Math.random() < 0.5 ? -1 : 1) * (this._view.hfov / 2 + 10 * D2R);
+        r.pos = [Math.sin(az) * d0, c[1] + 0.03, Math.cos(az) * d0];
+      }
+      return r;
     }
 
     _leave(b) {
@@ -481,16 +655,149 @@
       b.target = this._exitPoint(b.pos);
     }
 
+    /** The falcon that comes to the tree, 300 m out and a little above its perch `at`, on its way in. */
+    _newFalcon(at) {
+      const r = this._newRaptor(true);
+      const az = Math.atan2(at[0], at[2]) + rand(0.5, 1.1);
+      r.sp = SPECIES.falcon;
+      r.pos = [at[0] + Math.sin(az) * 0.3, at[1] + 0.04, at[2] + Math.cos(az) * 0.3];
+      r.vel = [-Math.sin(az) * 0.012, 0, -Math.cos(az) * 0.012];
+      r.mode = 'approach';
+      r.nextFlap = 1;
+      return r;
+    }
+
+    /** Away from the tree and out past the nearer edge of the picture, half a kilometre off or more. */
+    _leaveTree(r) {
+      const side = Math.atan2(r.pos[0], r.pos[2]) >= 0 ? 1 : -1;
+      const az = side * (this._view.hfov / 2 + 25 * D2R);
+      const d = rand(0.5, 0.9);
+      r.mode = 'leave';
+      r.target = [Math.sin(az) * d, r.pos[1] + rand(0.02, 0.08), Math.cos(az) * d];
+    }
+
+    /** Weather a bird would sit out in the open in: no rain or snow, and not much wind. */
+    _perchWeather(state) {
+      const w = state.weather;
+      return w.rain < 0.05 && w.snow < 0.05 && w.storm < 0.05 && w.windSpeed < 32;
+    }
+
+    /** Off the perch: it drops forward, beats its wings hard a few times and is away, out of the picture. */
+    _takeOff(r) {
+      const l = Math.hypot(r.face[0], r.face[1]) || 1;
+      this._leaveTree(r);
+      // (from a standstill: it leans off the perch at walking pace, its wings opening, and gathers speed from there)
+      r.vel = [(r.face[0] / l) * 0.0012, 0, (r.face[1] / l) * 0.0012];
+      r.fold = 1;
+      r.pos[1] += Life.perchBody(r);
+      r.flapLeft = rand(2.2, 3);
+      r.nextFlap = rand(15, 45);
+      r.amp = 1;
+      this._nextPerch = Math.max(this._nextPerch, rand(300, 900));
+    }
+
     _stepRaptor(r, dt, state) {
       const w = state.weather;
       const sp = 0.0125;
-      if (r.mode === 'circle') {
+      const at = (r.mode === 'approach' || r.mode === 'settle' || r.mode === 'perched') && this.perchAt ? this.perchAt() : null;
+      // its wings open again after it leaves the perch
+      if (r.mode !== 'settle') r.fold = Math.max(0, (r.fold || 0) - dt * 2.5);
+      if (r.mode === 'settle') {
+        // Under a second from its feet touching to sitting still: it is drawn on to the perch, its wings beat a last
+        // time or two and close. Nothing jumps: the sitting bird takes over only when the wings are shut.
+        if (!at) this._leaveTree(r);
+        else {
+          r.settle += dt / 0.7;
+          // drawn to the perch as by a spring that does not swing back, from the speed it arrived with
+          const W = 6;
+          const h = Math.min(dt, 0.1);
+          for (let i = 0; i < 3; i++) {
+            r.vel[i] += (W * W * (at[i] + (i === 1 ? Life.perchBody(r) : 0) - r.pos[i]) - 2 * W * r.vel[i]) * h;
+            r.pos[i] += r.vel[i] * h;
+          }
+          r.fold = Math.min(1, r.settle);
+          r.bank = 0;
+          r.phase += TAU * r.sp.flapHz * dt;
+          r.amp = Math.max(0, 1 - r.settle * 1.4);
+          r.alpha = 1;
+          if (r.settle >= 1) {
+            r.mode = 'perched';
+            r.sit = rand(6, 25) * (1 + smooth(14, 4, w.windSpeed));
+            r.lookIn = rand(1, 3);
+            r.look = 0;
+            r.pos = at.slice();
+            r.vel = [0, 0, 0];
+            r.amp = 0;
+            r.flapLeft = 0;
+          }
+          return;
+        }
+      }
+      if (r.mode === 'perched') {
+        // it sits exactly on the snag, wherever the wind has it; longer in calm air, and off at once in rain or a gale
+        r.sit -= dt;
+        if (!at || r.sit <= 0 || !this._perchWeather(state)) this._takeOff(r);
+        else {
+          r.pos = at.slice();
+          r.vel = [0, 0, 0];
+          r.bank = 0;
+          r.amp = 0;
+          r.flapLeft = 0;
+          // its head turns now and then
+          r.lookIn -= dt;
+          if (r.lookIn <= 0) {
+            r.lookIn = rand(1.5, 6);
+            r.look = rand(-1, 1);
+          }
+          r.alpha = 1;
+          return;
+        }
+      }
+      if (r.mode === 'approach') {
+        if (!at || !this._perchWeather(state)) this._leaveTree(r);
+        else {
+          const dx = at[0] - r.pos[0];
+          const dy = at[1] + Life.perchBody(r) - r.pos[1]; // its body, not its feet
+          const dz = at[2] - r.pos[2];
+          const d = Math.hypot(dx, dz);
+          const d3 = Math.hypot(dx, dy, dz);
+          const speedNow = Math.hypot(r.vel[0], r.vel[1], r.vel[2]);
+          if (d3 < 0.0006 || (d3 < 0.003 && d3 < speedNow * dt * 1.5)) {
+            // its feet reach the perch: it settles on to it and folds its wings (below), facing the way it came in
+            r.mode = 'settle';
+            r.settle = 0;
+            r.face = Math.hypot(r.vel[0], r.vel[2]) > 1e-6 ? [r.vel[0], r.vel[2]] : [dx || 1, dz];
+          } else {
+            // The way in, as one smooth line. It flies at a point below its perch that rises to it over the last
+            // metres, so it comes in low and swoops up on to it, as a bird does to lose its speed. That speed falls
+            // as under even braking (3 m/s2) to a walking pace at the perch. It turns gently far out and closely
+            // near the tree, and beats its wings to brake over the last 15 m.
+            const low = Math.min(0.0012, d3 * 0.12);
+            const ax = dx;
+            const ay = dy - low;
+            const az = dz;
+            const al = Math.hypot(ax, ay, az) || 1;
+            const speed = Math.min(sp * 1.1, Math.sqrt(0.0008 * 0.0008 + 2 * 0.003 * d3));
+            const k = 1 - Math.exp(-dt * (0.8 + 5 * smooth(0.06, 0.01, d3)));
+            r.vel[0] += ((ax / al) * speed - r.vel[0]) * k;
+            r.vel[1] += ((ay / al) * speed - r.vel[1]) * k;
+            r.vel[2] += ((az / al) * speed - r.vel[2]) * k;
+            r.bank *= Math.exp(-dt * 2);
+            if (d3 < 0.015) r.flapLeft = Math.max(r.flapLeft, 0.3);
+          }
+          r.pos[0] += r.vel[0] * dt;
+          r.pos[1] += r.vel[1] * dt;
+          r.pos[2] += r.vel[2] * dt;
+        }
+      } else if (r.mode === 'circle') {
         r.theta += r.omega * dt;
-        // thermals drift downwind and lift the bird slowly
-        r.center[0] += state.windVel[0] * 0.3 * dt;
-        r.center[1] += state.windVel[2] * 0.3 * dt;
-        const cd = Math.hypot(r.center[0], r.center[1]);
-        r.y = Math.min(r.y + 0.0012 * dt, this._view.camY + cd * Math.tan(18 * D2R));
+        if (r.sp !== SPECIES.kite) {
+          // thermals drift downwind and lift the bird slowly (a kite stays low over its village)
+          r.center[0] += state.windVel[0] * 0.3 * dt;
+          r.center[1] += state.windVel[2] * 0.3 * dt;
+          const cd = Math.hypot(r.center[0], r.center[1]);
+          r.y = Math.min(r.y + 0.0012 * dt, this._view.camY + cd * Math.tan(18 * D2R));
+        }
         const nx = r.center[0] + Math.cos(r.theta) * r.R;
         const nz = r.center[1] + Math.sin(r.theta) * r.R;
         r.vel = [(nx - r.pos[0]) / dt, (r.y - r.pos[1]) / dt, (nz - r.pos[2]) / dt];
@@ -498,13 +805,18 @@
         r.bank = Math.sign(r.omega) * Math.atan((sp * sp) / (G * r.R));
         r.circleTime -= dt;
         if (r.circleTime <= 0) {
-          if (Math.random() < 0.5) this._leave(r);
+          const homes = r.sp === SPECIES.kite ? this._kiteHomes() : [];
+          if (homes.length && Math.random() < 0.7) {
+            // a kite moves on to the next village, or round again over this one
+            r.mode = 'glide';
+            r.target = this._overVillage(homes[Math.floor(Math.random() * homes.length)]);
+          } else if (r.sp === SPECIES.kite || Math.random() < 0.5) this._leave(r);
           else {
             r.mode = 'glide';
             r.target = this._pointInView(rand(-0.8, 0.8), rand(0.15, 0.6), rand(-3, 12));
           }
         }
-      } else {
+      } else if (r.mode !== 'approach' && r.mode !== 'settle') {
         const tg = r.target;
         const dx = tg[0] - r.pos[0];
         const dy = tg[1] - r.pos[1];
@@ -517,7 +829,8 @@
         const k = 1 - Math.exp(-dt * 0.6);
         r.vel[0] += (vx - r.vel[0]) * k;
         r.vel[2] += (vz - r.vel[2]) * k;
-        r.vel[1] = clamp(dy * 0.05, -0.001, 0.0008);
+        // (rising or sinking comes on over half a second: set at once, a bird leaving the tree leapt upwards)
+        r.vel[1] += (clamp(dy * 0.05, -0.001, 0.0008) - r.vel[1]) * (1 - Math.exp(-dt * 2));
         r.pos[0] += r.vel[0] * dt;
         r.pos[1] += r.vel[1] * dt;
         r.pos[2] += r.vel[2] * dt;
@@ -538,7 +851,7 @@
       r.nextFlap -= dt;
       if (r.nextFlap <= 0) {
         r.flapLeft = rand(1.2, 2.4);
-        r.nextFlap = rand(15, 45);
+        r.nextFlap = r.sp === SPECIES.falcon ? rand(1.5, 4) : r.sp === SPECIES.kite ? rand(5, 14) : rand(15, 45); // a falcon beats its way along, a big one soars
       }
       if (r.flapLeft > 0) {
         r.flapLeft -= dt;
@@ -664,6 +977,7 @@
     _newVehicle(kind, dir, s) {
       const k = VEHICLES[kind];
       const paints = k.paints;
+      const spread = k.spread || 0.15;
       const bend = k.bend * rand(0.92, 1.08);
       // it comes in no faster than the bend where it appears allows (it used to come into a hairpin at 70% of its
       // cruising speed and brake hard through it)
@@ -678,16 +992,20 @@
         wid: k.wid * SIZE_ON_SCREEN,
         hgt: k.hgt * SIZE_ON_SCREEN,
         // and every driver a little their own way
-        cruise: k.cruise * rand(0.85, 1.15),
+        cruise: k.cruise * rand(1 - spread, 1 + spread),
         bend,
         accel: k.accel * rand(0.85, 1.15),
+        vPass: k.vPass || V_PASS, // the fastest it overtakes at
+        beacon: !!k.beacon, // an ambulance's roof light
+        group: 0, // the army column it belongs to
+        yielding: false, // pulled in to let an ambulance by
         v: Math.min(k.cruise * 0.7, here),
         paint: paints[Math.floor(Math.random() * paints.length)],
         lane: k.lane,
         side: 0, // 0 its own lane, 1 out in the other to overtake, below 0 pulled in to the edge
         sideTarget: 0,
         pass: null, // the overtaking under way
-        cool: rand(3, 12), // seconds before it may think of overtaking
+        cool: k.beacon ? rand(0.5, 1.5) : rand(3, 12), // seconds before it may think of overtaking
         stopIn: kind === 'bus' ? rand(0.4, 3) : Infinity, // km to its next stop
         stopping: false,
         stopFor: 0,
@@ -720,7 +1038,24 @@
 
     _pickVehicleKind() {
       const x = Math.random();
-      return x < 0.25 ? 'bus' : x < 0.65 ? 'jeep' : 'motorcycle';
+      return x < 0.2 ? 'bus' : x < 0.55 ? 'jeep' : x < 0.85 ? 'motorcycle' : 'lorry';
+    }
+
+    /** An army column: a jeep leading three to six lorries, all at one pace, close together, hazard lights on. */
+    _newConvoy(dir) {
+      const k = VEHICLES.armyLorry;
+      return { dir, left: 1 + Math.floor(rand(3, 7)), lead: true, group: ++this._groups, cruise: k.cruise * rand(0.92, 1.06), bend: k.bend, accel: k.accel };
+    }
+
+    /** The next vehicle of a column, at s on the road. Those behind the first go a little faster, to close up. */
+    _convoyMember(q, s) {
+      const c = this._newVehicle(q.lead ? 'armyJeep' : 'armyLorry', q.dir, s);
+      const road = this.road;
+      const here = road && road.limit ? road.limit[clamp(Math.round(s / road.step), 0, road.n - 1)] * q.bend : Infinity;
+      Object.assign(c, { group: q.group, cruise: q.cruise * (q.lead ? 1 : 1.12), bend: q.bend, accel: q.accel, v: Math.min(q.cruise, here), blink: BLINK_BOTH, blinkFor: 99 });
+      q.lead = false;
+      q.left--;
+      return c;
     }
 
     /**
@@ -784,8 +1119,35 @@
           const dir = Math.random() < 0.5 ? 1 : -1;
           const s = dir > 0 ? 0.001 : road.length - 0.001;
           // clear in its lane: nothing near going its way, nor overtaking towards the end of the road in it
-          if (this.vehicles.every((o) => (o.dir !== dir && o.side < 0.3) || Math.abs(o.s - s) > 0.06)) this.vehicles.push(this._newVehicle(this._pickVehicleKind(), dir, s));
+          // (and not into a column that is still coming on to the road there)
+          const column = this._convoy && this._convoy.dir === dir;
+          if (!column && this.vehicles.every((o) => (o.dir !== dir && o.side < 0.3) || Math.abs(o.s - s) > 0.06)) this.vehicles.push(this._newVehicle(this._pickVehicleKind(), dir, s));
         }
+      }
+      // where a vehicle comes on to the road, and whether its lane is clear there (for `room` km, or up to the last of
+      // its own column)
+      const endOf = (dir) => (dir > 0 ? 0.001 : road.length - 0.001);
+      const endClear = (dir, room, group) =>
+        this.vehicles.every((o) => (o.dir !== dir && o.side < 0.3) || Math.abs(o.s - endOf(dir)) > (group && o.group === group ? o.len / 2 + CONVOY_GAP + (VEHICLES.armyLorry.len * SIZE_ON_SCREEN) / 2 : room));
+      // an army column: by day, when the road is open to ordinary traffic, about one in half an hour
+      this._nextConvoy -= dt;
+      if (this._nextConvoy <= 0) {
+        this._nextConvoy = rand(1200, 2400) / (TRAFFIC[this.traffic] || 1);
+        if (want >= 4 && state.astro.sunAltDeg > 3 && !this._convoy) this._convoy = this._newConvoy(Math.random() < 0.5 ? 1 : -1);
+      }
+      if (this._convoy) {
+        const q = this._convoy;
+        if (endClear(q.dir, 0.06, q.group)) this.vehicles.push(this._convoyMember(q, endOf(q.dir)));
+        if (q.left <= 0) this._convoy = null;
+      }
+      // an ambulance: rare, at any hour
+      this._nextAmbulance -= dt;
+      if (this._nextAmbulance <= 0) {
+        const dir = Math.random() < 0.5 ? 1 : -1;
+        if (this.enabled && !(this._convoy && this._convoy.dir === dir) && endClear(dir, 0.06)) {
+          this.vehicles.push(this._newVehicle('ambulance', dir, endOf(dir)));
+          this._nextAmbulance = rand(1800, 3600);
+        } else this._nextAmbulance = this.enabled ? 5 : 600;
       }
       const w = state.weather;
       const careful = 1 - 0.3 * smooth(0.1, 0.6, Math.max(w.rain, w.snow, w.fog));
@@ -808,8 +1170,15 @@
         let mirror = true; // nobody beside it or coming up behind in the other lane
         let passedBy = false; // someone is out overtaking it
         let beside = null; // alongside it in its own lane: it can't move back in there
+        let siren = false; // an ambulance is coming up behind it
+        let sirenOn = false; // or towards it
         for (const o of this.vehicles) {
           if (o === c) continue;
+          if (o.beacon) {
+            const back = (c.s - o.s) * c.dir;
+            if (o.dir === c.dir && back > 0 && back < SIREN_BEHIND) siren = true;
+            if (o.dir !== c.dir && back < 0 && back > -SIREN_AHEAD) sirenOn = true;
+          }
           if (o.dir === c.dir && inOwn(o) && Math.abs(o.s - c.s) < (o.len + c.len) / 2 + 0.004) beside = o;
           if (o.pass && o.pass.of === c && o.pass.phase === 1) passedBy = true;
           const gap = (o.s - c.s) * c.dir - (o.len + c.len) / 2;
@@ -837,7 +1206,8 @@
           // never faster than it could slow to the other's speed from, in the room there is: a fast motorcycle coming up
           // on a bus at a stop starts braking in time
           target = Math.min(target, Math.sqrt(o.v * o.v + 2 * 1.8e-3 * Math.max(gap - 0.008, 0)));
-          if (gap < 0.012 + c.v * 2) target = Math.min(target, o.v * 0.95);
+          // (an army column drives close together)
+          if (gap < (c.group && o.group === c.group ? CONVOY_GAP : 0.012 + c.v * 2)) target = Math.min(target, o.v * 0.95);
           if (gap < 0.006) target = 0;
         };
         if (inOwn(c)) follow(ahead, aheadGap);
@@ -876,14 +1246,35 @@
           }
         }
 
+        // ---- an ambulance: those ahead of it indicate, pull in to the edge and slow down until it is past, then pull
+        // out again; those coming towards it slow down. It still has to see its way clear to overtake, as anyone does.
+        if (!c.beacon && !c.pass && !c.stopping && c.stopFor <= 0) {
+          if (siren) {
+            if (!c.yielding) {
+              c.yielding = true;
+              c.sideTarget = -0.5;
+              if (!c.group) this._signal(c, BLINK_LEFT, 99);
+            }
+            // (an army column keeps its pace, or it would come apart as one after the other slowed)
+            if (!c.group) target = Math.min(target, cruise * 0.45);
+          } else if (c.yielding) {
+            c.yielding = false;
+            c.sideTarget = 0;
+            if (!c.group) this._signal(c, BLINK_RIGHT, 2);
+          }
+        }
+        if (sirenOn && !c.beacon) target = Math.min(target, cruise * 0.6);
+
         // ---- overtaking a slower one, or a line of them, where it can see the road ahead and nothing is coming. Any
         // faster vehicle that has caught up looks for its chance and takes it as soon as the way is clear: it never sits
         // for minutes behind a bus on an empty road. What stops it are the things that would cause a crash: something
         // coming, someone already out beside it, no room to get back in, a bend it can't see round.
         c.cool -= dt;
         // it starts looking once it has caught up: a little further out than it keeps its distance
-        if (!c.pass && c.cool <= 0 && mirror && ahead && aheadGap < 0.02 + c.v * 3 && c.side < 0.05 && !c.stopping && c.stopFor <= 0) {
-          const vPass = Math.min(c.cruise * careful * 1.15, V_PASS);
+        // (not a vehicle of an army column, nobody with an ambulance behind, and nobody past an ambulance: on the
+        // bends a motorcycle is quicker than it, went by, and then pulled in and slowed down in front of it)
+        if (!c.pass && c.cool <= 0 && mirror && ahead && aheadGap < 0.02 + c.v * 3 && c.side < 0.05 && !c.stopping && c.stopFor <= 0 && !c.group && !siren && !c.yielding && !ahead.beacon) {
+          const vPass = Math.min(c.cruise * careful * 1.15, c.vPass);
           // holding it back: slower than it would go here, or standing at a stop
           const parked = (o) => o.stopFor > 0 || o.stopping;
           const slow = (o) => parked(o) || o.v < Math.min(cruise * 0.9, vPass - PASS_GAIN);
@@ -905,8 +1296,10 @@
               }
             }
             // room to get back in before the next: enough to slow to its pace too (a bus standing at a stop needs most)
-            if (!next || g > Math.max(PASS_ROOM, cutInRoom(vPass, next) + 0.02)) break;
-            if (n >= 3 || next.pass || !slow(next)) ok = false;
+            // An army column is passed as a whole, however long: never back in between two of its vehicles.
+            const column = next && last.group && next.group === last.group;
+            if (!next || (!column && g > Math.max(PASS_ROOM, cutInRoom(vPass, next) + 0.02))) break;
+            if ((n >= 3 && !column) || next.pass || next.beacon || !slow(next)) ok = false;
             else {
               last = next;
               lineV = Math.max(lineV, parked(next) ? 0 : next.v);
@@ -930,8 +1323,8 @@
               c.pass = { of: ahead, phase: 0, wait: 1.5, vPass };
               this._signal(c, BLINK_RIGHT, 99);
               if (night) c.flash = 1.2; // "coming past"
-            } else c.cool = rand(1.5, 4); // not here, not now: it keeps watching for a chance
-          } else c.cool = rand(1.5, 4);
+            } else c.cool = c.beacon ? rand(0.4, 1) : rand(1.5, 4); // not here, not now: it keeps watching for a chance
+          } else c.cool = c.beacon ? rand(0.4, 1) : rand(1.5, 4);
         }
         if (c.pass) {
           const p = c.pass;
@@ -967,13 +1360,17 @@
             if (p.out > 5 && !gone && c.v - of.v < 4e-4) p.phase = 3; // not gaining on it: give up
             if (c.side < 0.5 && !mirror) p.phase = 3; // someone came up in that lane after all
             const next = beside && beside !== of ? beside : ahead && ahead !== of && (ahead.s - c.s) * c.dir > 0 ? ahead : null;
-            if (behindBy < -0.008 && (!next || (next !== beside && aheadGap > cutInRoom(c.v, next)))) {
+            // (never back in between two vehicles of an army column, however far apart they are)
+            const inside = next && !gone && of.group && next.group === of.group;
+            if (behindBy < -0.008 && (!next || (next !== beside && !inside && aheadGap > cutInRoom(c.v, next)))) {
               p.phase = 2; // past it, with room: back in
               c.sideTarget = 0;
               this._signal(c, BLINK_LEFT, 99);
             } else if (behindBy < -0.008) {
+              const inColumn = !gone && of.group && next.group === of.group;
               p.of = next; // the next one is close: past that one too, as long as the way stays clear
-              if (headOn < 0.12) {
+              if (headOn < 0.12 && inColumn) p.phase = 3; // no time, and no room inside a column: drop back behind it
+              else if (headOn < 0.12) {
                 p.phase = 2; // no time: back in behind it
                 c.sideTarget = 0;
                 this._signal(c, BLINK_LEFT, 99);
@@ -989,15 +1386,20 @@
             c.sideTarget = 1;
           }
           if (p.phase === 3) {
-            // back behind it before moving in, slowing down meanwhile
-            if ((behindBy > of.len + c.len + 0.003 || gone) && !beside) c.sideTarget = 0;
-            if (!gone) target = Math.min(target, of.v * 0.7);
+            // back behind it before moving in, slowing down meanwhile (behind the whole of an army column, not in
+            // between two of its vehicles)
+            let rear = this.vehicles.includes(p.of) ? p.of : null;
+            if (rear && rear.group) for (const o of this.vehicles) if (o.group === rear.group && (o.s - rear.s) * c.dir < 0) rear = o;
+            if (rear) p.of = rear;
+            const toRear = rear ? (rear.s - c.s) * c.dir + (rear.len + c.len) / 2 : -1;
+            if ((!rear || toRear > rear.len + c.len + 0.003) && !beside) c.sideTarget = 0;
+            if (rear) target = Math.min(target, rear.v * 0.7);
             if (c.blink !== BLINK_LEFT) this._signal(c, BLINK_LEFT, 99);
           }
           if ((p.phase === 2 || p.phase === 3) && c.sideTarget === 0 && c.side < 0.03) {
             c.pass = null;
             c.blinkFor = 0.8;
-            c.cool = rand(3, 10); // a breath before it looks again: the next slow one may be just ahead
+            c.cool = c.beacon ? rand(0.5, 1.5) : rand(3, 10); // a breath before it looks again: the next slow one may be just ahead
           }
         }
 
@@ -1068,6 +1470,8 @@
       const tail = rear * Math.max(lights * 0.5, c.brake * (0.3 + 0.7 * lights)); // by day a brake light is a small red point
       const braking = rear * c.brake;
       const blinkLit = c.blink && ((this.t * 1.4 + c.seed) % 1) < 0.55 ? c.blink : 0;
+      // an ambulance's roof light: red and blue in turn, twice a second each, by day as well
+      const beacon = c.beacon ? (Math.floor(this.t * 4 + c.seed * 4) % 2 ? BEACON_BLUE : BEACON_RED) : 0;
       let qx = Math.abs(ax) + Math.abs(bx) + 1.5;
       let qy = Math.abs(ay) + Math.abs(by) + halfH + 1.5;
       // room for the whole glow, so it fades out before the edge of the patch it is drawn on
@@ -1079,14 +1483,45 @@
         qx = Math.max(qx, Math.abs(ax) + Math.abs(bx) + 12);
         qy = Math.max(qy, Math.abs(ay) + Math.abs(by) + halfH + 12);
       }
+      if (beacon) {
+        qx = Math.max(qx, Math.abs(ax) + Math.abs(bx) + 16);
+        qy = Math.max(qy, Math.abs(ay) + Math.abs(by) + halfH + 16);
+      }
       // the light it throws on the road and the trees ahead: seen from any side, so before the vehicle itself
       if (lights > 0.02) this._pushBeam(c, f, [fx / fl, fy / fl, fz / fl], lights, beam, dist);
+      // and the light its flashing lamps throw all round it in the dark, on the road, the bank and the trees beside
+      // it: amber from hazard lights or an indicator (from that side of it), red then blue from an ambulance's roof.
+      // Small bulbs with no reflector to aim them: far weaker than a headlight, and it reaches only a few lengths.
+      if (lights > 0.02 && blinkLit) {
+        const side = blinkLit === BLINK_BOTH ? 0 : blinkLit === BLINK_RIGHT ? 1 : -1;
+        this._pushGlow([p[0] + (fz / flat) * hw * side, p[1] + c.hgt * 0.4, p[2] - (fx / flat) * hw * side], GLOW_AMBER, lights * (side ? 0.03 : 0.06), 0.025);
+      }
+      if (lights > 0.02 && beacon) this._pushGlow([p[0], p[1] + c.hgt + 0.0003, p[2]], beacon === BEACON_BLUE ? GLOW_BLUE : GLOW_RED, lights * 0.15, 0.045);
       this._push([
         pr.sx, pr.sy + halfH, qx, qy,
         0, 6, 1, dist,
         ax, ay, bx, by,
         halfH, c.paint, lamp, c.code,
-        tail, beam, blinkLit, braking,
+        tail, beam, blinkLit + beacon, braking,
+      ]);
+    }
+
+    /**
+     * Type 7 too: the light a small lamp throws all round it (a cone of -2 tells the shader), in its own colour, on
+     * whatever the bake stored within `range` km of it.
+     */
+    _pushGlow(at, colour, strength, range) {
+      const v = this._view;
+      const pr = this._project(at[0], at[1], at[2]);
+      const dist = Math.hypot(at[0], at[1] - v.camY, at[2]);
+      const half = Math.min(range / Math.max(dist, 0.01) / v.pxAng, 600) + 6; // px: everything it can light
+      if (pr.sx + half < 0 || pr.sx - half > v.w || pr.sy + half < 0 || pr.sy - half > v.h) return;
+      this._push([
+        pr.sx, pr.sy, half, half,
+        0, 7, strength, dist,
+        at[0], at[1], at[2], range,
+        0, 1, 0, -2,
+        0, colour[0], colour[1], colour[2],
       ]);
     }
 
@@ -1125,10 +1560,10 @@
       const haze = Math.max(w.fog, w.rain * 0.7, w.snow * 0.8);
       this._push([
         (x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0) / 2 + 6, (y1 - y0) / 2 + 6,
-        0, 7, lights * k.power * (0.8 + 0.7 * beam), dist,
+        0, 7, lights * k.power * (0.5 + 0.5 * beam), dist,
         lampP[0], lampP[1], lampP[2], range,
         fwd[0], fwd[1], fwd[2], cone,
-        haze, 0, 0, 0,
+        haze, beam, 0, 0,
       ]);
     }
 
@@ -1394,6 +1829,339 @@
       this.sats = this.sats.filter((s) => s.age < s.life && Math.abs(s.az) < this._view.hfov / 2 + 0.1 && s.el > -0.02);
     }
 
+    // ------------------------------------------------------------ an airliner and its contrail
+    /**
+     * A flight: straight and level at 10 to 11.5 km above the sea, passing 22 to 55 km from the viewer, mostly across
+     * the view. It is followed from where it comes into sight to where it leaves, and its trail for as long as that
+     * lasts: half a minute in dry air aloft, many minutes where there is high cloud (the air up there is moist), and
+     * it drifts with the wind at that height. `shown` puts it part of the way across at once (the test panel).
+     */
+    _newPlane(state, shown) {
+      const v = this._view;
+      const az = rand(-0.42, 0.42) * v.hfov;
+      const alt = rand(10, 11.5);
+      // Two flights in five come towards the viewer or go away, passing nearly overhead: on the picture such a one
+      // climbs from behind the peaks and leaves over the top, or comes in at the top and sinks behind the peaks.
+      const radial = Math.random() < 0.4;
+      let near;
+      let th;
+      if (radial) {
+        near = 45;
+        th = az + (Math.random() < 0.5 ? 0 : Math.PI) + rand(-0.08, 0.08);
+      } else {
+        // the point of its path at that bearing: further off the more its path leans towards or away from the
+        // viewer, so that where it passes nearest is 22 to 55 km off: high enough on the picture to clear the peaks
+        const lean = rand(-0.9, 0.9);
+        near = rand(22, 55) / Math.cos(lean);
+        th = az + (Math.random() < 0.5 ? 1 : -1) * (Math.PI / 2 + lean);
+      }
+      const C = [Math.sin(az) * near, Math.cos(az) * near];
+      const dir = [Math.sin(th), Math.cos(th)];
+      const top = (1 - v.horizonY) * v.h * v.pxAng + 0.03; // how steeply up the top edge of the picture is, and a little
+      const out = (s) => {
+        const x = C[0] + dir[0] * s;
+        const z = C[1] + dir[1] * s;
+        const d = Math.hypot(x, z);
+        return d > PLANE_FAR || Math.abs(Math.atan2(x, z)) > v.hfov / 2 + 0.12 || alt - v.camY - (d * d) / 12742 > top * d;
+      };
+      let s0 = 0;
+      while (!out(s0) && s0 > -400) s0 -= 2;
+      let s1 = 0;
+      while (!out(s1) && s1 < 400) s1 += 2;
+      const w = state.weather;
+      const moist = smooth(0.08, 0.55, w.cirrus || 0);
+      const life = rand(20, 60) + moist * rand(240, 660);
+      const h = (state.heading || 0) * D2R;
+      const E = w.cirrusE || 0;
+      const N = w.cirrusN || 0;
+      const p = {
+        C, dir, s0, alt, radial, t: 0, life, seed: Math.random(),
+        cross: (s1 - s0) / PLANE_V, // seconds in sight
+        wind: [(E * Math.cos(h) - N * Math.sin(h)) / 3600, (E * Math.sin(h) + N * Math.cos(h)) / 3600], // km/s, scene axes
+      };
+      if (shown) p.t = clamp((-s0 + rand(-0.25, 0.25) * Math.min(-s0, s1)) / PLANE_V, 0, p.cross);
+      return p;
+    }
+
+    _stepPlanes(dt, state) {
+      if (!this.enabled || !this.planes) {
+        this.aircraft = [];
+        return;
+      }
+      this._nextPlane -= dt;
+      if (this._nextPlane <= 0) {
+        // one every 10 to 30 minutes, and far fewer in the small hours
+        const h = state.now.getHours() + state.now.getMinutes() / 60;
+        this._nextPlane = rand(600, 1800) * (h < 5 || h >= 23.5 ? 3 : 1);
+        if (this.aircraft.length < 2) this.aircraft.push(this._newPlane(state, false));
+      }
+      for (const p of this.aircraft) p.t += dt;
+      this.aircraft = this.aircraft.filter((p) => p.t < p.cross + p.life);
+    }
+
+    /** Where the air an aircraft passed through `age` seconds ago is now: on the picture, and how far off (km). */
+    _trailAt(p, age) {
+      const v = this._view;
+      const s = p.s0 + PLANE_V * (p.t - age);
+      const x = p.C[0] + p.dir[0] * s + p.wind[0] * age;
+      const z = p.C[1] + p.dir[1] * s + p.wind[1] * age;
+      const d = Math.hypot(x, z);
+      const y = p.alt - v.camY - (d * d) / 12742; // the Earth curves away below it
+      const px = this._projectDir([x, y, z]);
+      return { sx: px[0], sy: px[1], dist: Math.hypot(d, y), up: y };
+    }
+
+    /** Type 8: the contrail as a row of straight pieces (it curves on a picture this wide), and the aircraft at its head. */
+    _pushPlane(p, state) {
+      const v = this._view;
+      const T = Math.min(p.t, p.life);
+      const head = this._trailAt(p, 0);
+      if (T > 1) {
+        const tail = this._trailAt(p, T);
+        const n = clamp(Math.ceil(Math.hypot(tail.sx - head.sx, tail.sy - head.sy) / 160), 2, 16);
+        const wide = (age, dist) => (TRAIL_W0 + TRAIL_SPREAD * age) / dist / v.pxAng;
+        let a = head;
+        for (let i = 0; i < n; i++) {
+          const a0 = (T * i) / n;
+          const a1 = (T * (i + 1)) / n;
+          const b = this._trailAt(p, a1);
+          const from = a;
+          a = b;
+          if ((from.up <= 0 && b.up <= 0) || Math.max(from.sx, b.sx) < -80 || Math.min(from.sx, b.sx) > v.w + 80) continue;
+          const len = Math.hypot(b.sx - from.sx, b.sy - from.sy);
+          if (len < 0.05) continue;
+          const w0 = wide(a0, from.dist);
+          const w1 = wide(a1, b.dist);
+          this._push([
+            (from.sx + b.sx) / 2, (from.sy + b.sy) / 2, len / 2 + 0.5, 2.2 * Math.max(w0, w1, 0.6) + 1.5,
+            Math.atan2(b.sy - from.sy, b.sx - from.sx), 8, 1, 0,
+            p.t - a0, p.t - a1, p.t, p.life, // when the air at each end of this piece was flown through, now, how long it lasts
+            w0, w1, len / 2, 0,
+            p.seed * 97, 0, 0, 0,
+          ]);
+        }
+      }
+      if (p.t < p.cross && head.up > 0 && head.sx > -10 && head.sx < v.w + 10) {
+        // by day a pale fleck, lost with distance; by night a steady red light and a white flash every second or so
+        const strobe = (this.t * 0.8 + p.seed) % 1 < 0.14 ? 1 : 0;
+        this._push([
+          head.sx, head.sy, 4, 4,
+          0, 8, 1, 0,
+          strobe, 1 - smooth(-6, 0, state.astro.sunAltDeg), 1 - smooth(60, 130, head.dist), 0,
+          0, 0, 0, 1,
+        ]);
+      }
+    }
+
+    // ------------------------------------------------------------ grazing animals, the monastery, a helicopter
+    /**
+     * Each animal grazes where it stands for a while, then walks a few metres at a slow walk (0.25 m/s) to another
+     * spot within 30 m of the middle of its herd, and grazes again. They are out by day; at dusk they are taken in.
+     */
+    _stepHerds(dt, daylight) {
+      this._herdsOut = this.enabled && this.animals ? smooth(0.3, 0.7, daylight) : 0;
+      if (this._herdsOut <= 0) return;
+      for (const h of this.herds) {
+        for (const a of h.animals) {
+          if (a.wait > 0) {
+            a.wait -= dt;
+            continue;
+          }
+          const dx = a.tx - a.x;
+          const dz = a.tz - a.z;
+          const d = Math.hypot(dx, dz);
+          const step = 0.00025 * dt;
+          if (d <= step) {
+            a.x = a.tx;
+            a.z = a.tz;
+            a.wait = rand(10, 70);
+            const ang = rand(0, TAU);
+            const r = Math.sqrt(Math.random()) * 0.03;
+            a.tx = Math.cos(ang) * r;
+            a.tz = Math.sin(ang) * r;
+          } else {
+            a.x += (dx / d) * step;
+            a.z += (dz / d) * step;
+            a.dir = [dx / d, dz / d];
+          }
+        }
+      }
+    }
+
+    /** Where an animal of a herd stands (km): on the slope of its meadow, which is flat enough to be taken as a plane. */
+    static animalAt(herd, a) {
+      const { x, y, z, n } = herd.at;
+      return [x + a.x, y - (n[0] * a.x + n[2] * a.z) / Math.max(n[1], 0.3), z + a.z];
+    }
+
+    _pushHerds(state) {
+      const v = this._view;
+      const out = this._herdsOut || 0;
+      if (out <= 0) return;
+      for (const h of this.herds) {
+        if (h.at.y > state.snowLine - 0.2) continue; // nothing grazes on snow
+        for (const a of h.animals) {
+          const p = Life.animalAt(h, a);
+          const pr = this._project(p[0], p[1], p[2]);
+          if (!this._inView(pr, 10)) continue;
+          const dist = Math.hypot(p[0], p[1] - v.camY, p[2]);
+          // 1.5 m long and 0.9 m at the shoulder; smaller than a pixel it is drawn a pixel wide and fainter
+          const hw = 0.00075 / dist / v.pxAng;
+          const hh = 0.00045 / dist / v.pxAng;
+          const k = Math.max(0.7 / hw, 1);
+          if (a.dir) {
+            const sideways = a.dir[0] * Math.cos(pr.a) - a.dir[1] * Math.sin(pr.a);
+            if (Math.abs(sideways) > 0.2) a.face = sideways > 0 ? 1 : -1;
+          }
+          this._push([
+            pr.sx, pr.sy + hh * k, hw * k + 0.5, hh * k + 0.5,
+            0, 11, out / (k * k), dist,
+            0, a.shade, a.face, 0,
+          ]);
+        }
+      }
+    }
+
+    /** The monastery's lamp: one warm light on its ridge from dusk to dawn, with the village lights. */
+    _pushGompa(state) {
+      const g = this.gompa;
+      const lit = this.enabled && this.lights ? state.lampGlow || 0 : 0;
+      if (!g || lit <= 0.01) return;
+      const pr = this._project(g.x, g.y + 0.006, g.z);
+      if (!this._inView(pr, 10)) return;
+      this._push([
+        pr.sx, pr.sy, 5, 5,
+        0, 11, lit, Math.hypot(g.x, g.y + 0.006 - this._view.camY, g.z),
+        1, 0, 1, 0,
+      ]);
+    }
+
+    /**
+     * A helicopter now and then by day in fair weather: straight and level along the valley, 0.8 to 2.2 km off, a
+     * little above or below the eye: near enough to be seen for what it is (further off it is a dot). Mountains
+     * nearer than it hide it as it passes behind them. One of three paints: rescue red and white, army olive,
+     * white and blue.
+     */
+    _newHeli(shown) {
+      const v = this._view;
+      const side = Math.random() < 0.5 ? -1 : 1;
+      const near = rand(0.8, 2.2);
+      const lean = rand(-0.15, 0.15); // nearly across the view: leaning more, it would never leave the widest one
+      const th = side * (Math.PI / 2 + lean);
+      const dir = [Math.sin(th), Math.cos(th)];
+      const C = [0, near];
+      let s0 = 0;
+      const out = (s) => Math.abs(Math.atan2(C[0] + dir[0] * s, C[1] + dir[1] * s)) > v.hfov / 2 + 0.06;
+      while (!out(s0) && s0 > -60) s0 -= 0.2;
+      let s1 = 0;
+      while (!out(s1) && s1 < 60) s1 += 0.2;
+      return { C, dir, s: shown ? rand(-0.3, 0.3) * Math.min(-s0, s1) : s0, s1, y: v.camY + near * rand(-0.08, 0.2), turn: 0, paint: Math.floor(Math.random() * 3), seed: Math.random() };
+    }
+
+    _stepHeli(dt, state, fair) {
+      const w = state.weather;
+      if (!this.enabled || !this.planes) {
+        this.heli = null;
+        return;
+      }
+      if (!this.heli) {
+        this._nextHeli -= dt;
+        if (this._nextHeli <= 0) {
+          // one every 40 minutes to two hours; they do not fly these valleys in cloud, rain or a gale
+          this._nextHeli = rand(2400, 7200);
+          if (fair > 0.8 && w.windSpeed < 40 && w.coverage < 0.8) this.heli = this._newHeli(false);
+        }
+        return;
+      }
+      const h = this.heli;
+      h.s += HELI_V * dt;
+      h.turn += dt * 40;
+      if (h.s > h.s1) this.heli = null;
+    }
+
+    static heliAt(h) {
+      return [h.C[0] + h.dir[0] * h.s, h.y, h.C[1] + h.dir[1] * h.s];
+    }
+
+    _pushHeli(state) {
+      const h = this.heli;
+      if (!h) return;
+      const v = this._view;
+      const p = Life.heliAt(h);
+      const pr = this._project(p[0], p[1], p[2]);
+      if (!this._inView(pr, 20)) return;
+      const dist = Math.hypot(p[0], p[1] - v.camY, p[2]);
+      // 25 m from nose to tail rotor under a 21 m rotor; seen more or less from the side as it crosses. The patch
+      // has room round it for its lights, which show as the day goes: a red flash, the side light, tail and nose.
+      const hw = Math.max(0.0125 / dist / v.pxAng, 3);
+      const along = h.dir[0] * Math.cos(pr.a) - h.dir[1] * Math.sin(pr.a);
+      this._push([
+        pr.sx, pr.sy, hw * 1.08 + 6, hw * 0.45 + 6,
+        0, 11, 1, dist,
+        2, h.turn, along >= 0 ? 1 : -1, h.paint,
+        hw, 1 - smooth(-6, 0, state.astro.sunAltDeg), (this.t * 1.1 + h.seed) % 1 < 0.12 ? 1 : 0, 0,
+      ]);
+    }
+
+    // ------------------------------------------------------------ festival fireworks
+    /**
+     * On a festival night (environment.js festival) small rockets go up from the villages now and then: after dark,
+     * in dry air one can see through, mostly before midnight. One every 15 to 70 seconds on the night itself across
+     * all the villages in view, fewer on the nights around it.
+     */
+    _stepFireworks(dt, state) {
+      const w = state.weather;
+      const fest = this.enabled && this.lights ? Math.max(state.festival || 0, this.festForce || 0) : 0;
+      const ok = fest * smooth(-6, -10, state.astro.sunAltDeg) * (1 - smooth(0.05, 0.3, w.rain)) * (1 - smooth(0.05, 0.3, w.snow)) * (1 - smooth(0.3, 0.7, w.fog)) * (1 - smooth(0.6, 0.9, w.coverage));
+      if (ok > 0.01) {
+        const h = state.now.getHours() + state.now.getMinutes() / 60;
+        this._nextFirework -= dt * ok * (h >= 12 && h < 23.5 ? 1 : 0.15);
+        if (this._nextFirework <= 0) {
+          this._nextFirework = rand(15, 70);
+          const f = this.fireworks.length < 4 ? this._newFirework() : null;
+          if (f) this.fireworks.push(f);
+        }
+      }
+      for (const f of this.fireworks) f.age += dt;
+      this.fireworks = this.fireworks.filter((f) => f.age < f.life);
+    }
+
+    /** A rocket from somewhere in a village: up 40 to 70 m in a second or so, then a ball of sparks 12 to 22 m across its radius. */
+    _newFirework() {
+      const list = this.smokeSources;
+      if (!list.length) return null;
+      const src = list[Math.floor(Math.random() * list.length)];
+      const rise = rand(1.0, 1.5);
+      return {
+        at: [src.x + rand(-0.03, 0.03), src.y + 0.004, src.z + rand(-0.03, 0.03)],
+        height: rand(0.04, 0.07), rise, age: -rise, life: rand(1.4, 2.2), radius: rand(0.012, 0.022), seed: rand(0, 50),
+        colour: FIREWORK_COLOURS[Math.floor(Math.random() * FIREWORK_COLOURS.length)],
+      };
+    }
+
+    /** Where a firework is now (km): climbing, slowing to the top of its rise, where it bursts and stays. */
+    static fireworkAt(f) {
+      const k = clamp(-f.age / f.rise, 0, 1);
+      return [f.at[0], f.at[1] + f.height * (1 - k * k), f.at[2]];
+    }
+
+    /** Type 10. */
+    _pushFirework(f) {
+      const v = this._view;
+      const p = Life.fireworkAt(f);
+      const pr = this._project(p[0], p[1], p[2]);
+      if (!this._inView(pr, 30)) return;
+      const dist = Math.hypot(p[0], p[1] - v.camY, p[2]);
+      const R = f.radius / dist / v.pxAng;
+      const half = f.age < 0 ? 4 : R * 1.8 + 4;
+      this._push([
+        pr.sx, pr.sy, half, half,
+        0, 10, 1, dist,
+        f.age, f.life, f.seed, R,
+        f.colour[0], f.colour[1], f.colour[2], 0,
+      ]);
+    }
+
     // ------------------------------------------------------------ helpers
     _dayOfYearFrac(d) {
       const start = new Date(d.getFullYear(), 0, 1);
@@ -1415,6 +2183,13 @@
       const a = Math.atan2(P[0], P[2]);
       const r = Math.hypot(P[0], P[2]);
       return [v.w / 2 + a / v.pxAng, v.horizonY * v.h + (P[1] / Math.max(r, 1e-4)) / v.pxAng];
+    }
+
+    /** Is this bird at the tree: sitting on it, or within 45 m of its perch on the way in or out? */
+    _nearTree(r) {
+      if (r.mode === 'perched') return true;
+      const at = this.perchAt && this.perchAt();
+      return !!at && Math.hypot(r.pos[0] - at[0], r.pos[1] - at[1], r.pos[2] - at[2]) < 0.045;
     }
 
     // ------------------------------------------------------------ instance buffer
@@ -1457,7 +2232,8 @@
         sx = -sx;
         sy = -sy;
       }
-      const spanF = Math.max(Math.hypot(sx, sy), 0.24);
+      // (wings closing as it settles on the tree, opening as it leaves it)
+      const spanF = Math.max(Math.hypot(sx, sy), 0.24) * (1 - 0.65 * (b.fold || 0));
       const roll = Math.atan2(sy, sx);
       // body direction on screen (rotated into the wing frame)
       const bx = fx * right[0] + fz * right[2];
@@ -1466,11 +2242,30 @@
       const sr = Math.sin(-roll);
       const lbx = bx * cr - by * sr;
       const lby = bx * sr + by * cr;
-      const topSeen = smooth(0.0, 0.08, -dy / dist);
+      // (close by, at the tree, its lit side shows whichever way it is seen: it was a black shape against the sky)
+      const topSeen = Math.max(smooth(0.0, 0.08, -dy / dist), 0.6 * (1 - smooth(0.05, 0.12, dist)));
+      // How much of it is the sitting bird: all of it on the perch; coming in as its wings close and going out as
+      // they open, the sitting shape and the flying one fade into each other where its body is, so neither pops up.
+      // (The flying bird is drawn about its body, the sitting one from its feet: flying, its body is that much above
+      // the perch, see Life.perchBody.)
+      const sitting = b.mode === 'perched' ? 1 : !b.face ? 0 : b.mode === 'settle' ? smooth(0.3, 1, b.settle) : b.mode === 'leave' ? b.fold || 0 : 0;
+      if (sitting > 0.01) {
+        // Type 9: sitting, wings folded. Its feet are on the perch; the patch holds it and the tail hanging below.
+        const tall = (b.sp.tall || 0.00062) / dist / v.pxAng; // px: as tall as its kind sits
+        const feet = pr.sy - (b.mode === 'perched' ? 0 : Life.perchBody(b) / dist / v.pxAng);
+        const faceX = b.face[0] * right[0] + b.face[1] * right[2];
+        this._push([
+          pr.sx, feet + tall * 0.3, tall * 0.75, tall * 0.95,
+          0, 9, (b.alpha ?? 1) * sitting, dist,
+          faceX >= 0 ? 1 : -1, b.look || 0, tall, 0,
+          0, 0, 1, 0,
+        ]);
+        if (sitting >= 1) return;
+      }
       const hs = Math.max(halfSpanPx, 1.2) * 1.3;
       this._push([
         pr.sx, pr.sy, hs, hs,
-        roll, b.sp.type, (b.alpha ?? 1) * sizeFade, dist,
+        roll, b.sp.type, (b.alpha ?? 1) * sizeFade * (1 - sitting), dist,
         b.phase || 0, b.amp || 0, spanF, b.dihedral || 0,
         lbx, lby, topSeen, 0,
       ]);
@@ -1482,7 +2277,9 @@
       const lights = this._lightsLevel(state);
       for (const c of this.vehicles) this._pushVehicle(c, lights);
       const vehiclesInView = this.count;
-      for (const r of this.raptors) this._pushBird(r);
+      // (one close to the tree is kept for the end: it is drawn after the tree, in front of it)
+      const near = this.raptors.filter((r) => this._nearTree(r));
+      for (const r of this.raptors) if (!near.includes(r)) this._pushBird(r);
       if (this.flock) for (const b of this.flock.birds) this._pushBird(b);
       if (this.geese) for (const b of this.geese.birds) this._pushBird(b);
       const birdsInView = this.count - vehiclesInView;
@@ -1506,7 +2303,15 @@
         ]);
       }
 
+      // Aircraft and their trails: a few pixels a second at most on the picture, so they do not ask for more frames
+      for (const p of this.aircraft) this._pushPlane(p, state);
+      for (const f of this.fireworks) this._pushFirework(f);
+      this._pushHerds(state);
+      this._pushGompa(state);
+
       const skyFrom = this.count;
+      // (a helicopter crosses the picture in a minute or two: it is drawn at the birds' frame rate while it does)
+      this._pushHeli(state);
 
       // meteors: a hair-thin line growing from where it starts, brightest at its head, sometimes flaring once, and
       // ending at once; the faint train it leaves behind fades in a moment
@@ -1537,10 +2342,17 @@
       }
       // Things in view that move fast enough to need a higher frame rate. Smoke only drifts.
       this.movers = birdsInView + this.count - skyFrom;
+      // A bird at the tree: after everything else, so the renderer can draw it over the tree. Sitting, it needs no
+      // more frames than the tree does.
+      this.nearFrom = this.count;
+      for (const r of near) this._pushBird(r);
+      this.movers += near.filter((r) => r.mode !== 'perched').length ? this.count - this.nearFrom : 0;
     }
   }
 
   LE.Life = Life;
   LE.Life.MAX = MAX;
+  /** How far above its feet (km) the middle of a sitting bird's body is: where the flying bird is as it lands and leaves. */
+  Life.perchBody = (b) => (b.sp.tall || 0.00062) * 0.45;
   LE.Life.FLOATS = FLOATS;
 })();

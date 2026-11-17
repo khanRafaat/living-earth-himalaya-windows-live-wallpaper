@@ -177,6 +177,7 @@ uniform int uDebugView;
 uniform float uValleyHaze;
 uniform float uLampE;
 uniform float uLampDark;
+uniform float uFestival; // a festival night (environment.js), 0 to 1: that share of the houses is lit with rows of oil lamps
 uniform float uLocalHour;
 uniform vec2 uGustDir;
 uniform vec4 uGrassWind; // the grass: how far its gusts have travelled (x, y, m), its lean (pixels), how strong the wind is
@@ -191,6 +192,35 @@ uniform vec3 uCrownC;
 uniform vec3 uCrownR;
 uniform vec3 uTrunkTop;
 uniform float uTreeSwayT;
+// The waterfall (renderer.js pickFall): the top of a steep rock face found in the baked view. x, z, the height of
+// its top and of its foot (km); and how much water comes down it, 0 none, to 1 after rain.
+uniform vec4 uFallAt;
+uniform float uFallFlow;
+float waterfall(vec3 pos) {
+  vec2 sight = normalize(uFallAt.xy - uCamPos.xz);
+  vec2 rel = pos.xz - uFallAt.xy;
+  float s = dot(rel, vec2(sight.y, -sight.x)); // km across the fall
+  float along = (uFallAt.z - pos.y) / max(uFallAt.z - uFallAt.w, 0.01); // 0 at its top, 1 at its foot
+  if (abs(s) > 0.03 || abs(dot(rel, sight)) > 0.4 || along < -0.05 || along > 1.1) return 0.0;
+  // the water wanders a little on its way down and spreads towards the foot; it is a thread in dry weather
+  float mid = (noise2(vec2(pos.y * 9.0, 3.0)) - 0.5) * 0.006;
+  float wide = mix(0.0012, 0.0045, uFallFlow) * (0.6 + 0.8 * along);
+  float body = 1.0 - smoothstep(wide * 0.5, wide, abs(s - mid));
+  body *= smoothstep(-0.02, 0.03, along) * (1.0 - smoothstep(0.95, 1.05, along));
+  // falling water: lighter and darker streaks running down it
+  float run = 0.65 + 0.35 * noise2(vec2(s * 900.0, pos.y * 60.0 + uTime * 1.6));
+  return body * run * (0.35 + 0.65 * uFallFlow);
+}
+// The road (road.js): its map holds the way from a point to its centre line. How much of its surface is here, 0 to 1.
+uniform sampler2D uRoadMap;
+uniform vec4 uRoadBox; // x0, z0, 1/width, 1/depth
+uniform float uRoadOn;
+float onRoad(vec2 p) {
+  vec2 uv = (p - uRoadBox.xy) * uRoadBox.zw;
+  if (uRoadOn < 0.5 || uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return 0.0;
+  return 1.0 - smoothstep(0.0025, 0.004, length(textureLod(uRoadMap, uv, 0.0).xy));
+}
+uniform vec2 uTreeDir;    // which way the wind bends the tree on the rock now (it follows the wind in seconds; uGustDir in minutes)
 out vec4 fragColor;
 ${S.post}
 
@@ -330,7 +360,7 @@ float treeShade(vec3 pm) {
     float t1 = (-b + sq) / a;
     if (t1 > 0.0) {
       float chord = t1 - t0;
-      vec3 m = q + L * (t0 + t1) * 0.5 + vec3(uGustDir.x, 0.0, uGustDir.y) * uTreeSwayT;
+      vec3 m = q + L * (t0 + t1) * 0.5 + vec3(uTreeDir.x, 0.0, uTreeDir.y) * uTreeSwayT; // the way the tree itself leans now
       float n = noise2(m.xz * 2.3 + m.y * 0.7) * 0.6 + noise2(m.xz * 5.3 - m.y * 1.3 + 3.0) * 0.4;
       float gaps = smoothstep(0.1, 0.6, n) * (1.0 - smoothstep(1.0, 3.2, chord));
       res *= mix(max(exp(-chord * 1.2), 0.28), 1.0, gaps * 0.85);
@@ -375,7 +405,9 @@ vec3 villageLight(vec4 g3, float t) {
   float allNight = step(0.87, fract(id * 3.7));
   float earlyRiser = step(0.5, fract(id * 5.3)) * step(4.1 + fract(id * 11.0) * 1.4, h) * step(h, 12.0);
   float evening = h >= 12.0 ? step(h, offAt) : 0.0;
-  float on = clamp(evening + allNight + earlyRiser, 0.0, 1.0);
+  // on a festival night a house keeps its rows of oil lamps burning until morning
+  float fest = uFestival > 0.001 ? step(fract(id * 9.1), uFestival) : 0.0;
+  float on = clamp(evening + allNight + earlyRiser + fest, 0.0, 1.0);
   on *= step(0.1 + fract(id * 13.7) * 0.6, uLampDark);     // switched on one by one as dusk deepens
   if (on <= 0.0) return vec3(0.0);
   // comings and goings: spells of half a minute to four minutes, dark for about one in four. The lights left on all night
@@ -385,7 +417,7 @@ vec3 villageLight(vec4 g3, float t) {
   float now = houseSpell(id, floor(k));
   float before = houseSpell(id, floor(k) - 1.0);
   float lit = mix(before, now, smoothstep(0.0, 0.8, fract(k) * spellLen));
-  on *= max(lit, allNight);
+  on *= max(lit, max(allNight, fest));
   if (on <= 0.001) return vec3(0.0);
   // shimmer through the air, more with distance: a little close in, a clear twinkle across the valley
   float amp = 0.1 + 0.22 * smoothstep(2.0, 14.0, t);
@@ -393,10 +425,11 @@ vec3 villageLight(vec4 g3, float t) {
   vec3 warm = vec3(1.0, 0.62, 0.30);
   vec3 led = vec3(0.92, 0.95, 1.0);
   vec3 c = mix(warm, led, step(0.86, fract(id * 17.9)));
-  float fire = step(0.8, fract(id * 23.1));                // oil lamps / fires flicker
+  c = mix(c, vec3(1.0, 0.56, 0.22), fest);                 // the deeper orange of oil flames
+  float fire = max(step(0.8, fract(id * 23.1)), fest);     // oil lamps / fires flicker
   float fl = 1.0 - fire * 0.25 * (0.5 + 0.5 * sin(uTime * 7.3 + id * 60.0) * sin(uTime * 3.1 + id * 21.0));
   float d = clamp(16.0 / (t * t), 0.05, 1.3);              // point source: dimmer with distance
-  return c * uLampE * g3.r * on * fl * shimmer * d * (0.6 + 0.8 * fract(id * 29.3));
+  return c * uLampE * g3.r * on * fl * shimmer * d * (0.6 + 0.8 * fract(id * 29.3)) * (1.0 + 0.5 * fest);
 }
 
 vec3 shadeTerrain(vec3 rd, float t, vec4 g0, ivec2 ic) {
@@ -463,6 +496,12 @@ vec3 shadeTerrain(vec3 rd, float t, vec4 g0, ivec2 ic) {
   alb = mix(alb, vec3(0.84, 0.87, 0.92), snow);
   float wet = uWet * (1.0 - snow);
   alb *= 1.0 - 0.4 * wet * (1.0 - canopy * 0.5);
+  // white water down a far rock face, more of it after rain; under snow it is frozen over and hidden
+  if (uFallFlow > 0.0 && !ledge) alb = mix(alb, vec3(0.78, 0.83, 0.88), waterfall(pos) * (1.0 - snow) * (1.0 - canopy));
+  // The wet road: tarmac goes nearly black and shines. It mirrors the sun more sharply than wet ground, shows the
+  // sky's light by day (below), and a vehicle's lamps at night (sprites.js, type 7).
+  float road = wet > 0.01 && !ledge && t < 9.0 ? onRoad(pos.xz) * (1.0 - canopy) * wet : 0.0;
+  alb *= 1.0 - 0.35 * road;
 
   float sh = mix(texelFetch(uShadowA, ic, 0).r, texelFetch(uShadowB, ic, 0).r, uShadowMix);
   if (ledge) sh *= treeShade(rd * t * 1000.0);
@@ -502,7 +541,7 @@ vec3 shadeTerrain(vec3 rd, float t, vec4 g0, ivec2 ic) {
   vec3 hv = normalize(uSunDir + v);
   float nh = max(dot(n, hv), 0.0);
   float vh = max(dot(v, hv), 0.0);
-  float rough = mix(mix(0.7, 0.25, wet), 0.42, snow);
+  float rough = mix(mix(mix(0.7, 0.25, wet), 0.12, road), 0.42, snow);
   float a2 = pow(rough, 4.0);
   // Wet ground mirrors the sun in a sharp highlight. Where the surface turns within a pixel (the rim of the rock, the
   // edges of the road, gaps in the forest) one pixel of it caught the sun alone and showed as a pale fleck, in rows
@@ -520,6 +559,13 @@ vec3 shadeTerrain(vec3 rd, float t, vec4 g0, ivec2 ic) {
   float F = 0.03 + 0.97 * pow(1.0 - vh, 5.0);
   float specMask = max(snow * 0.7, wet * (1.0 - canopy)) + 0.04;
   vec3 spec = sunL * ndlS * D * F * 0.25 * specMask * (1.0 - 0.9 * uOvercast);
+  if (road > 0.01) {
+    // the sky in the wet road, at the low angle a road is seen at from across a valley
+    vec3 up2 = reflect(rd, n);
+    up2.y = abs(up2.y);
+    float fr = 0.03 + 0.97 * pow(1.0 - max(dot(v, n), 0.0), 5.0);
+    spec += mix(skyLUT(normalize(up2)), cloudAmb / PI, uOvercast) * fr * road * 0.7;
+  }
   // lightning lights the rock around us for an instant
   if (ledge) diffuse += alb * uFlash * vec3(0.72, 0.78, 1.0) * 1.6 * (0.45 + 0.55 * max(n.y, 0.0));
   return diffuse + spec + villageLight(g3, t);
@@ -613,6 +659,95 @@ vec3 lightning(vec2 fc, vec3 rd, float t, float cloudA) {
   return uFlash * vec3(0.72, 0.78, 1.0) * lit * (near * lumps * 0.55 + 0.045);
 }
 
+// A rainbow, as light added to the scene: the sun's light turned back by the rain at 42 degrees from the point
+// opposite the sun, red on the outside; a fainter second bow at 51 degrees with its colours the other way round;
+// a little brighter inside the first. Seen in the rain, so not in front of ground nearer than a few km.
+uniform float uBow;
+vec3 bowColours(float x) {
+  // x: 0 violet to 1 red
+  vec3 c = vec3(exp(-pow((x - 0.86) / 0.3, 2.0)), exp(-pow((x - 0.5) / 0.24, 2.0)), exp(-pow((x - 0.14) / 0.26, 2.0)));
+  return c * smoothstep(-0.2, 0.08, x) * (1.0 - smoothstep(0.92, 1.2, x));
+}
+vec3 rainbow(vec3 rd, float t) {
+  float ang = degrees(acos(clamp(dot(rd, -uSunDir), -1.0, 1.0)));
+  if (ang < 30.0 || ang > 55.0) return vec3(0.0);
+  vec3 c = bowColours((ang - 40.3) / 2.2)
+         + bowColours(1.0 - (ang - 50.2) / 3.4) * 0.28
+         + vec3(0.07) * smoothstep(30.0, 40.3, ang) * (1.0 - step(40.3, ang));
+  float inRain = t < 0.0 ? 1.0 : smoothstep(2.5, 12.0, t);
+  return uSunE * transmittance(uCamPos.y, max(uSunDir.y, 0.0)) * c * 0.014 * uBow * inRain * smoothstep(-0.03, 0.02, rd.y + 0.2);
+}
+
+// The sky or the land at one pixel of the bake, with the air in front of it.
+vec3 landOrSky(ivec2 ic, vec3 rd, vec4 g0) {
+  float t = g0.z;
+  if (t < 0.0) return shadeSky(rd);
+  vec3 col = shadeTerrain(rd, t, g0, ic);
+  // The haze in front of the land is lit along nearly all of its length even where the land itself is
+  // in shadow, so it follows a softened shadow, weakly: a small shaded hollow must not turn the whole
+  // column of air blue (at golden hour that showed as hard blue blotches all over the hills).
+  float sunlit = 1.0;
+  if (uKeyIsSun > 0.5) {
+    sunlit = 0.0;
+    for (int k = 0; k < 5; k++) {
+      ivec2 o = k == 0 ? ivec2(0) : ivec2(k == 1 || k == 2 ? -6 : 6, k == 1 || k == 3 ? -6 : 6);
+      ivec2 c = clamp(ic + o, ivec2(0), ivec2(uRes) - 1);
+      sunlit += mix(texelFetch(uShadowA, c, 0).r, texelFetch(uShadowB, c, 0).r, uShadowMix) * (k == 0 ? 0.4 : 0.15);
+    }
+  }
+  return aerial(col, rd, t, sunlit);
+}
+
+// How far the wind has a crown out of its place now, -1 to 1 and more in a storm: the gust passing over it and its own
+// sway in the waves that run downwind. The same sums as the light on the crowns in shadeTerrain, so a crown that leans
+// is the one that catches the light differently.
+float crownSwing(vec3 pos, float t, float id) {
+  vec2 across = vec2(-uGustDir.y, uGustDir.x);
+  vec2 wc = vec2(dot(pos.xz, uGustDir), dot(pos.xz, across));
+  vec2 a = wc - vec2(uGustTravel.x, 0.0);
+  vec2 b = wc - vec2(uGustTravel.y, 0.0);
+  float gust = (textureLod(uNoise2D, a * vec2(1.6, 0.4), 2.0).r * 0.65 + textureLod(uNoise2D, b * vec2(1.0, 0.3) + 0.37, 2.0).g * 0.35 - 0.5) * 2.0;
+  float sway = sin(uTreeSway.x - wc.x * 100.0 + id * 0.6) * 0.6 + sin(uTreeSway.y - wc.x * 70.0 + id * 1.4) * 0.4;
+  return (gust + sway * (0.15 + 0.6 * max(gust, 0.0))) * uWindAmt * 0.8;
+}
+
+// The outlines of the trees move. The bake's crowns stand still and only the light on them changed, so a windy forest
+// had a frozen edge against the sky and the slopes behind it. Where a crown within 3.5 km stands against something
+// much further off, it is carried sideways by as much as its top really moves (0.8 m at a full swing: a pixel or so
+// from a kilometre on a wide picture, less further off, and never more than one), by blending with the pixel beside it: the crown gives way to what is behind it on
+// one side and covers a little of it on the other. Coherent waves and a blend, so it reads as sway and not as
+// shimmer. Only those edge pixels are shaded twice; every other pixel pays for one or two looks at the bake.
+vec3 swayEdge(vec3 col, ivec2 ic, vec3 rd, vec4 g0) {
+  float t = g0.z;
+  float az = atan(rd.x, rd.z);
+  float proj = uGustDir.x * cos(az) - uGustDir.y * sin(az); // downwind is to the right on the picture: +
+  if (abs(proj) < 0.05) return col;
+  float perKm = proj * 0.0008 / pixelAngle();               // px a crown top moves per unit of swing, 1 km away
+  if (t > LEDGE_T_KM && t < 3.5 && texelFetch(uG1, ic, 0).a > 0.5) {
+    float d = crownSwing(uCamPos + rd * t, t, texelFetch(uG3, ic, 0).a * 6.2832) * perKm / t;
+    if (abs(d) < 0.03) return col;
+    // what was beside it on the side it comes from is here now
+    ivec2 n = clamp(ic - ivec2(d > 0.0 ? 1 : -1, 0), ivec2(0), ivec2(uRes) - 1);
+    vec4 gn = texelFetch(uG0, n, 0);
+    if (gn.z > 0.0 && gn.z < t * 1.2 + 0.03) return col;    // more of the same slope: nothing would show
+    return mix(col, landOrSky(n, cameraRay(vec2(n) + 0.5), gn), min(abs(d), 1.0));
+  }
+  // not a crown: one beside it may lean over this pixel
+  for (int k = 0; k < 2; k++) {
+    ivec2 n = clamp(ic + ivec2(k == 0 ? -1 : 1, 0), ivec2(0), ivec2(uRes) - 1);
+    vec4 gn = texelFetch(uG0, n, 0);
+    float tn = gn.z;
+    if (tn <= LEDGE_T_KM || tn >= 3.5) continue;
+    if (t > 0.0 && t < tn * 1.2 + 0.03) continue;
+    if (texelFetch(uG1, n, 0).a <= 0.5) continue;
+    vec3 rn = cameraRay(vec2(n) + 0.5);
+    float d = crownSwing(uCamPos + rn * tn, tn, texelFetch(uG3, n, 0).a * 6.2832) * perKm / tn;
+    if (d * (k == 0 ? 1.0 : -1.0) < 0.03) continue;         // it is moving the other way
+    return mix(col, landOrSky(n, rn, gn), min(abs(d), 1.0));
+  }
+  return col;
+}
+
 void main() {
   vec2 fc = (floor(gl_FragCoord.xy) + 0.5) * uOutScale;
   ivec2 ic = ivec2(fc);
@@ -620,25 +755,9 @@ void main() {
   vec4 g0 = texelFetch(uG0, ic, 0);
   float t = g0.z;
   if (uGrassOnly == 1 && (t < 0.0 || t >= LEDGE_T_KM || texelFetch(uG3, ic, 0).a <= 0.02)) discard;
-  vec3 col;
-  if (t < 0.0) {
-    col = shadeSky(rd);
-  } else {
-    col = shadeTerrain(rd, t, g0, ic);
-    // The haze in front of the land is lit along nearly all of its length even where the land itself is
-    // in shadow, so it follows a softened shadow, weakly: a small shaded hollow must not turn the whole
-    // column of air blue (at golden hour that showed as hard blue blotches all over the hills).
-    float sunlit = 1.0;
-    if (uKeyIsSun > 0.5) {
-      sunlit = 0.0;
-      for (int k = 0; k < 5; k++) {
-        ivec2 o = k == 0 ? ivec2(0) : ivec2(k == 1 || k == 2 ? -6 : 6, k == 1 || k == 3 ? -6 : 6);
-        ivec2 c = clamp(ic + o, ivec2(0), ivec2(uRes) - 1);
-        sunlit += mix(texelFetch(uShadowA, c, 0).r, texelFetch(uShadowB, c, 0).r, uShadowMix) * (k == 0 ? 0.4 : 0.15);
-      }
-    }
-    col = aerial(col, rd, t, sunlit);
-  }
+  vec3 col = landOrSky(ic, rd, g0);
+  // the outlines of the trees on the near hills move with the wind
+  if (uWindAmt > 0.001 && uMeter == 0 && uGrassOnly == 0 && uDebugView == 0) col = swayEdge(col, ic, rd, g0);
   vec4 vol = sampleVolume(fc, t);
   if (uDebugView > 0) {
     vec4 g1 = texelFetch(uG1, ic, 0);
@@ -660,6 +779,7 @@ void main() {
     fragColor = vec4(log(max(dot(col, vec3(0.2126, 0.7152, 0.0722)), 1e-4)), 0.0, 0.0, 1.0);
     return;
   }
+  if (uBow > 0.002) col += rainbow(rd, t) * mix(0.55, 1.0, vol.a);
   col = exposeColor(col, t);
   if (uFlash > 0.001) col += lightning(fc, rd, t, 1.0 - vol.a);
   fragColor = finishColor(col, fc);

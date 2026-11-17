@@ -214,6 +214,7 @@
       this.w = null; // smoothed weather visuals
       this.wLead = null; // first smoothing stage: w follows it, which eases each change in and out
       this.wet = 0;
+      this.bowRain = 0; // rain still in the air: follows the rain up quickly, and hangs on for some minutes after it
       this.freshSnow = 0;
       this.pace = 1; // how much faster than real the land wets, dries, takes snow and thaws (the demo raises it)
       this.windOffset = [0, 0, 0];
@@ -267,6 +268,8 @@
         windAmt: 0,
         treeKmh: 0,
         lampE: 0,
+        lampGlow: 0,
+        bow: 0,
         lampDark: 0,
         localHour: 12,
         now: new Date(),
@@ -342,6 +345,9 @@
       const wetT = w.rain > 0.05 ? 1 : 0;
       const wetTau = (wetT > this.wet ? 150 : 2400) / this.pace;
       this.wet += (wetT - this.wet) * (snap ? (wetT ? 1 : 0) : 1 - Math.exp(-dtSec / wetTau));
+      // rain in the air, for the rainbow: there within half a minute of the rain, gone about five minutes after it
+      const bowTau = (w.rain > this.bowRain ? 30 : 300) / this.pace;
+      this.bowRain += (w.rain - this.bowRain) * (snap ? 1 : 1 - Math.exp(-dtSec / bowTau));
       // fresh snow lowers the snow line in a quarter of an hour or so (snow settles on the tree and the rock while it
       // falls), and melts back over several hours
       const fsT = w.snow > 0.05 ? 1 : 0;
@@ -411,6 +417,7 @@
       const treeKmh = w.windSpeed + (w.gusts - w.windSpeed) * beat * beat;
       s.treeKmh = treeKmh;
       const trees = clamp(cfg.atmosphere.treeWind ?? 1, 0, 3);
+      s.treeScale = trees;
       s.windAmt = trees * (0.3 * smooth(0.5, 10, treeKmh) + 0.3 * smooth(10, 40, treeKmh));
       // The gust pattern rotates about the viewer, so a quick change of direction would sweep it
       // across distant slopes. Hence the long (5 min) smoothing of its direction.
@@ -441,8 +448,12 @@
       this.gustTravel[1] = (this.gustTravel[1] + gustKm * 0.7) % 5;
       s.gustTravel[0] = this.gustTravel[0];
       s.gustTravel[1] = this.gustTravel[1];
-      this.treeSway[0] = (this.treeSway[0] + 2 * Math.PI * 0.37 * dtc) % (2 * Math.PI);
-      this.treeSway[1] = (this.treeSway[1] + 2 * Math.PI * 0.23 * dtc) % (2 * Math.PI);
+      // The waves the crowns sway in run downwind at the speed of the gusts, as they do through a real forest: they
+      // ran at 21 to 23 m/s whatever the wind was. The picture has them 100 and 70 rad apart per km (composite.js),
+      // so that many rad for each km the gusts travel; never slower than a tree's own slow swing, nor a blur.
+      const swayRate = LE.Environment.swayRate(treeKmh);
+      this.treeSway[0] = (this.treeSway[0] + swayRate[0] * dtc) % (2 * Math.PI);
+      this.treeSway[1] = (this.treeSway[1] + swayRate[1] * dtc) % (2 * Math.PI);
       s.treeSway[0] = this.treeSway[0];
       s.treeSway[1] = this.treeSway[1];
 
@@ -484,10 +495,16 @@
       // once. The eye picks out a lit window as soon as it is switched on, so they never fall below a level that rises
       // through dusk; deep in the night the exposure takes over as before.
       s.lampE = Math.min(Math.max(exposure * 0.6e-6, LAMP_DUSK * smooth(-1, -7, sunAlt)), 10);
+      s.lampGlow = smooth(-1, -7, sunAlt); // the houses' light on the smoke above them (volume.js)
       s.lampDark = smooth(-1, -9, sunAlt);
+      s.festival = Environment.festival(s.now); // Tihar / Diwali: every house lit with oil lamps, and fireworks (life.js)
       // the discs are drawn only while really above the horizon at your location
       // (same −0.833° rule as the sunrise/sunset times shown in the panel)
       s.sunVis = smooth(-0.95, -0.72, sunAlt);
+      // A rainbow: only with rain in the air and the sun shining on it, so as a shower clears or in a sun shower, and
+      // only with the sun below 42 degrees (higher, the whole bow is under the horizon). Where it stands follows from
+      // the sun alone: opposite it, 42 degrees from that point (composite.js).
+      s.bow = LE.Environment.bowAmount(this.bowRain, w.overcast, sunAlt);
       s.moonVis = smooth(-0.75, -0.35, moonAlt); // the panel's moonrise falls at about −0.54° here
 
       // ---------- seasons & snow line ----------
@@ -668,6 +685,33 @@
     }
   }
 
+  /**
+   * How strong a rainbow is, 0 to 1: rain in the air (0 to 1), direct sun on it (little cloud left: a clearing shower
+   * or a sun shower), and the sun between the horizon and 42 degrees up.
+   */
+  /** How fast (rad/s) the two waves of swaying crowns run on, with gusts of kmh: 100 and 70 rad per km travelled. */
+  // The festival of lights: the day of Laxmi Puja (Tihar in Nepal, Diwali in India), the new moon of Kartik, year by
+  // year. Lamps are lit on the evening before, on the night itself above all, and on the two evenings after.
+  const LAXMI_PUJA = {
+    2025: [10, 20], 2026: [11, 8], 2027: [10, 29], 2028: [10, 17], 2029: [11, 5], 2030: [10, 26],
+    2031: [11, 14], 2032: [11, 2], 2033: [10, 22], 2034: [11, 10], 2035: [10, 30],
+  };
+  const FESTIVAL_NIGHTS = { '-1': 0.5, 0: 1, 1: 0.7, 2: 0.5 };
+  /** How much of a festival night this is, 0 to 1. A night belongs to the day it began on, until noon the next day. */
+  Environment.festival = (date) => {
+    const d = new Date(date.getTime() - 12 * 3600e3);
+    const day = LAXMI_PUJA[d.getFullYear()];
+    if (!day) return 0;
+    const off = Math.round((Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) - Date.UTC(d.getFullYear(), day[0] - 1, day[1])) / 864e5);
+    return FESTIVAL_NIGHTS[off] || 0;
+  };
+  Environment.swayRate = (kmh) => {
+    const kms = (Math.max(kmh, 0) * 1.4) / 3600;
+    const lim = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+    return [lim(100 * kms, 2 * Math.PI * 0.18, 2 * Math.PI * 0.6), lim(70 * kms, 2 * Math.PI * 0.12, 2 * Math.PI * 0.42)]; // (slower than 0.18 Hz and a light breeze hardly showed)
+  };
+  Environment.bowAmount = (rainInAir, overcast, sunAltDeg) =>
+    Math.min(Math.max(rainInAir, 0) * 1.6, 1) * (1 - smooth(0.35, 0.8, overcast)) * smooth(0.5, 3, sunAltDeg) * (1 - smooth(36, 42, sunAltDeg));
   LE.Environment = Environment;
   LE.weatherPresets = PRESETS;
 })();

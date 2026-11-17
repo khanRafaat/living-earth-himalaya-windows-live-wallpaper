@@ -561,7 +561,9 @@ if (want('area')) {
     const mean = (v) => v.reduce((s, x) => s + x, 0) / v.length;
     check(mean(left(b)) > 20, `and it is the scene, not black (mean ${mean(left(b)).toFixed(0)})`);
 
-    await say(`(__bands.length = 0, leSetArea(null))`);
+    await say(`leSetArea(null)`);
+    await swaps(1); // a picture already being drawn when the area ends is finished as it was begun, for the area
+    await say(`(__bands.length = 0)`);
     await swaps(2);
     const all = await say(`__bands`);
     check(all.length > 0 && all.some(([x]) => x === 0) && all.every(([x, w, W]) => x === 0 && w === W), 'with no area, the whole width again');

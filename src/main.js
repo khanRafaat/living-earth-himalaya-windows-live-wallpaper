@@ -343,6 +343,8 @@
         life.setSmokeSources(renderer.smokeSources);
         life.setForestSources(renderer.forestSources);
         life.setRoad(renderer.road);
+        life.setPastures(renderer.pastures);
+        life.setGompa(renderer.gompa);
         if (cfg.testMode && cfg.lifeTest) life.seedForTest(state, view);
       }
       life.enabled = cfg.life !== false;
@@ -351,6 +353,14 @@
       life.villageSmoke = cfg.smoke !== false;
       life.fires = cfg.fires !== false;
       life.shootingStars = cfg.shootingStars !== false;
+      life.planes = cfg.planes !== false;
+      life.animals = cfg.animals !== false;
+      life.lights = cfg.lights !== false; // festival fireworks go with the village lights
+      // the snag on the tree, where a bird of prey can sit: where its tip is now, in the scene's km
+      life.perchAt = () => {
+        const p = renderer.fg && renderer.fg.perchEye();
+        return p ? [p[0] / 1000, view.camY + p[1] / 1000, p[2] / 1000] : null;
+      };
       life.traffic = demo.on ? 'busy' : cfg.traffic || 'normal'; // the demo shows a busy road, without touching the setting
       stepLife(state);
       if (d) for (const k of d.summons) life.summon(k);
@@ -360,6 +370,7 @@
     if (restMs) state.weather.flash = 0; // a lightning flash would stay on screen until the next frame
     renderer.setSlowMode(!!slowMs, !!restMs);
     renderer.setArea(restMs ? restArea : null);
+    renderer.onStill = showStill;
     const drew = renderer.render(state, dt);
 
     if (drew && slowMs) fadeFrame(true);
@@ -484,6 +495,35 @@
     pausedByVisibility = document.hidden;
     applyPause();
   });
+
+  // Area rest draws only the free screen. WebGL keeps nothing of a frame where it was not drawn (that part would
+  // come out black), so the part behind your work is shown by a still copy of it, laid over the scene: one piece to
+  // the left of the free part, one to its right. The renderer asks for it right after drawing a whole frame, which
+  // is the only moment the scene's own pixels can be copied; with null it is taken away.
+  const stills = [0, 1].map(() => {
+    const c = document.createElement('canvas');
+    c.className = 'still';
+    canvas.after(c);
+    return c;
+  });
+  function showStill(area) {
+    const W = canvas.width;
+    const H = canvas.height;
+    const parts = area ? [[0, Math.max(0, Math.floor(area[0] * W))], [Math.min(W, Math.ceil(area[1] * W)), W]] : [];
+    stills.forEach((c, i) => {
+      const p = parts[i];
+      if (!p || p[1] - p[0] < 1) {
+        c.style.display = 'none';
+        return;
+      }
+      c.width = p[1] - p[0];
+      c.height = H;
+      c.getContext('2d', { alpha: false }).drawImage(canvas, p[0], 0, c.width, H, 0, 0, c.width, H);
+      c.style.left = (p[0] / W) * 100 + '%';
+      c.style.width = (c.width / W) * 100 + '%';
+      c.style.display = 'block';
+    });
+  }
 
   // Used by src/services/host.js: draw one frame every `ms` milliseconds, or at the normal rate with 0.
   window.leSetSlowFrames = function (ms) {
@@ -613,6 +653,18 @@
         break;
       case 'stars':
         cfg.shootingStars = !!val;
+        break;
+      case 'planes':
+        cfg.planes = !!val;
+        break;
+      case 'animals':
+        cfg.animals = !!val;
+        break;
+      case 'flags': // the foreground reads it every frame
+        cfg.flags = !!val;
+        break;
+      case 'rainbow':
+        cfg.rainbow = !!val;
         break;
       case 'refreshWeather':
         weather.refreshNow();

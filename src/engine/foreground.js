@@ -35,6 +35,7 @@
   const LEAN_MAX = 0.6; // m at the top of the tree, however hard it blows
   const LIMB_MAX = 0.12; // m per unit of a limb's flex (at most about 2.7)
   // the limbs' swings: natural frequencies (rad/s, about 0.5 to 1.3 Hz) and damping
+  const LIMB_FOLLOW = 0.08; // how much of the trunk's acceleration a limb is left behind by (per unit of its flex)
   const LIMB_W = [3.2, 4.5, 6.1, 8.3];
   const LIMB_Z = [0.2, 0.2, 0.22, 0.25];
   const SHELL_CELL = 0.0026; // rad, for working out what is hidden: about 4 screen pixels at any window size
@@ -208,7 +209,9 @@
       const az = azL + i * 2.39996 + rr(-0.15, 0.15);
       const dir = norm([rho * Math.cos(az), y, rho * Math.sin(az)]);
       const from = leaders.reduce((a, b) => (dot(b.dir, dir) > dot(a.dir, dir) ? b : a));
-      grow(from.end.p, dir, rr(0.8, 1.0) * (0.72 + 0.4 * y), 0.05, 2, from.end.s, -1, from.phase, 0);
+      // each limb swings in its own way: its own mix of the four swings and its own side to side (they went in three
+      // groups, one to a leader, and a third of the crown moved as one piece)
+      grow(from.end.p, dir, rr(0.8, 1.0) * (0.72 + 0.4 * y), 0.05, 2, from.end.s, -1, (from.phase + (i + 1) * 0.9) % (Math.PI * 2), 0);
     }
 
     // ---- leaves and flowers
@@ -301,6 +304,46 @@
       const crownAO = clamp(0.45 + 0.55 * smooth(0.25, 1, len(q)) + 0.15 * q[1], 0.4, 1);
       l[16] *= crownAO * (0.6 + 0.4 * smooth(0.15, 0.95, len(rel) / l[20]));
     }
+    // Where a bird of prey can sit: on the very top of the crown, as they do. A bare shoot runs up through the leaves
+    // from the nearest stout wood to end a hand's width above the topmost leaf, so almost none of it shows (a long
+    // bare stick standing out of the crown looked stuck on). Grown last and without the random sequence, so the rest
+    // of the tree is exactly as it was; it has no twig flex, so it moves with its limb and the bird can be put on it
+    // exactly (Foreground.perchEye).
+    let perch = null;
+    {
+      let top = null;
+      let topY = -1e9;
+      for (const l of leaves) {
+        const y = l[1] + Math.max(l[4], 0);
+        if (y > topY) [top, topY] = [l, y];
+      }
+      let from = null;
+      let best = 1e9;
+      for (const b of branches) {
+        if (!top || b.level < 1 || b.level >= TWIG_LEVEL) continue;
+        for (const nd of b.nodes) {
+          if (nd.w[2] !== 0 || nd.r <= 0.018 || nd.p[1] > topY - 0.3) continue;
+          const d = Math.hypot(nd.p[0] - (top[0] + top[3] * 0.5), nd.p[2] - (top[2] + top[5] * 0.5)) + 0.4 * (topY - nd.p[1]);
+          if (d < best) [from, best] = [nd, d];
+        }
+      }
+      if (from) {
+        const end = [top[0] + top[3] * 0.5, topY + 0.07, top[2] + top[5] * 0.5];
+        const len = Math.hypot(end[0] - from.p[0], end[1] - from.p[1], end[2] - from.p[2]);
+        const s0 = Math.pow(from.w[0] / LIMB_K, 1 / 1.3); // how far along the wood that point is from its fork
+        const N = 6;
+        const nodes = [];
+        for (let i = 0; i <= N; i++) {
+          const f = i / N;
+          const crook = Math.sin(f * Math.PI) * 0.06 * Math.min(len, 1.5); // a little bent, as wood is; none at either end
+          const p = [from.p[0] + (end[0] - from.p[0]) * f + crook * Math.sin(f * 5.3), from.p[1] + (end[1] - from.p[1]) * f, from.p[2] + (end[2] - from.p[2]) * f + crook * Math.cos(f * 7.1)];
+          nodes.push({ p, r: Math.max(Math.min(from.r * 0.7, 0.03) * (1 - 0.5 * f), 0.014), w: [Math.pow(s0 + len * f, 1.3) * LIMB_K, from.w[1], 0, from.w[3]] });
+        }
+        branches.push({ nodes, level: 2, sides: 6, snag: true });
+        const tip = nodes[N];
+        perch = { p: tip.p.slice(), w: tip.w.slice() };
+      }
+    }
     const boundLo = [lo[0] - 0.3, -0.4, lo[2] - 0.3];
     const boundHi = [hi[0] + 0.3, hi[1] + 0.3, hi[2] + 0.3];
     for (const b of branches) {
@@ -331,6 +374,7 @@
       boundLo,
       boundHi,
       tips: tips.length,
+      perch, // { p, w }: the tip of the snag at rest (m, the tree's frame) and its wind weights
     };
   }
 
@@ -405,8 +449,9 @@
       const toY = 0.1 * str * veer * noise1(t * 0.4, 4);
       const W = 2.6; // about 0.4 Hz: the trunk of a tree this size
       const Z = 0.14;
-      this.leanV[0] += (W * W * (toX - this.lean[0]) - 2 * Z * W * this.leanV[0]) * h;
-      this.leanV[1] += (W * W * (toY - this.lean[1]) - 2 * Z * W * this.leanV[1]) * h;
+      const trunkA = [W * W * (toX - this.lean[0]) - 2 * Z * W * this.leanV[0], W * W * (toY - this.lean[1]) - 2 * Z * W * this.leanV[1]];
+      this.leanV[0] += trunkA[0] * h;
+      this.leanV[1] += trunkA[1] * h;
       this.lean[0] = clamp(this.lean[0] + this.leanV[0] * h, -LEAN_MAX, LEAN_MAX);
       this.lean[1] = clamp(this.lean[1] + this.leanV[1] * h, -LEAN_MAX, LEAN_MAX);
       for (let i = 0; i < LIMB_W.length; i++) {
@@ -417,8 +462,9 @@
         const w = LIMB_W[i];
         const z = LIMB_Z[i];
         const a = i * 2;
-        this.limbV[a] += (w * w * (x - this.limbs[a]) - 2 * z * w * this.limbV[a]) * h;
-        this.limbV[a + 1] += (w * w * (y - this.limbs[a + 1]) - 2 * z * w * this.limbV[a + 1]) * h;
+        // (and the trunk under them: when it starts or stops, the limbs are left behind a little and swing after it)
+        this.limbV[a] += (w * w * (x - this.limbs[a]) - 2 * z * w * this.limbV[a] - LIMB_FOLLOW * trunkA[0]) * h;
+        this.limbV[a + 1] += (w * w * (y - this.limbs[a + 1]) - 2 * z * w * this.limbV[a + 1] - LIMB_FOLLOW * trunkA[1]) * h;
         this.limbs[a] = clamp(this.limbs[a] + this.limbV[a] * h, -LIMB_MAX, LIMB_MAX);
         this.limbs[a + 1] = clamp(this.limbs[a + 1] + this.limbV[a + 1] * h, -LIMB_MAX, LIMB_MAX);
       }
@@ -649,6 +695,9 @@
       this._lightFence = null;
       this._lightRead = false;
       this._treeT = null; // when the tree was last drawn into its target
+      this.flags = true; // the line of prayer flags from the tree to a stake (the switch)
+      this.flagVAO = gl.createVertexArray();
+      this.flagBuf = gl.createBuffer();
       this.barkVAO = gl.createVertexArray();
       this.leafVAO = gl.createVertexArray();
       this.driftVAO = gl.createVertexArray();
@@ -716,10 +765,24 @@
         gl.bindBuffer(gl.ARRAY_BUFFER, this.leafBuf);
         gl.bufferData(gl.ARRAY_BUFFER, T.leaves, gl.STATIC_DRAW);
         this._leafPointers(0);
+        // the prayer flags: to the viewer's left of the tree, where the rock runs on, and a little this way
+        const az = Math.atan2(site[0], site[2]);
+        this.flagLine = buildFlags(T, [-Math.cos(az), 0, Math.sin(az)], [-away[0], 0, -away[2]]);
+        gl.bindVertexArray(this.flagVAO);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.flagBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, this.flagLine.data, gl.STATIC_DRAW);
+        [3, 4, 3, 3].reduce((off, n, i) => {
+          gl.enableVertexAttribArray(i);
+          gl.vertexAttribPointer(i, n, gl.FLOAT, false, FLAG_FLOATS * 4, off * 4);
+          return off + n;
+        }, 0);
         gl.bindVertexArray(this.r.vao);
       }
-      // the screen rectangle the tree can reach, swaying included
-      const T = this.tree;
+      // the screen rectangle the tree can reach, swaying included, and the flags with it
+      const T0 = this.tree;
+      const F = this.flags && this.flagLine;
+      const T = F ? { boundLo: T0.boundLo.map((x, k) => Math.min(x, F.lo[k])), boundHi: T0.boundHi.map((x, k) => Math.max(x, F.hi[k])) } : T0;
+      this._flagsBoxed = !!F;
       const v = this.r.viewInfo();
       let x0 = 1e9;
       let y0 = 1e9;
@@ -813,7 +876,8 @@
       const kmh = state.treeKmh || 0;
       const g = state.treeDir || state.gustDir;
       // a light breeze already shows on a tree: this rises faster at first than the speed does
-      return { kmh, str: Math.min(Math.pow(kmh / 30, 0.8), 2.4), dir: [g[0], 0, g[1]] };
+      // (the "Wind in the trees" setting moves this tree more or less too, as it does the forest)
+      return { kmh, str: Math.min(Math.pow(kmh / 30, 0.8) * (state.treeScale ?? 1), 2.4), dir: [g[0], 0, g[1]] };
     }
 
     /** Moves the wind in the tree on to now. */
@@ -822,6 +886,7 @@
       const dt = this._windT === null ? 0 : t - this._windT;
       this._windT = t;
       const w = this._wind(state);
+      this._windDir = w.dir;
       const T = this.tree;
       this.treeWind.step(dt, w.str, w.kmh, this.gust, 2 * Math.hypot(T.crownR[0], T.crownR[2]));
     }
@@ -843,6 +908,17 @@
       const hz = R._rest ? 10 : this._wind(state).kmh > 2.5 ? R.quality.treeHz : 8;
       // 0.7, not 1: at 20 frames a second a 15 Hz tree is drawn in each one, at 30 in every second one
       return since >= 0.7 / hz;
+    }
+
+    /**
+     * Where the tip of the snag is now, in metres from the eye, moved by the wind exactly as the vertex shader moves
+     * it (shaders/tree.js windOffset; it has no twig flex, so only the trunk's lean and its limb's swing). null without
+     * a tree. Life puts the perched bird there.
+     */
+    perchEye() {
+      const T = this.tree;
+      if (!this.enabled || !T || !T.perch) return null;
+      return LE.Foreground.windMoved(T.perch.p, T.perch.w, this._windDir || [1, 0, 0], this.treeWind.lean, this.treeWind.limbs, T.height).map((x, k) => x + this.site[k]);
     }
 
     /** How far (m) the crown has swayed downwind now, for the dappled shadow it casts on the rock. */
@@ -1165,6 +1241,7 @@
       const [bw, bh] = [box[2], box[3]];
       const T = this.tree;
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.ms.fbo);
+      R._offScreen(); // (the tree's own picture is drawn whole, whatever part of the screen area rest draws)
       gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
       gl.viewport(0, 0, bw, bh);
       gl.clearColor(0, 0, 0, 0);
@@ -1186,6 +1263,13 @@
       this._common(p, state, box);
       gl.bindVertexArray(this.barkVAO);
       gl.drawElements(gl.TRIANGLES, T.index.length, gl.UNSIGNED_INT, 0);
+      if (this.flags && this.flagLine && this._flagsBoxed) {
+        p = R.prog.treeFlag;
+        gl.useProgram(p.p);
+        this._common(p, state, box);
+        gl.bindVertexArray(this.flagVAO);
+        gl.drawArrays(gl.TRIANGLES, 0, this.flagLine.verts);
+      }
       gl.disable(gl.DEPTH_TEST);
       gl.bindVertexArray(R.vao);
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.ms.fbo);
@@ -1208,12 +1292,20 @@
       if (!this.enabled || !this.tree) return;
       const R = this.r;
       const gl = this.gl;
+      // the flags' switch: with them the tree's picture is wider, so it is laid out again
+      const flagsOn = R.cfg.flags !== false;
+      if (flagsOn !== this.flags) {
+        this.flags = flagsOn;
+        this.resize(R.w, R.h);
+        this._treeT = null;
+      }
       this.update(state);
       if (this._collectLight()) this._probe(state); // one at a time: it never waits for the GPU
       this.gust += (this.light[27] - this.gust) * 0.3;
       this._stepWind(state);
       this._drawDrift(state, 0, this.nFar);
-      if (this.box && this.ms) {
+      // (in area rest, a tree that stands wholly on the screen behind your work is not drawn at all)
+      if (this.box && this.ms && !R.clipped(this.box[0], this.box[2])) {
         const box = this.box;
         if (this._treeDue(state)) this._drawTree(state);
         // over the picture
@@ -1240,11 +1332,119 @@
       if (this._lightFence !== null) gl.deleteSync(this._lightFence);
       this._lightFence = null;
       [this.barkBuf, this.barkIdx, this.leafBuf, this.driftBuf, this._lightBuf].forEach((b) => gl.deleteBuffer(b));
-      [this.barkVAO, this.leafVAO, this.driftVAO].forEach((v) => gl.deleteVertexArray(v));
+      [this.barkVAO, this.leafVAO, this.driftVAO, this.flagVAO].forEach((v) => gl.deleteVertexArray(v));
+      gl.deleteBuffer(this.flagBuf);
     }
   }
 
   LE.Foreground = Foreground;
+  /**
+   * A point of the tree's wood moved by the wind: windOffset of shaders/tree.js without the twigs' part, for points
+   * with no twig flex. P at rest (m), A its weights (limb flex, limb phase, 0, twig phase), W where the air goes,
+   * lean and limbs the springs of TreeWind, height the tree's.
+   */
+  Foreground.windMoved = (P, A, W, lean, limbs, height) => {
+    const side = [-W[2], 0, W[0]];
+    const h = clamp(P[1] / height, 0, 1.2);
+    const d = [0, 0, 0];
+    for (let k = 0; k < 3; k++) d[k] = (W[k] * lean[0] + side[k] * lean[1]) * h * h;
+    const m = A[1] * 0.6366198;
+    const i = Math.trunc(m) & 3;
+    const j = (i + 1) & 3;
+    const f = m - Math.floor(m);
+    const lx = limbs[i * 2] + (limbs[j * 2] - limbs[i * 2]) * f;
+    let ly = limbs[i * 2 + 1] + (limbs[j * 2 + 1] - limbs[i * 2 + 1]) * f;
+    const t = A[1] * 5.1;
+    ly *= t - Math.floor(t) > 0.5 ? 1 : -1;
+    for (let k = 0; k < 3; k++) d[k] += (W[k] * lx + side[k] * ly + (k === 1 ? 0.6 * ly : 0)) * A[0];
+    return [P[0] + d[0], P[1] + d[1], P[2] + d[2]];
+  };
+
+  // ---------------------------------------------------------------- prayer flags
+  const FLAG_FLOATS = 13; // point3 info4 colour3 direction3 (shaders/tree.js treeFlagVertex)
+  const FLAG_W = 0.27; // m along the line
+  const FLAG_L = 0.36; // m down
+  // blue, white, red, green, yellow: sky, air, fire, water, earth, always in that order
+  const FLAG_COLOURS = [[0.03, 0.09, 0.42], [0.72, 0.72, 0.68], [0.52, 0.03, 0.03], [0.04, 0.28, 0.07], [0.68, 0.5, 0.04]];
+
+  /**
+   * A line of prayer flags from the tree's trunk to a stake on the rock, in the tree's frame (m). `left` and
+   * `toCam` are unit vectors on the ground: to the viewer's left at the tree, and towards the viewer. The stake
+   * starts below the ground, whatever its height there: the rock in front hides what is under it (the tree's shader
+   * leaves out what is behind nearer rock).
+   */
+  function buildFlags(T, left, toCam) {
+    const trunk = T.branches.find((b) => b.level === 0);
+    let tie = trunk.nodes[0];
+    for (const nd of trunk.nodes) if (Math.abs(nd.p[1] - 2.5) < Math.abs(tie.p[1] - 2.5)) tie = nd;
+    const stake = [left[0] * 3.6 + toCam[0] * 0.8, 0, left[2] * 3.6 + toCam[2] * 0.8];
+    const top = [stake[0], 1.9, stake[2]];
+    const out = norm([top[0] - tie.p[0], 0, top[2] - tie.p[2]]);
+    const from = [tie.p[0] + out[0] * tie.r, tie.p[1], tie.p[2] + out[2] * tie.r];
+    const span = sub(top, from);
+    const L = len(span);
+    const SAG = 0.2;
+    const at = (t) => [from[0] + span[0] * t, from[1] + span[1] * t - 4 * SAG * t * (1 - t), from[2] + span[2] * t];
+    const v = [];
+    const lo = [1e9, 1e9, 1e9];
+    const hi = [-1e9, -1e9, -1e9];
+    const put = (p, q, c, d) => {
+      v.push(p[0], p[1], p[2], q[0], q[1], q[2], q[3], c[0], c[1], c[2], d[0], d[1], d[2]);
+      for (let k = 0; k < 3; k++) {
+        lo[k] = Math.min(lo[k], p[k]);
+        hi[k] = Math.max(hi[k], p[k]);
+      }
+    };
+    const quad = (a, b, c, d) => [a, b, c, a, c, d];
+    const NONE = [0, 0, 0];
+    // the line: a thin ribbon on edge, seen from either side
+    const side = norm(cross(out, [0, 1, 0]));
+    const SEG = 16;
+    for (let i = 0; i < SEG; i++) {
+      const a = at(i / SEG);
+      const b = at((i + 1) / SEG);
+      for (const p of quad([a[0], a[1] + 0.006, a[2]], [b[0], b[1] + 0.006, b[2]], [b[0], b[1] - 0.006, b[2]], [a[0], a[1] - 0.006, a[2]])) put(p, [0, 0, 0, 0], NONE, side);
+    }
+    // the stake: four sides, from under the ground to where the line is tied
+    const R = 0.028;
+    for (let k = 0; k < 4; k++) {
+      const a0 = (k / 4) * Math.PI * 2;
+      const a1 = ((k + 1) / 4) * Math.PI * 2;
+      const n = [Math.cos((a0 + a1) / 2), 0, Math.sin((a0 + a1) / 2)];
+      const c0 = [stake[0] + Math.cos(a0) * R, 0, stake[2] + Math.sin(a0) * R];
+      const c1 = [stake[0] + Math.cos(a1) * R, 0, stake[2] + Math.sin(a1) * R];
+      for (const p of quad([c0[0], -0.8, c0[2]], [c1[0], -0.8, c1[2]], [c1[0], top[1] + 0.06, c1[2]], [c0[0], top[1] + 0.06, c0[2]])) put(p, [0, 0, 0, 0], NONE, n);
+    }
+    // the flags, edge to edge with a finger's gap, clear of the trunk and of the stake
+    const COLS = 3;
+    const ROWS = 6;
+    const pitch = FLAG_W + 0.03;
+    const count = Math.floor((L - 0.5) / pitch);
+    for (let f = 0; f < count; f++) {
+      const t = (0.3 + pitch * (f + 0.5)) / L;
+      const mid = at(t);
+      const dir = norm(sub(at(Math.min(t + 0.01, 1)), at(Math.max(t - 0.01, 0))));
+      const phase = f * 2.399;
+      const corner = (i, j) => [(i / COLS - 0.5) * FLAG_W, (j / ROWS) * FLAG_L, phase, 5];
+      for (let i = 0; i < COLS; i++) {
+        for (let j = 0; j < ROWS; j++) {
+          for (const q of quad(corner(i, j), corner(i + 1, j), corner(i + 1, j + 1), corner(i, j + 1))) put(mid, q, FLAG_COLOURS[f % 5], dir);
+        }
+      }
+    }
+    // room for the cloth blown out level in any direction
+    return {
+      data: new Float32Array(v),
+      verts: v.length / FLAG_FLOATS,
+      count,
+      lo: [lo[0] - FLAG_L, lo[1] - FLAG_L, lo[2] - FLAG_L],
+      hi: [hi[0] + FLAG_L, hi[1] + 0.05, hi[2] + FLAG_L],
+      from,
+      top,
+    };
+  }
+  LE.buildFlags = buildFlags; // for tests
+
   LE.growTree = growTree; // for tests
   LE.shellOfTree = shellOfTree;
   LE.TreeWind = TreeWind;

@@ -109,6 +109,26 @@
     "value": true,
     "text": "Shooting stars and satellites"
   },
+  "planes": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Aircraft and their trails"
+  },
+  "rainbow": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Rainbow after rain"
+  },
+  "animals": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Grazing animals"
+  },
+  "flags": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Prayer flags by the tree"
+  },
   "lights": {
     "type": "checkbox",
     "value": true,

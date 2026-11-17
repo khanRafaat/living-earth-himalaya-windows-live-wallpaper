@@ -97,11 +97,12 @@ uniform vec4 uPlumeB[16];  // its radius at the foot (km), how much of it there 
 uniform vec4 uPlumeC[16];  // its own noise, its foot on the picture (px), which (0 mist, 1 house, 2 field) + half its fire
 uniform int uPlumeSteps;
 uniform float uTime;       // s, wrapped at 2400
+uniform float uLampGlow;   // how much the houses' lamps are lit, 0..1 (renderer.js): their light on the smoke above them
 uniform float uHeadE;      // how bright a lamp's light is against this exposure (renderer.js): the glow of a fire
 uniform int uBanners;      // banner clouds streaming from the high summits now (renderer.js _bannerUniforms)
 uniform vec4 uBannerA[4];  // the summit (km, scene axes), how much cloud it makes now (0..1)
 uniform vec4 uBannerB[4];  // which way the wind blows there (unit vector, scene x and z), the banner's length (km), its own noise
-uniform float uBannerFlow; // how far the air has flowed through them (km), wrapped at 2 km where their noise repeats
+uniform vec2 uBannerFlow;  // x: how far the air has flowed through them (km), wrapped at 2 km where their noise repeats
 out vec4 o;
 
 vec2 slab(float y0, float ry, float a, float b) {
@@ -280,8 +281,13 @@ float bannerDensity(vec3 p, vec4 A, vec4 B) {
   float f = l.x / len;
   if (f < -0.15 || f > 1.0) return 0.0;
   float fc = max(f, 0.0);
-  float yc = -0.08 - 0.16 * len * fc;              // where its middle hangs
-  float hv = 0.09 + 0.2 * len * sqrt(fc);          // half its depth
+  // It waves like a flag: a wave a kilometre long runs down it with the air, growing towards the free end, and its
+  // depth swells and thins as the wave passes. (Its outline was fixed, with only the lumps inside moving, and from
+  // 40 km away that looked stuck.) One wave per km: the flow's wrap at 2 km does not show.
+  float wave = sin(6.2831853 * (l.x - uBannerFlow.x) + B.w * 6.2831853);
+  float wave2 = sin(6.2831853 * 1.5 * (l.x - uBannerFlow.x) + B.w * 17.0 + 1.3);
+  float yc = -0.08 - 0.16 * len * fc + 0.05 * len * fc * wave; // where its middle hangs
+  float hv = (0.09 + 0.2 * len * sqrt(fc)) * (1.0 + 0.3 * fc * wave2); // half its depth
   float hw = 0.1 + 0.2 * len * fc;                 // half its width across the wind
   vec2 e2 = vec2(l.z / hw, (l.y - yc) / hv);
   // whole right at the summit, where it forms in the eddy behind it, thinning out gradually downwind
@@ -289,12 +295,15 @@ float bannerDensity(vec3 p, vec4 A, vec4 B) {
   if (env < 0.03) return 0.0;
   // drawn out along the wind into fibres and streaks, as a banner cloud is: the air flows along them, so they need no
   // carrying, and they bend a little along their length
-  float st = textureLod(uNoise3D, vec3(l.z * 2.4 + B.w, l.y * 3.0, fc * 0.35 + B.w * 0.7), 0.0).b;
+  // (uBannerFlow.y: the eddy behind the summit turns it over, so the streaks and lumps change shape as they go and
+  // the cloud is never the same picture twice; wrapped at 25 km, where all of its noise repeats upwards)
+  float st = textureLod(uNoise3D, vec3(l.z * 2.4 + B.w, (l.y + uBannerFlow.y) * 3.0, fc * 0.35 + B.w * 0.7), 0.0).b;
   env *= mix(1.0, 0.3 + 0.7 * smoothstep(0.3, 0.7, st), smoothstep(0.0, 0.25, fc));
   // In its own frame: long along the wind, fine across it and up, the air flowing through at the wind's speed. So its
   // lumps are drawn out into the flag shape of a banner cloud instead of round billows.
-  vec3 q = vec3((l.x - uBannerFlow) * 0.5, l.y * 2.2, l.z * 1.6) + B.w;
-  float c = clamp(remap(textureLod(uNoise3D, q, 0.0).r, 1.0 - env * 0.95, 1.0, 0.0, 1.0), 0.0, 1.0);
+  vec3 q = vec3((l.x - uBannerFlow.x) * 0.5, (l.y + uBannerFlow.y) * 2.2, l.z * 1.6) + B.w;
+  // (the lumps bite deeper into it downwind, so they are seen to travel and the far end comes away in pieces)
+  float c = clamp(remap(textureLod(uNoise3D, q, 0.0).r, 1.0 - env * mix(0.95, 0.8, fc), 1.0, 0.0, 1.0), 0.0, 1.0);
   if (c <= 0.0) return 0.0;
   float w = textureLod(uNoise3D, q * vec3(2.0, 3.2, 3.2) + 0.37, 0.0).g;
   // fine wisps eat its edges, more of it towards the far end where it falls apart
@@ -357,7 +366,8 @@ void main() {
       vec3 inv = 1.0 / mix(rd, vec3(1e-6), lessThan(abs(rd), vec3(1e-6)));
       // By night the eye's adaptation lifts the scene, and this close mist would glow white against the black forest;
       // moonlit mist reads as a dim grey
-      float nightDim = mix(0.35, 1.0, smoothstep(-0.2, 0.02, uSunDir.y));
+      float dark = 1.0 - smoothstep(-0.2, 0.02, uSunDir.y);
+      float nightDim = mix(1.0, 0.35, dark);
       for (int i = uZero; i < 16; i++) {
         if (i >= uPlumes || T < 0.02) break;
         vec4 A = uPlumeA[i];
@@ -406,7 +416,9 @@ void main() {
         float footSh = texelFetch(uShadow, clamp(ivec2(C.yz), ivec2(0), ivec2(uRes) - 1), 0).r;
         // per km. Mist: about two thirds of the light through its heart, little at its edges. A village's smoke is a
         // thin blue-grey veil; a field's is thick and brown low down, paler and thinner as it spreads.
-        float sigma = B.y * (kind == 0 ? 4.5 : kind == 1 ? 12.0 : 40.0);
+        // By night wood smoke is seen only by the light it scatters, and there is little: it must not stand as a black
+        // veil over the lamps and the moonlit slope behind it. So it hides less in the dark, as a thin haze does.
+        float sigma = B.y * (kind == 0 ? 4.5 : kind == 1 ? mix(12.0, 4.5, dark) : 40.0);
         // how far it shades itself: steps towards the light in proportion to its size there
         float ls = kind == 0 ? 0.05 : rad * 0.3;
         float dtp = (b0 - a0) / float(uPlumeSteps);
@@ -426,12 +438,15 @@ void main() {
           vec3 direct = uSunE * transmittance(p.y, uSunDir.y) * phS * 0.2 * (uKeyIsSun > 0.5 ? sh : 1.0)
                       + uMoonE * transmittance(p.y, uMoonDir.y) * phM * 0.08 * (uKeyIsSun > 0.5 ? 1.0 : sh);
           // what it is made of: mist white; wood smoke a little blue; a field's smoke brown where it is thick
-          vec3 alb = kind == 0 ? vec3(0.92) : kind == 1 ? vec3(0.4, 0.45, 0.56)
+          // (by night the blue of scattered daylight is gone: pale grey under the moon)
+          vec3 alb = kind == 0 ? vec3(0.92) : kind == 1 ? mix(vec3(0.4, 0.45, 0.56), vec3(0.74, 0.77, 0.83), dark)
                    : mix(vec3(0.34, 0.31, 0.28), vec3(0.62, 0.61, 0.6), smoothstep(0.05, 0.7, hh));
           vec3 Sc = (direct * Tl * underCloud + amb * (0.55 + 0.45 * hh) * mix(0.45, 1.0, exp(-odUp))) * alb;
           // lit from below by its fire, only just above it
           Sc += vec3(1.0, 0.45, 0.15) * uHeadE * fire * (kind == 2 ? 0.08 : 0.02) * exp(-hh * 14.0);
-          Sc = mix(Sc, mistHor, (1.0 - exp(-s * uAirExt)) * 0.75) * nightDim;
+          Sc = mix(Sc, mistHor, (1.0 - exp(-s * uAirExt)) * 0.75) * (kind == 1 ? mix(1.0, 0.7, dark) : nightDim);
+          // the houses' lamps light it warm from below, low over the roofs and fading as it climbs
+          if (kind == 1) Sc += vec3(1.0, 0.62, 0.3) * uHeadE * uLampGlow * 0.0032 * exp(-hh * 6.0);
           float Ti = exp(-d * sigma * dtp);
           L += T * Sc * (1.0 - Ti);
           T *= Ti;
@@ -443,6 +458,11 @@ void main() {
       seg.y = min(seg.y, min(tEnd, 75.0));
       if (uMist <= 0.005 && uFog <= 0.005) seg = vec2(0.0);
       float dt = (seg.y - seg.x) / float(uMistSteps);
+      // Early and late in the day the valleys lie in the shade of the ridges round them: the sun reaches the mist
+      // only above a line that sinks as it climbs (ridges about 3.2 km high, 5 km off), and all of it by mid-morning.
+      // Lit in full from sunrise, the small pools of mist in the valleys shone as flat white wedges against the dark
+      // slopes and looked pasted on.
+      float shadeLine = 3.2 - 5.0 * uSunDir.y / max(sqrt(1.0 - uSunDir.y * uSunDir.y), 0.05);
       for (int i = 0; i < 16; i++) {
         if (i >= uMistSteps || seg.y <= seg.x) break;
         float s = seg.x + (float(i) + jit) * dt;
@@ -454,6 +474,9 @@ void main() {
         float sh = mix(1.0, shadowS, nearSurf * 0.85);
         float shS = uKeyIsSun > 0.5 ? sh : 1.0;
         float shM = uKeyIsSun > 0.5 ? 1.0 : sh;
+        shS *= smoothstep(-0.35, 0.35, p.y - shadeLine);
+        // and where it is thin it sends little of a low sun on to the eye: a pool's edge fades out, not a bright line
+        shS *= mix(1.0, smoothstep(0.0, 0.3, sig), lowSun * 0.75);
         vec3 direct = uSunE * transmittance(p.y, uSunDir.y) * phS * 0.2 * shS
                     + uMoonE * transmittance(p.y, uMoonDir.y) * phM * 0.08 * shM;
         vec3 Sc = (direct * underCloud + amb) * 0.92;

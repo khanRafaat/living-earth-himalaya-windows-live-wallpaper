@@ -10,8 +10,8 @@
  *          picture, so the free screen moves gently and the graphics chip does as little as it can
  *   still  no frames at all (an app is in front, locked, or paused from the tray)
  *
- * The second argument carries settings: { quality, road, traffic, birds, leaves, tree, mist, banners, demo, smoke, fires, lights, stars,
- * panel, corner, panelSize, place: { lat, lon, name } }.
+ * The second argument carries settings: { quality, road, traffic, birds, leaves, tree, mist, banners, demo, smoke, fires, lights, stars, planes,
+ * rainbow, flags, animals, panel, corner, panelSize, place: { lat, lon, name } }.
  * They apply at once. Turning the road on or off shapes the mountains again, which takes a few minutes.
  *
  * Does nothing unless the page was opened with ?host=1, so Lively and browser testing are unaffected.
@@ -72,6 +72,10 @@
       fires: [c.fires, 'fires'],
       lights: [c.lights, 'lights'],
       stars: [c.shootingStars, 'stars'],
+      planes: [c.planes, 'planes'],
+      flags: [c.flags, 'flags'],
+      animals: [c.animals, 'animals'],
+      rainbow: [c.rainbow, 'rainbow'],
       panel: [c.ui.showPanel, 'showPanel'],
     };
     for (const name in switches) {

@@ -1031,12 +1031,35 @@ test('banner clouds are drawn in the volume pass between the mist and the deck, 
   assert.ok(/if \(sB < 1e8\) \{[^}]*L \+= T \* Lb;\s*T \*= Tb;/.test(main), 'or after it');
   // the cloud stays at the summit while the air flows through it, drawn out along the wind in its own frame; the flow
   // wraps at 2 km, where its noise repeats along the wind (0.5 and 1.0 per km), so the wrap never shows
-  assert.ok(vol.includes('vec3 q = vec3((l.x - uBannerFlow) * 0.5, l.y * 2.2, l.z * 1.6) + B.w;'), 'lumps drawn out along the wind, flowing through');
+  assert.ok(vol.includes('vec3 q = vec3((l.x - uBannerFlow.x) * 0.5, (l.y + uBannerFlow.y) * 2.2, l.z * 1.6) + B.w;'), 'lumps drawn out along the wind, flowing through and turning over');
   assert.ok(vol.includes('q * vec3(2.0, 3.2, 3.2) + 0.37'), 'its wisps too');
   for (const k of [0.5, 0.5 * 2.0]) assert.ok(Math.abs(2 * k - Math.round(2 * k)) < 1e-9, 'the flow wraps unseen: ' + k);
   const R = readSrc('engine/renderer.js');
-  assert.ok(R.includes('this._bannerFlow = ((this._bannerFlow || 0) + (dt * kmh) / 3600) % 2;'), 'at the cloud wind speed, wrapped at 2 km');
-  assert.ok(vol.includes('float st = textureLod(uNoise3D, vec3(l.z * 2.4 + B.w, l.y * 3.0, fc * 0.35 + B.w * 0.7), 0.0).b;'), 'streaks along the wind');
+  assert.ok(vol.includes('float st = textureLod(uNoise3D, vec3(l.z * 2.4 + B.w, (l.y + uBannerFlow.y) * 3.0, fc * 0.35 + B.w * 0.7), 0.0).b;'), 'streaks along the wind');
+  for (const k of [3.0, 2.2, 2.2 * 3.2]) assert.ok(Math.abs(25 * k - Math.round(25 * k)) < 1e-9, 'the turning over wraps unseen: ' + k);
+  // They move at the wind's speed however seldom a scene is drawn: at rest that is every 2 s, and with only 1 s
+  // counted of each they crept and looked stuck
+  const cfgB = load(['config.js']).LE.config;
+  const rb = new (load(RENDER_FILES).LE.Renderer)({}, cfgB);
+  const sent = {};
+  const prog = { set: (k, v) => (sent[k] = v) };
+  const flowAfter = (step, seconds, kmh = 36) => {
+    rb._bannerT = null;
+    rb._bannerFlow = rb._bannerChurn = 0;
+    for (let t = 0; t <= seconds + 1e-9; t += step) rb._bannerUniforms(prog, { time: t, weather: { banner: 0, deckX: kmh, deckZ: 0 } });
+    return Array.from(sent.uBannerFlow);
+  };
+  const smooth = flowAfter(0.05, 60);
+  const rest = flowAfter(2, 60);
+  near(smooth[0], 0.6, 1e-6, '36 km/h: 600 m in a minute');
+  near(rest[0], smooth[0], 1e-6, 'the same with a scene every 2 s');
+  near(rest[1], 60 * 0.004, 1e-6, 'and it has turned over as far');
+  // its outline moves too: a wave a whole number of times per 2 km of flow runs down it, so the wrap does not show
+  assert.ok(vol.includes('float wave = sin(6.2831853 * (l.x - uBannerFlow.x) + B.w * 6.2831853);') && vol.includes('float wave2 = sin(6.2831853 * 1.5 * (l.x - uBannerFlow.x) + B.w * 17.0 + 1.3);'), 'it waves like a flag');
+  assert.ok(flowAfter(0.05, 60, 0)[1] > 0.1 && flowAfter(0.05, 60, 0)[0] === 0, 'in still air it does not stream, but still turns over');
+  assert.ok(flowAfter(300, 300)[0] <= 0.3 + 1e-9, 'a long gap moves it on by 30 s at most');
+  cfgB.atmosphere.cloudSpeed = 4;
+  near(flowAfter(2, 60)[0], (0.6 * 4) % 2, 1e-6, 'four times as fast with the cloud speed at 4, as the deck');
 });
 
 // ---------------------------------------------------------------- quality governor
@@ -1172,6 +1195,190 @@ test('still air leaves the tree still, and stronger wind moves it more', () => {
   assert.ok(spread(light.lean) > 0.005, `a light breeze shows (${spread(light.lean)})`);
   assert.ok(mean(strong.lean) > mean(light.lean) * 2, 'it leans further in a stronger wind');
   assert.ok(spread(strong.lean) > spread(light.lean) * 2, 'and swings more');
+});
+
+test('each limb of the tree swings in its own way, follows the trunk, and the setting for wind in the trees moves this tree too', () => {
+  const { LE } = load(['engine/gl.js', 'engine/foreground.js']);
+  const T = LE.growTree(7936, [-0.8, 0, 0.6]);
+  // the 16 limbs: each its own mix of the four swings and side (they went in three groups, one to a leader)
+  const phases = new Set(T.branches.filter((b) => b.level === 2 && !b.snag).map((b) => b.nodes[0].w[1].toFixed(4)));
+  assert.ok(phases.size >= 16, 'limbs with a swing of their own: ' + phases.size);
+  const move = LE.Foreground.windMoved;
+  const limbs = new Float32Array([0.05, 0.02, -0.03, 0.04, 0.02, -0.05, 0.04, 0.01]);
+  const moved = new Set([...phases].map((ph) => move([0, 4, 0], [1, +ph, 0, 0], [1, 0, 0], [0, 0], limbs, 6).map((x) => x.toFixed(3)).join(',')));
+  assert.ok(moved.size >= 14, 'and they are moved differently by the same wind: ' + moved.size + ' ways');
+  // the limbs are left behind when the trunk starts to move: a sudden wind swings them more than a steady one, and
+  // nothing goes past its limit
+  const run = (follow) => {
+    const w = new LE.TreeWind();
+    let most = 0;
+    for (let k = 0; k < 600; k++) {
+      w.step(1 / 30, k < 300 ? 0.1 : 2.2, k < 300 ? 3 : 70, 0, 6);
+      if (k >= 300 && k < 360) for (let i = 0; i < 8; i++) most = Math.max(most, Math.abs(w.limbs[i]));
+      assert.ok(Math.abs(w.lean[0]) <= 0.6 + 1e-9 && w.limbs.every((x) => Math.abs(x) <= 0.12 + 1e-9), 'within its limits');
+    }
+    return most;
+  };
+  assert.ok(run() > 0.01, 'the limbs swing when a gust arrives');
+  assert.ok(readSrc('engine/foreground.js').includes('- LIMB_FOLLOW * trunkA[0]) * h;'), 'and feel the trunk under them');
+  // the setting
+  const fg = Object.create(LE.Foreground.prototype);
+  const st = (scale) => fg._wind({ treeKmh: 20, treeDir: [1, 0], treeScale: scale }).str;
+  assert.ok(st(0) === 0 && st(2) > st(1) * 1.9 && st(3) <= 2.4 && st(undefined) === st(1), 'off, natural, doubled, and never past a storm');
+  assert.ok(readSrc('engine/environment.js').includes('s.treeScale = trees;'));
+  // the leaf shadow on the rock sways the way the tree itself leans now
+  assert.ok(readSrc('engine/shaders/composite.js').includes('vec3(uTreeDir.x, 0.0, uTreeDir.y) * uTreeSwayT'));
+  assert.ok(readSrc('engine/renderer.js').includes("p.set('uTreeDir', state.treeDir || state.gustDir);"));
+});
+
+test('the waves of swaying crowns on the hills run at the speed of the gusts', () => {
+  const { LE } = load(['config.js', 'services/astronomy.js', 'engine/environment.js']);
+  const rate = LE.Environment.swayRate;
+  // 100 and 70 rad per km in the picture: a wave moves at rate / that
+  const speed = (kmh) => (rate(kmh)[0] / 100) * 1000; // m/s
+  near(speed(36), (36 * 1.4) / 3.6, 1e-6, 'at 36 km/h the wave runs at 14 m/s, the speed of the gusts');
+  near(speed(60), (60 * 1.4) / 3.6, 1e-6, 'and faster in more wind');
+  assert.ok(rate(0)[0] >= 2 * Math.PI * 0.12 - 1e-9 && rate(200)[0] <= 2 * Math.PI * 0.6 + 1e-9, 'never slower than a tree swings by itself, never a blur');
+  assert.ok(rate(36)[1] < rate(36)[0], 'the second wave slower than the first');
+  const sh = readSrc('engine/shaders/composite.js');
+  assert.ok(sh.includes('sin(uTreeSway.x - wc.x * 100.0 + id * 0.6)') && sh.includes('sin(uTreeSway.y - wc.x * 70.0 + id * 1.4)'), 'the picture still spaces them so');
+  assert.ok(readSrc('engine/environment.js').includes('const swayRate = LE.Environment.swayRate(treeKmh);'));
+});
+
+test('the outlines of the trees on the near hills move with the wind: edge pixels only, by as much as a crown really moves', () => {
+  const sh = readSrc('engine/shaders/composite.js');
+  const main = sh.slice(sh.lastIndexOf('void main() {'));
+  assert.ok(main.includes('if (uWindAmt > 0.001 && uMeter == 0 && uGrassOnly == 0 && uDebugView == 0) col = swayEdge(col, ic, rd, g0);'), 'not in still air, nor when metering');
+  const fn = sh.slice(sh.indexOf('vec3 swayEdge('), sh.lastIndexOf('void main() {'));
+  assert.ok(fn.includes('if (t > LEDGE_T_KM && t < 3.5 && texelFetch(uG1, ic, 0).a > 0.5) {'), 'crowns within 3.5 km');
+  assert.ok(fn.includes('if (gn.z > 0.0 && gn.z < t * 1.2 + 0.03) return col;') && fn.includes('if (t > 0.0 && t < tn * 1.2 + 0.03) continue;'), 'only against something much further off');
+  assert.equal(fn.split('landOrSky(').length - 1, 2, 'a second look only on those edges');
+  assert.ok(fn.includes('float perKm = proj * 0.0008 / pixelAngle();'), '0.8 m at a full swing');
+  // on a 3840 px picture 110 degrees wide: under a pixel from a kilometre in a strong wind, never more than one
+  const pa = (110 * Math.PI / 180) / 3840;
+  const px = (swing, km) => Math.abs(swing * 0.0008 / pa / km);
+  assert.ok(px(1, 1) > 1 && px(1, 1) < 2 && px(1, 3.4) > 0.3 && px(1, 3.4) < 0.6 && px(0.01, 1.6) < 0.03, 'a pixel or so: ' + px(1, 1).toFixed(2) + ' at 1 km');
+  assert.equal(fn.split('min(abs(d), 1.0)').length - 1, 2, 'and the blend never goes further than the pixel beside it');
+  // it leans where the light on it says it leans: the same sums as shadeTerrain
+  const swing = sh.slice(sh.indexOf('float crownSwing('), sh.indexOf('vec3 swayEdge('));
+  for (const line of ['textureLod(uNoise2D, a * vec2(1.6, 0.4), 2.0).r * 0.65 + textureLod(uNoise2D, b * vec2(1.0, 0.3) + 0.37, 2.0).g * 0.35', 'sin(uTreeSway.x - wc.x * 100.0 + id * 0.6) * 0.6 + sin(uTreeSway.y - wc.x * 70.0 + id * 1.4) * 0.4', '(0.15 + 0.6 * max(gust, 0.0))']) {
+    assert.ok(swing.includes(line) && sh.slice(sh.indexOf('vec3 shadeTerrain('), sh.indexOf('vec3 aerial(')).includes(line), line);
+  }
+});
+
+test('early and late the valley mist lies in the shade of the ridges, and its thin edges do not glow', () => {
+  const vol = readSrc('engine/shaders/volume.js');
+  assert.ok(vol.includes('float shadeLine = 3.2 - 5.0 * uSunDir.y / max(sqrt(1.0 - uSunDir.y * uSunDir.y), 0.05);'));
+  assert.ok(vol.includes('shS *= smoothstep(-0.35, 0.35, p.y - shadeLine);') && vol.includes('shS *= mix(1.0, smoothstep(0.0, 0.3, sig), lowSun * 0.75);'));
+  // the line: how high the shade of ridges 3.2 km high and 5 km off reaches with the sun at this height
+  const line = (deg) => 3.2 - 5 * Math.tan((deg * Math.PI) / 180);
+  const lit = (y, deg) => { const t = Math.min(Math.max((y - line(deg) + 0.35) / 0.7, 0), 1); return t * t * (3 - 2 * t); };
+  // the mist lies between 0.5 and about 2.3 km
+  assert.ok(lit(2.3, 5) < 0.02 && lit(1.0, 5) === 0, 'just after sunrise all of it is in shade');
+  assert.ok(lit(2.3, 15) > 0.9 && lit(1.0, 15) === 0, 'at 15 degrees the sun is on its top, not in the valley floor');
+  assert.ok(lit(0.6, 30) > 0.8 && lit(0.5, 40) === 1, 'by mid-morning on all of it');
+});
+
+test('a wet road is dark and glossy: the sky shows in it by day, and the lamps of what drives on it by night', () => {
+  const sh = readSrc('engine/shaders/composite.js');
+  assert.ok(sh.includes('float road = wet > 0.01 && !ledge && t < 9.0 ? onRoad(pos.xz) * (1.0 - canopy) * wet : 0.0;'), 'only when wet, on the road, not under trees');
+  assert.ok(sh.includes('alb *= 1.0 - 0.35 * road;') && sh.includes('float rough = mix(mix(mix(0.7, 0.25, wet), 0.12, road), 0.42, snow);'), 'darker and smoother than wet ground; snow covers it');
+  assert.ok(sh.includes('spec += mix(skyLUT(normalize(up2)), cloudAmb / PI, uOvercast) * fr * road * 0.7;'), 'the sky in it');
+  const sp = readSrc('engine/shaders/sprites.js');
+  assert.ok(sp.includes('if (uWet > 0.01 && cone > -1.5) {') && sp.includes('float glint = pow(max(dot(N, hv), 0.0), 120.0) * smoothstep(0.0, 0.3, ax);'), 'a headlight shows in it as a streak; a flashing lamp does not');
+  for (const s2 of [sh, sp]) assert.ok(s2.includes('return 1.0 - smoothstep(0.0025, 0.004, length(textureLod(uRoadMap, uv, 0.0).xy));'), 'the road is 3.5 m to its edge, as in the bake');
+  assert.ok(readSrc('engine/shaders/bake.js').includes('float halfW = 0.0035;'));
+  const R = readSrc('engine/renderer.js');
+  assert.ok(R.includes('...this._roadUniforms(p), // the wet road shines') && R.includes('...this._roadUniforms(p), // lamps show in a wet road') && R.includes("p.set('uWet', w.wet);"));
+});
+
+test('prayer flags hang on a line from the trunk to a stake, in the five colours in their order, and move with the wind', () => {
+  const { LE } = load(['engine/gl.js', 'engine/foreground.js']);
+  const T = LE.growTree(7936, [-0.8, 0, 0.6]);
+  const F = LE.buildFlags(T, [-1, 0, 0], [0, 0, -1]);
+  assert.ok(F.count >= 8 && F.count <= 14, F.count + ' flags');
+  const V = 13;
+  const rows = [];
+  for (let i = 0; i < F.verts; i++) rows.push(Array.from(F.data.subarray(i * V, i * V + V)));
+  const cloth = rows.filter((r) => r[6] === 5);
+  const wood = rows.filter((r) => r[6] === 0);
+  assert.equal(cloth.length, F.count * 3 * 6 * 6, 'each flag 3 by 6 squares, so waves can run down it');
+  // blue, white, red, green, yellow, and round again
+  const colourOf = (r) => r.slice(7, 10).map((x) => x.toFixed(2)).join(',');
+  const order = [];
+  for (const r of cloth) if (order[order.length - 1] !== colourOf(r)) order.push(colourOf(r));
+  assert.equal(order.length, F.count, 'one colour to a flag');
+  for (let i = 5; i < order.length; i++) assert.equal(order[i], order[i - 5], 'the same five in the same order');
+  const [blue, white, red, green, yellow] = order.slice(0, 5).map((c) => c.split(',').map(Number));
+  assert.ok(blue[2] > blue[0] * 3 && white[0] > 0.6 && red[0] > red[1] * 5 && green[1] > green[0] * 3 && yellow[0] > yellow[2] * 5 && yellow[1] > 0.3, order.slice(0, 5).join(' | '));
+  // the line: tied to the trunk's own wood about 2.5 m up, down to a stake 3.7 m off that starts under the ground
+  const trunk = T.branches.find((b) => b.level === 0);
+  const tie = trunk.nodes.reduce((a, b) => (Math.abs(b.p[1] - 2.5) < Math.abs(a.p[1] - 2.5) ? b : a));
+  near(Math.hypot(F.from[0] - tie.p[0], F.from[2] - tie.p[2]), tie.r, 1e-6, 'on the bark');
+  assert.ok(Math.abs(F.from[1] - 2.5) < 0.5 && F.top[1] > 1.5 && F.top[1] < F.from[1], 'sloping down from the tree');
+  near(Math.hypot(F.top[0], F.top[2]), Math.hypot(3.6, 0.8), 1e-6, 'the stake 3.7 m from the foot of the tree');
+  assert.ok(Math.min(...wood.map((r) => r[1])) < -0.5, 'the stake goes into the ground');
+  // every flag hangs from the line, between the trunk and the stake, and none reaches the ground hanging straight
+  const along = (p) => ((p[0] - F.from[0]) * (F.top[0] - F.from[0]) + (p[2] - F.from[2]) * (F.top[2] - F.from[2])) / ((F.top[0] - F.from[0]) ** 2 + (F.top[2] - F.from[2]) ** 2);
+  for (const r of cloth) {
+    const t = along(r);
+    assert.ok(t > 0.03 && t < 0.97, 'between the two');
+    const straight = F.from[1] + (F.top[1] - F.from[1]) * t;
+    assert.ok(r[1] <= straight + 1e-6 && r[1] > straight - 0.21, 'on the sagging line');
+    assert.ok(r[1] - 0.36 > 0.9, 'clear of the ground');
+    assert.ok(Math.abs(r[3]) <= 0.135 + 1e-6 && r[4] >= 0 && r[4] <= 0.36 + 1e-6);
+  }
+  assert.ok(F.lo[0] <= Math.min(...rows.map((r) => r[0])) - 0.36 + 1e-5 && F.hi[1] >= Math.max(...rows.map((r) => r[1])), 'the tree picture has room for them blown out');
+  // the cloth, worked out as the shader does: hanging straight in still air, lifted by the wind across the line,
+  // dragged by the wind along it, and its waves running downwind
+  const sh = readSrc('engine/shaders/tree.js');
+  assert.ok(sh.includes('float lift = blow * abs(across);') && sh.includes('float run = x * along + d * sqrt(max(1.0 - along * along, 0.0));') &&
+    sh.includes('float wave = sin(uFlutter * 9.0 + phase - run * 14.0) * 0.6 + sin(uFlutter * 15.0 + phase * 1.7 - run * 23.0) * 0.3;') &&
+    sh.includes('float a = lift + wave * 0.45 * min(uWindStr * 2.0, 1.0) * (d / 0.36);') &&
+    sh.includes('return T * x + (out1 * sin(a) - vec3(0.0, 1.0, 0.0) * cos(a) + T * (along * 0.35 * min(blow, 1.0))) * d;'));
+  // [along the line, level across it, up]; the wind blows at the angle dir to the line (0 = along it)
+  const waveAt = (x, d, clock, dir) => {
+    const along = Math.cos(dir);
+    const run = x * along + d * Math.sqrt(Math.max(1 - along * along, 0));
+    return Math.sin(clock * 9 - run * 14) * 0.6 + Math.sin(clock * 15 - run * 23) * 0.3;
+  };
+  const clothAt = (x, d, str, gust, clock, dir) => {
+    const along = Math.cos(dir);
+    const across = Math.sin(dir);
+    const blow = Math.min(Math.max(str * (0.55 + 0.35 * gust), 0), 1.35);
+    const a = blow * Math.abs(across) + waveAt(x, d, clock, dir) * 0.45 * Math.min(str * 2, 1) * (d / 0.36);
+    return [x + along * 0.35 * Math.min(blow, 1) * d, (across < 0 ? -1 : 1) * Math.sin(a) * d, -Math.cos(a) * d];
+  };
+  const Q = Math.PI / 2;
+  assert.deepEqual(clothAt(0, 0.36, 0, 0, 1.7, Q).map((v) => +v.toFixed(12)), [0, 0, -0.36], 'still air: straight down, whatever the clock says');
+  assert.ok(clothAt(0, 0.36, 1, 0, 0, Q)[1] > 0.1 && clothAt(0, 0.36, 2.4, 1, 0, Q)[1] > clothAt(0, 0.36, 1, 0, 0, Q)[1], 'blown downwind, further in a gale');
+  assert.ok(clothAt(0, 0.36, 1, 0, 0, -Q)[1] < -0.1, 'and to the other side when the wind turns round');
+  assert.ok(Math.abs(clothAt(0, 0.36, 1, 0, 0.1, Q)[1] - clothAt(0, 0.36, 1, 0, 0.3, Q)[1]) > 0.01, 'and waving');
+  near(Math.hypot(...clothAt(0, 0.2, 1.3, 0.5, 2, Q)), 0.2, 1e-9, 'the cloth does not stretch');
+  // a wind along the line cannot lift a flag held along its top: the hem trails downwind
+  const hem = clothAt(0, 0.36, 1, 0, 0, 0);
+  assert.ok(hem[0] > 0.05 && clothAt(0, 0.36, 1, 0, 0, Math.PI)[0] < -0.05, 'the hem trails the way the wind goes');
+  assert.ok(Math.hypot(...hem) < 0.36 * 1.07, 'hardly stretched by it');
+  // the waves run downwind through the cloth: what is at one point now is a step further downwind a moment later
+  // (the slower wave moves 9 / 14 m a second), and across the wind the cloth moves as one
+  const h = 0.005;
+  for (const dir of [0, 0.7, Q, 2.4, Math.PI]) {
+    const al = Math.cos(dir);
+    const k = [al, Math.sqrt(1 - al * al)];
+    const slow = (x, d, clock) => Math.sin(clock * 9 - (x * k[0] + d * k[1]) * 14);
+    near(slow(0.03 + k[0] * h, 0.2 + k[1] * h, 0.4 + (14 * h) / 9), slow(0.03, 0.2, 0.4), 1e-9, 'downwind, at ' + dir);
+    near(waveAt(0.03 - k[1] * h, 0.2 + k[0] * h, 0.4, dir), waveAt(0.03, 0.2, 0.4, dir), 1e-9, 'one crest across the wind, at ' + dir);
+  }
+  assert.ok(Math.abs(waveAt(0.1, 0.2, 0.4, 0) - waveAt(-0.1, 0.2, 0.4, 0)) > 0.05, 'in a wind along the line the waves cross the flag');
+  near(waveAt(0.1, 0.2, 0.4, Q), waveAt(-0.1, 0.2, 0.4, Q), 1e-9, 'in a wind across it they run down it');
+  assert.ok(sh.includes('} else if (kind == 5) {') && sh.includes('alb = vSide * (0.82 + 0.18 * smoothstep(1.0, 0.75, vUV.y)) * (0.9 + 0.2 * vr);'), 'drawn as cloth in its colour');
+  // the switch: on unless turned off, from the address, the app and Lively; the foreground follows it
+  assert.equal(load(['config.js']).LE.config.flags, true);
+  assert.equal(load(['config.js'], { search: '?flags=0' }).LE.config.flags, false);
+  assert.ok(readSrc('main.js').includes("case 'flags': // the foreground reads it every frame"));
+  assert.ok(readSrc('services/host.js').includes("flags: [c.flags, 'flags'],"));
+  assert.ok(readSrc('engine/foreground.js').includes('const flagsOn = R.cfg.flags !== false;'));
+  assert.ok(readSrc('ui/debugpanel.js').includes("['Prayer flags', 'flags',"));
 });
 
 test('the wind in the tree never settles into a repeating loop', () => {
@@ -1967,7 +2174,7 @@ test('vehicles pushed to the picture carry the headlight by the way they face', 
   }
   assert.ok(toward > 0, 'the road has a stretch that heads towards the viewer');
   assert.ok(across > 0, 'and one that runs across the view');
-  for (const kind of ['bus', 'jeep', 'motorcycle']) {
+  for (const kind of ['bus', 'jeep', 'motorcycle', 'lorry', 'armyLorry', 'armyJeep', 'ambulance']) {
     const at = (i, dir) => {
       life.count = 0;
       life._pushVehicle(life._newVehicle(kind, dir, i * road.step), 1);
@@ -2396,6 +2603,18 @@ test('mist off the forest is drawn in 3D: low patches for the volume pass, neare
   assert.equal(h.life.plumeCount, 0, 'gone when it has dissolved');
 });
 
+test("by night a village's smoke is a pale haze lit by the lamps below it, not a black veil over them", () => {
+  const vol = readSrc('engine/shaders/volume.js');
+  // it hides less in the dark, turns from daylight blue to pale grey, and is not dimmed as the mist is
+  assert.ok(vol.includes('kind == 1 ? mix(12.0, 4.5, dark)'), 'thinner by night');
+  assert.ok(vol.includes('mix(vec3(0.4, 0.45, 0.56), vec3(0.74, 0.77, 0.83), dark)'), 'pale by night, the day colour kept');
+  assert.ok(vol.includes('(kind == 1 ? mix(1.0, 0.7, dark) : nightDim)'), 'only mist and field smoke take the night dimming');
+  assert.ok(vol.includes('if (kind == 1) Sc += vec3(1.0, 0.62, 0.3) * uHeadE * uLampGlow'), 'lit warm from below');
+  // the lamps' share comes from the environment, and is none with the lights or the life switched off
+  assert.ok(readSrc('engine/renderer.js').includes("p.set('uLampGlow', this.cfg.life === false || this.cfg.lights === false ? 0 : state.lampGlow || 0);"));
+  assert.ok(readSrc('engine/environment.js').includes('s.lampGlow = smooth(-1, -7, sunAlt);'));
+});
+
 test('smoke is drawn in 3D and leans the way the weather blows, and a field fire is lit a few km off where it shows', () => {
   for (const toward of [Math.PI / 2, -Math.PI / 2, 0, 2.5]) {
     const h = hills(13, { mist: 0.1, wet: 0 });
@@ -2463,11 +2682,11 @@ test('mist, smoke and fire all go when life is turned off', () => {
 
 test('everything in the scene can be turned off, from the address, the app and Lively, and the scene follows', () => {
   const on = load(['config.js']).LE.config;
-  for (const k of ['mist', 'banners', 'smoke', 'fires', 'lights', 'shootingStars', 'road', 'birds', 'leaves']) assert.equal(on[k], true, k + ' on to start with');
+  for (const k of ['mist', 'banners', 'smoke', 'fires', 'lights', 'shootingStars', 'planes', 'rainbow', 'road', 'birds', 'leaves']) assert.equal(on[k], true, k + ' on to start with');
   assert.equal(on.render.tree, true);
   assert.equal(on.ui.showPanel, true);
-  const off = load(['config.js'], { search: '?mist=0&banners=0&smoke=0&fires=0&lights=0&stars=0&tree=0&panel=0' }).LE.config;
-  for (const k of ['mist', 'banners', 'smoke', 'fires', 'lights', 'shootingStars']) assert.equal(off[k], false, k + ' off from the address');
+  const off = load(['config.js'], { search: '?mist=0&banners=0&smoke=0&fires=0&lights=0&stars=0&planes=0&rainbow=0&tree=0&panel=0' }).LE.config;
+  for (const k of ['mist', 'banners', 'smoke', 'fires', 'lights', 'shootingStars', 'planes', 'rainbow']) assert.equal(off[k], false, k + ' off from the address');
   assert.equal(off.render.tree, false);
   assert.equal(off.ui.showPanel, false);
 
@@ -2479,29 +2698,29 @@ test('everything in the scene can be turned off, from the address, the app and L
   a.ctx.livelyPropertyListener = (name, v) => calls.push([name, v]);
   const all = {
     quality: 'auto', road: true, traffic: 'normal', birds: true, leaves: true, tree: true, mist: true, banners: true, smoke: true, fires: true,
-    lights: true, stars: true, panel: true, corner: 'right-bottom', panelSize: 'medium',
+    lights: true, stars: true, planes: true, rainbow: true, flags: true, animals: true, panel: true, corner: 'right-bottom', panelSize: 'medium',
   };
   a.ctx.leHostState('live', all);
   a.tick();
   assert.deepEqual(calls, []);
-  a.ctx.leHostState('live', { ...all, tree: false, mist: false, banners: false, smoke: false, fires: false, lights: false, stars: false, panel: false });
+  a.ctx.leHostState('live', { ...all, tree: false, mist: false, banners: false, smoke: false, fires: false, lights: false, stars: false, planes: false, rainbow: false, flags: false, animals: false, panel: false });
   a.tick();
   const names = calls.map((c) => c[0]).sort();
-  assert.deepEqual(names, ['banners', 'fires', 'lights', 'mist', 'showPanel', 'smoke', 'stars', 'tree']);
+  assert.deepEqual(names, ['animals', 'banners', 'fires', 'flags', 'lights', 'mist', 'planes', 'rainbow', 'showPanel', 'smoke', 'stars', 'tree']);
   assert.ok(calls.every((c) => c[1] === false));
 
   // Lively offers each one, on to start with, and the page knows each name
   const read = (f) => readFileSync(new URL(f, new URL('../', import.meta.url)), 'utf8');
   const lively = JSON.parse(read('LivelyProperties.json'));
   const main = read('src/main.js');
-  for (const k of ['tree', 'mist', 'banners', 'smoke', 'fires', 'lights', 'stars', 'birds', 'leaves', 'road', 'showPanel']) {
+  for (const k of ['tree', 'mist', 'banners', 'smoke', 'fires', 'lights', 'stars', 'planes', 'rainbow', 'flags', 'animals', 'birds', 'leaves', 'road', 'showPanel']) {
     assert.equal(lively[k] && lively[k].type, 'checkbox', 'Lively has ' + k);
     assert.equal(lively[k].value, true, k + ' on in Lively');
     assert.ok(main.includes(`case '${k}':`), 'main.js handles ' + k);
   }
   // the app keeps each one, and passes it to the page at start and while running
   const cs = read('host/LivingEarthHost.cs');
-  for (const k of ['tree', 'mist', 'banners', 'smoke', 'fires', 'lights', 'stars', 'panel']) {
+  for (const k of ['tree', 'mist', 'banners', 'smoke', 'fires', 'lights', 'stars', 'planes', 'rainbow', 'flags', 'animals', 'panel']) {
     assert.ok(cs.includes(`"${k}="`), 'saved: ' + k);
     assert.ok(cs.includes(`TryGetValue("${k}"`), 'read back: ' + k);
     assert.ok(cs.includes(`"&${k}=0"`), 'in the address: ' + k);
@@ -2664,6 +2883,8 @@ function quietRoad(hour) {
   h.life.state = h.state;
   h.life._trafficSeeded = true;
   h.life._nextVehicle = 1e9;
+  h.life._nextConvoy = 1e9;
+  h.life._nextAmbulance = 1e9;
   h.life.birds = false; // only the road
   h.put = (kind, dir, i, over = {}) => {
     const c = Object.assign(h.life._newVehicle(kind, dir, i * h.road.step), over);
@@ -2704,6 +2925,7 @@ const AS_BUILT = {
   bus: { cruise: 0.0078, bend: 0.78, accel: 0.6e-3, stopIn: Infinity },
   jeep: { cruise: 0.011, bend: 1.0, accel: 1.2e-3 },
   motorcycle: { cruise: 0.0145, bend: 1.22, accel: 2.0e-3 },
+  lorry: { cruise: 0.0072, bend: 0.74, accel: 0.5e-3 },
 };
 /** Seconds until the last of `kinds` (a line, front first, 40 m apart, all at their pace) is past all the others, or -1. */
 function secondsToPass(kinds, at, dir, limit, each) {
@@ -2962,6 +3184,788 @@ test('indicators blink at about one and a half times a second, without raising t
   assert.ok(c.blink === 2);
 });
 
+// ---- lorries, an army column, an ambulance ---------------------------------------------------------------------------
+/** An army column put on the road with its first vehicle at point i, as `summon('convoy')` places it. */
+function putConvoy(h, dir, i) {
+  const q = h.life._newConvoy(dir);
+  const members = [];
+  for (let back = 0; q.left > 0; ) {
+    const c = h.life._convoyMember(q, i * h.road.step - dir * back);
+    back += c.len / 2 + 0.014 + (0.0075 * 1.3) / 2;
+    h.life.vehicles.push(c);
+    members.push(c);
+  }
+  return members;
+}
+/** Fails if anything that is not of the column drives in its lane between its first and its last vehicle. */
+function columnWhole(vehicles, members, when) {
+  const dir = members[0].dir;
+  const along = members.map((m) => m.s * dir);
+  const front = Math.max(...along);
+  const rear = Math.min(...along);
+  for (const o of vehicles) {
+    if (members.includes(o) || o.dir !== dir || o.side > 0.3) continue;
+    assert.ok(o.s * dir > front || o.s * dir < rear, `a ${o.kind} is inside the column ${when}`);
+  }
+}
+
+test('a lorry is one of the ordinary traffic: slower than a bus on the bends, and about one vehicle in seven', () => {
+  const h = quietRoad(12);
+  seedRandom(h.ctx, 11);
+  const n = { bus: 0, jeep: 0, motorcycle: 0, lorry: 0 };
+  for (let k = 0; k < 4000; k++) n[h.life._pickVehicleKind()]++;
+  assert.equal(n.bus + n.jeep + n.motorcycle + n.lorry, 4000, 'only these four come by themselves');
+  near(n.lorry / 4000, 0.15, 0.03, 'lorries');
+  near(n.bus / 4000, 0.2, 0.03, 'buses');
+  const lorry = h.life._newVehicle('lorry', 1, STRAIGHT * h.road.step);
+  const bus = h.life._newVehicle('bus', 1, STRAIGHT * h.road.step);
+  assert.equal(lorry.code, 3);
+  assert.ok(lorry.len < bus.len && lorry.hgt >= bus.hgt, 'shorter than a bus and as tall');
+  assert.equal(lorry.stopIn, Infinity, 'it does not stop at bus stops');
+  // the picture knows the kinds apart: a cab and a covered load, olive canvas, a red stripe
+  const sh = readSrc('engine/shaders/sprites.js');
+  assert.ok(sh.includes('bool lorry = kind == 3 || kind == 4;') && sh.includes('} else if (kind == 6) {'), 'drawn their own way');
+});
+
+test('an army column comes on to the road one after the other, the jeep first, and drives close together with its hazard lights on', () => {
+  const { life, road, state, view, ctx } = testLife(12);
+  seedRandom(ctx, 14);
+  life._trafficSeeded = true; // an empty road, so it can be told apart
+  life._nextVehicle = 1e9;
+  life._nextAmbulance = 1e9;
+  life._nextConvoy = 0;
+  life.birds = false;
+  for (let k = 0; k < 480; k++) life.update(0.25, state, view);
+  const col = life.vehicles.filter((c) => c.group).sort((a, b) => (b.s - a.s) * a.dir);
+  assert.ok(col.length >= 4 && col.length <= 7, 'a jeep and three to six lorries: ' + col.length);
+  assert.equal(life.vehicles.length, col.length, 'nothing else came on to the road in between');
+  assert.equal(col[0].kind, 'armyJeep', 'the jeep leads');
+  assert.ok(col.slice(1).every((c) => c.kind === 'armyLorry' && c.code === 4), 'lorries behind it');
+  assert.ok(col.every((c) => c.group === col[0].group && c.dir === col[0].dir && c.blink === 3), 'one column, hazard lights on');
+  for (let j = 1; j < col.length; j++) {
+    const gap = (col[j - 1].s - col[j].s) * col[0].dir - (col[j - 1].len + col[j].len) / 2;
+    // (14 m once it has closed up. Out of a slow bend each picks up speed later than the one in front, so the column
+    // stretches for a while, as a real one does)
+    assert.ok(gap > 0.004 && gap < 0.06, `${(gap * 1000).toFixed(0)} m between vehicles ${j} and ${j + 1}`);
+  }
+  assert.ok(road.length > 1);
+  // by night none sets out
+  const night = testLife(2);
+  night.life._nextConvoy = 0;
+  night.life._nextAmbulance = 1e9;
+  for (let k = 0; k < 200; k++) night.life.update(0.25, night.state, night.view);
+  assert.ok(!night.life.vehicles.some((c) => c.group), 'by day only');
+});
+
+test('an army column keeps together and is never split: others pass the whole of it or wait behind it', () => {
+  for (const [seed, coming] of [[1, 0], [2, 0], [3, 60], [4, 110], [5, 150]]) {
+    const h = quietRoad(12);
+    seedRandom(h.ctx, seed);
+    const col = putConvoy(h, 1, STRAIGHT);
+    const bike = h.put('motorcycle', 1, STRAIGHT - col.length * 3 - 6, { ...AS_BUILT.motorcycle, cool: 0, v: 0.0068 });
+    const jeep = h.put('jeep', 1, STRAIGHT - col.length * 3 - 14, { ...AS_BUILT.jeep, cool: 2, v: 0.0068 });
+    if (coming) h.put('jeep', -1, STRAIGHT + coming, AS_BUILT.jeep); // something comes the other way while they are out
+    let outs = 0;
+    let wasOut = false;
+    h.run(240, (t) => {
+      columnWhole(h.life.vehicles, col, `at ${t} s (seed ${seed})`);
+      for (const m of col) {
+        assert.ok(!m.pass && m.side < 0.05, 'none of the column overtakes');
+        assert.equal(m.blink, 3, 'hazard lights stay on');
+      }
+      for (const a of [bike, jeep])
+        for (const m of col) if (a.side < 0.7) assert.ok(Math.abs(a.s - m.s) >= (a.len + m.len) / 2 - 5e-4, `${a.kind} into the column at ${t} s (seed ${seed})`);
+      const out = bike.side > 0.5;
+      if (out && !wasOut) outs++;
+      wasOut = out;
+      if (t > 30) {
+        const order = col.slice().sort((a, b) => b.s - a.s);
+        for (let j = 1; j < order.length; j++) assert.ok(order[j - 1].s - order[j].s < 0.075, `the column has come apart at ${t} s (seed ${seed})`);
+      }
+    });
+    assert.equal(col[0].kind, 'armyJeep');
+    assert.ok(col.every((m, j) => j === 0 || m.s < col[j - 1].s), 'still in the order it set out in');
+    if (!coming) {
+      assert.ok(bike.s > col[0].s && bike.side < 0.05, `on an empty road the motorcycle got past the whole column (seed ${seed})`);
+      assert.equal(outs, 1, 'in one go');
+    }
+  }
+});
+
+test('everyone makes way for an ambulance: indicates, pulls in and slows, and pulls back out when it is past', () => {
+  for (const kind of ['jeep', 'bus', 'lorry', 'motorcycle']) {
+    const h = quietRoad(12);
+    seedRandom(h.ctx, 31); // each kind as built: a motorcycle at the top of its range is as fast as the ambulance
+    const c = h.put(kind, 1, STRAIGHT + 12, { ...AS_BUILT[kind], stopIn: Infinity, cool: 0 });
+    const slow = h.put('bus', 1, STRAIGHT + 22, { cruise: 0.004, v: 0.004, stopIn: Infinity }); // one it would overtake
+    const amb = h.put('ambulance', 1, STRAIGHT - 14);
+    assert.ok(amb.beacon && amb.code === 6 && amb.cruise > 0.0155 && amb.cruise < 0.0175, 'about 60 km/h');
+    const seen = { left: false, in: false, slowed: false, right: false };
+    let passedAt = -1;
+    let wasPassing = false;
+    h.run(90, (t) => {
+      for (const [a, b] of [[amb, c], [amb, slow], [c, slow]]) {
+        if (a.side < 0.7 && b.side < 0.7) assert.ok(Math.abs(a.s - b.s) >= (a.len + b.len) / 2 - 5e-4, `${a.kind} into the ${b.kind} at ${t} s`);
+      }
+      assert.ok(amb.v < 0.02, 'a sane speed');
+      const behind = amb.s < c.s && c.s - amb.s < 0.19;
+      if (behind) {
+        // (one already out overtaking when it came into range finishes that)
+        assert.ok(!c.pass || wasPassing, `the ${kind} does not set out to overtake with it behind`);
+        if (c.blink === 1) seen.left = true;
+        if (c.side < -0.3) seen.in = true;
+        if (c.side < -0.3 && c.v < c.cruise * 0.6) seen.slowed = true;
+      }
+      wasPassing = !!c.pass;
+      if (amb.s > c.s && passedAt < 0) passedAt = t;
+      if (passedAt >= 0 && c.blink === 2) seen.right = true;
+    });
+    assert.ok(seen.left && seen.in && seen.slowed, `the ${kind} indicated left ${seen.left}, pulled in ${seen.in}, slowed ${seen.slowed}`);
+    assert.ok(passedAt >= 0 && amb.s > slow.s, `the ambulance got past the ${kind} (${passedAt} s) and the bus`);
+    assert.ok(seen.right && !c.yielding && c.side > -0.05, `the ${kind} indicated right and pulled back out`);
+    assert.ok(amb.s > c.s && !c.pass, `and the ${kind} stays behind it: nobody overtakes an ambulance`);
+  }
+  // one coming towards it slows down as they meet, and picks up again after
+  const h = quietRoad(12);
+  const amb = h.put('ambulance', 1, STRAIGHT);
+  const on = h.put('jeep', -1, STRAIGHT + 60, AS_BUILT.jeep);
+  on.v = on.cruise;
+  let least = 1;
+  h.run(40, () => {
+    if ((on.s - amb.s) * amb.dir > 0) least = Math.min(least, on.v / on.cruise);
+    assert.ok(on.side < 0.05 && on.side > -0.05 && !on.yielding, 'it keeps to its own lane');
+  });
+  assert.ok(least < 0.75, 'slowed while it came: ' + least.toFixed(2));
+  assert.ok((on.s - amb.s) * amb.dir < 0 && on.v > on.cruise * 0.9, 'and is back at its pace once they have passed');
+});
+
+test('an ambulance\'s roof light alternates red and blue about twice a second, by day too, without raising the frame rate', () => {
+  for (const hour of [12, 23]) {
+    const h = quietRoad(hour);
+    h.put('ambulance', 1, STRAIGHT);
+    const lit = [];
+    let patch = 0;
+    for (let k = 0; k < 40; k++) {
+      h.life.update(0.05, h.state, h.view);
+      const v = sprites(h.life).find((x) => x.type === 6);
+      assert.ok(v, 'in view');
+      assert.equal(v.f[15], 6, 'drawn as an ambulance');
+      lit.push(v.f[18] & 12);
+      assert.equal(v.f[18] & 3, 0, 'no indicators with it');
+      patch = Math.min(v.f[2], v.f[3]);
+    }
+    assert.ok(lit.every((x) => x === 4 || x === 8), 'always one of the two: ' + lit.join(' '));
+    const changes = lit.slice(1).filter((x, k) => x !== lit[k]).length;
+    assert.ok(changes >= 6 && changes <= 9, 'four changes a second: ' + changes);
+    assert.ok(patch >= 16, 'room on the picture for its glow');
+    assert.equal(h.life.movers, 0, 'it does not ask for more frames');
+  }
+  // no other vehicle carries it
+  const h = quietRoad(12);
+  for (const kind of ['bus', 'jeep', 'motorcycle', 'lorry', 'armyLorry', 'armyJeep']) {
+    h.life.count = 0;
+    h.life._pushVehicle(h.life._newVehicle(kind, 1, STRAIGHT * h.road.step), 0);
+    const v = sprites(h.life).find((x) => x.type === 6);
+    assert.ok(v && v.f[18] < 4, kind);
+  }
+  const sh = readSrc('engine/shaders/sprites.js');
+  assert.ok(sh.includes('if (blink >= 4) {') && sh.includes('if ((blink & 3) != 0) {'), 'the picture reads the two apart');
+});
+
+test('flashing lamps light what is round them at night: amber from hazard lights and indicators, red and blue from an ambulance', () => {
+  const glows = (life) => sprites(life).filter((x) => x.type === 7 && x.f[15] < -1.5);
+  const col = (g) => [g.f[17], g.f[18], g.f[19]].map((x) => +x.toFixed(2)).join(',');
+  // an ambulance by night: one light all round its roof, the colour of the lamp that is lit
+  const n = quietRoad(23);
+  const amb = n.put('ambulance', 1, STRAIGHT);
+  const seen = new Set();
+  for (let k = 0; k < 40; k++) {
+    n.life.update(0.05, n.state, n.view);
+    const v = sprites(n.life).find((x) => x.type === 6);
+    const g = glows(n.life);
+    assert.equal(g.length, 1, 'one glow');
+    assert.equal(col(g[0]), (v.f[18] & 8) ? '0.15,0.35,1' : '1,0.08,0.05', 'blue with the blue lamp, red with the red');
+    seen.add(col(g[0]));
+    assert.ok(Math.abs(g[0].f[11] - 0.045) < 1e-6 && g[0].f[2] > 6, 'it reaches 45 m, and there is room on the picture for that');
+    const beam = sprites(n.life).find((x) => x.type === 7 && x.f[15] > 0);
+    assert.ok(beam && g[0].f[6] < beam.f[6] * 0.4, 'much weaker than its headlights');
+    const all = sprites(n.life);
+    assert.ok(all.findIndex((x) => x.type === 7 && x.f[15] < -1.5) < all.findIndex((x) => x.type === 6), 'drawn under the vehicle');
+  }
+  assert.equal(seen.size, 2, 'both colours in two seconds');
+  assert.equal(n.life.movers, 0, 'and no more frames for it');
+  // hazard lights: amber, only while the lamps are lit, from the middle of the vehicle; an indicator from its side
+  const c = quietRoad(23);
+  const lorry = c.put('armyLorry', 1, STRAIGHT, { blink: 3, blinkFor: 99 });
+  let on = 0;
+  let off = 0;
+  for (let k = 0; k < 40; k++) {
+    c.life.update(0.05, c.state, c.view);
+    const v = sprites(c.life).find((x) => x.type === 6);
+    const g = glows(c.life);
+    if (v.f[18] & 3) {
+      on++;
+      assert.equal(g.length, 1);
+      assert.equal(col(g[0]), '1,0.55,0.1', 'amber');
+      assert.ok(Math.abs(g[0].f[11] - 0.025) < 1e-6, 'it reaches 25 m');
+    } else {
+      off++;
+      assert.equal(g.length, 0, 'dark between flashes');
+    }
+  }
+  assert.ok(on > 8 && off > 8, 'it flashes: ' + on + ' lit, ' + off + ' dark');
+  lorry.blink = 2;
+  let one = null;
+  let both = null;
+  for (let k = 0; k < 40 && !one; k++) {
+    c.life.update(0.05, c.state, c.view);
+    one = glows(c.life)[0];
+  }
+  lorry.blink = 3;
+  for (let k = 0; k < 40 && !both; k++) {
+    c.life.update(0.05, c.state, c.view);
+    both = glows(c.life)[0];
+  }
+  assert.ok(one && both && Math.abs(one.f[6] / both.f[6] - 0.5) < 0.05, 'an indicator throws half the light of both sides together');
+  // by day nothing: against daylight a small bulb lights nothing
+  const d = quietRoad(12);
+  d.put('ambulance', 1, STRAIGHT);
+  d.put('armyLorry', 1, STRAIGHT + 20, { blink: 3, blinkFor: 99 });
+  for (let k = 0; k < 20; k++) {
+    d.life.update(0.05, d.state, d.view);
+    assert.equal(glows(d.life).length, 0);
+  }
+  // a dipped headlight has a cut-off: next to nothing above the lamp's own height; main beam reaches the trees
+  assert.ok(readSrc('engine/shaders/sprites.js').includes('inBeam *= mix(1.0, mix(0.05, 1.0, vE.y), smoothstep(-0.01, 0.05, l.y - fwd.y));'), 'the cut-off');
+  const cut = (up, main) => { const t = Math.min(Math.max((up + 0.01) / 0.06, 0), 1); const k = t * t * (3 - 2 * t); return 1 + ((0.05 + 0.95 * main) - 1) * k; };
+  assert.ok(cut(-0.05, 0) === 1 && cut(0.1, 0) < 0.06 && cut(0.1, 1) === 1, 'the road in full, the treetops a twentieth, all of it on main beam');
+  for (const hour of [23]) {
+    const b = quietRoad(hour);
+    const car = b.put('jeep', 1, STRAIGHT);
+    b.life.update(0.05, b.state, b.view);
+    const beam = sprites(b.life).find((x) => x.type === 7 && x.f[15] > 0);
+    assert.ok(beam && Math.abs(beam.f[17] - car.beam) < 1e-6, 'the picture is told whether it is dipped');
+  }
+  // the picture: all round and in the lamp's colour, on whatever is there, as the headlight's patch
+  const sh = readSrc('engine/shaders/sprites.js');
+  assert.ok(sh.includes('if (cone < -1.5) inBeam = 1.0;') && sh.includes('vec3 tint = cone < -1.5 ? vE.yzw : vec3(1.0, 0.88, 0.72);') && sh.includes('vec3 E = tint * strength * uHeadE * inBeam * fall * ndl;'));
+});
+
+test('columns and ambulances on a busy road: nothing ever drives through anything, no column is split, nobody is stuck for long', () => {
+  for (const seed of [21, 22, 23]) {
+    const { life, state, view, ctx } = testLife(12);
+    seedRandom(ctx, seed);
+    let driving = 0;
+    let stuck = 0;
+    let columns = 0;
+    let ambulances = 0;
+    const known = new Set();
+    const lanes = (c) => (c.side < 0.7 ? 1 : 0) | (c.side > 0.3 ? 2 : 0);
+    for (let k = 0; k < 4800; k++) {
+      // far more often than they really come
+      life._nextConvoy = Math.min(life._nextConvoy, 300);
+      life._nextAmbulance = Math.min(life._nextAmbulance, 150);
+      life.update(0.5, state, view);
+      const vs = life.vehicles;
+      const groups = new Map();
+      for (const c of vs) {
+        if (c.group) groups.set(c.group, (groups.get(c.group) || []).concat(c));
+        if (!known.has(c)) {
+          known.add(c);
+          if (c.beacon) ambulances++;
+          if (c.kind === 'armyJeep') columns++;
+        }
+        assert.ok(c.v >= 0 && c.v < 0.02, 'a sane speed: ' + c.v);
+        if (c.side > 0.05 || c.stopFor > 0 || c.stopping || c.group || c.yielding) continue;
+        driving += 0.5;
+        let ahead = null;
+        let gap = 1e9;
+        let coming = 1e9;
+        for (const o of vs) {
+          const g = (o.s - c.s) * c.dir - (o.len + c.len) / 2;
+          if (o === c || g <= 0) continue;
+          if (o.dir !== c.dir) coming = Math.min(coming, g);
+          else if (o.side < 0.7 && g < gap) [ahead, gap] = [o, g];
+        }
+        // (with an ambulance about nobody pulls out: that wait is not being stuck)
+        const siren = vs.some((o) => o.beacon && Math.abs(o.s - c.s) < 0.3);
+        if (ahead && gap < 0.06 && ahead.cruise < c.cruise * 0.9 && c.v < c.cruise * 0.9 && coming > 1 && !siren) stuck += 0.5;
+      }
+      for (const members of groups.values()) columnWhole(vs, members, `at step ${k} (seed ${seed})`);
+      for (let a = 0; a < vs.length; a++) {
+        for (let b = a + 1; b < vs.length; b++) {
+          const A = vs[a];
+          const B = vs[b];
+          const la = lanes(A);
+          const lb = A.dir === B.dir ? lanes(B) : ((lanes(B) & 1) << 1) | ((lanes(B) & 2) >> 1);
+          if (!(la & lb)) continue;
+          const overlap = (A.len + B.len) / 2 - Math.abs(A.s - B.s);
+          assert.ok(overlap < 0.0005, `${A.kind} and ${B.kind} overlap by ${(overlap * 1000).toFixed(1)} m at step ${k} (seed ${seed})`);
+        }
+      }
+    }
+    assert.ok(columns >= 3 && ambulances >= 8, `columns ${columns}, ambulances ${ambulances}`);
+    assert.ok(stuck < driving * 0.08, `stuck behind a slower one on an empty road: ${((100 * stuck) / driving).toFixed(1)}% of driving (seed ${seed})`);
+  }
+});
+
+// ---- an airliner and its contrail -----------------------------------------------------------------------------------
+/** Life with a sky to fly in: the view set, and the upper air dry (no high cloud) or moist. */
+function skyLife(hour, cirrus, wind = [0, 0]) {
+  const h = testLife(hour, { cirrus, cirrusE: wind[0], cirrusN: wind[1] });
+  h.life._view = h.view;
+  h.life.state = h.state;
+  h.life._trafficSeeded = true;
+  h.life._nextVehicle = h.life._nextConvoy = h.life._nextAmbulance = 1e9;
+  h.life.birds = false;
+  h.trail = () => sprites(h.life).filter((x) => x.type === 8 && x.f[15] === 0);
+  h.craft = () => sprites(h.life).filter((x) => x.type === 8 && x.f[15] === 1);
+  return h;
+}
+
+test('an airliner crosses high and far off, straight and level, at an airliner\'s speed, and is followed only while in sight', () => {
+  const h = skyLife(12, 0.5);
+  seedRandom(h.ctx, 5);
+  let radials = 0;
+  let climbing = 0;
+  for (let k = 0; k < 40; k++) {
+    const p = h.life._newPlane(h.state, false);
+    assert.ok(p.alt >= 10 && p.alt <= 11.5, 'cruising height: ' + p.alt);
+    near(Math.hypot(p.dir[0], p.dir[1]), 1, 1e-9, 'a heading');
+    const at = (t) => [p.C[0] + p.dir[0] * (p.s0 + 0.23 * t), p.C[1] + p.dir[1] * (p.s0 + 0.23 * t)];
+    let nearest = 1e9;
+    for (let t = 0; t <= p.cross; t += 1) nearest = Math.min(nearest, Math.hypot(...at(t)));
+    // where the top edge of the picture is: a flight that passes nearly overhead leaves over it, or comes in there
+    const top = (1 - h.view.horizonY) * h.view.h * h.view.pxAng;
+    const steep = ([x, z]) => (p.alt - h.view.camY - (x * x + z * z) / 12742) / Math.hypot(x, z);
+    if (p.radial) {
+      radials++;
+      assert.ok(nearest < 22, 'towards the viewer or away: it comes as near as ' + nearest.toFixed(0) + ' km');
+      // on the picture it goes up or down far more than it goes sideways
+      const px = (t) => h.life._projectDir([at(t)[0], steep(at(t)) * Math.hypot(...at(t)), at(t)[1]]);
+      const a = px(1);
+      const b = px(p.cross - 1);
+      assert.ok(Math.abs(b[1] - a[1]) > 150 && Math.abs(b[1] - a[1]) > Math.abs(b[0] - a[0]), `up or down the picture: ${(b[0] - a[0]).toFixed(0)} across, ${(b[1] - a[1]).toFixed(0)} up`);
+      if (b[1] > a[1]) climbing++;
+    } else assert.ok(nearest > 20 && nearest < 56, 'passes ' + nearest.toFixed(0) + ' km off: above the peaks on the picture');
+    assert.ok(p.cross > 30 && p.cross < 1100, 'in sight for ' + p.cross.toFixed(0) + ' s');
+    // it comes in from out of sight, and leaves out of sight: beyond the edge of the widest view, too far to see, or
+    // over the top of the picture
+    for (const t of [-10, p.cross + 10]) {
+      const [x, z] = at(t);
+      assert.ok(Math.hypot(x, z) > 115 || Math.abs(Math.atan2(x, z)) > h.view.hfov / 2 + 0.1 || steep([x, z]) > top, 'out of sight at ' + t);
+    }
+    // on the picture it is in the sky, above the horizon line, while it is anywhere near
+    h.life.aircraft = [Object.assign(p, { t: p.cross / 2 })];
+    h.life._write(h.state);
+    for (const c of h.craft()) assert.ok(c.f[1] > h.view.horizonY * h.view.h, 'above the horizon');
+  }
+  assert.ok(radials >= 8 && radials <= 26, 'about two in five fly up or down the picture: ' + radials + ' of 40');
+  assert.ok(climbing >= 2 && radials - climbing >= 2, 'some up it, some down: ' + climbing + ' up of ' + radials);
+  // they come by themselves, one every 10 to 30 minutes by day and far fewer in the small hours; never more than two
+  const day = skyLife(12, 0.5);
+  seedRandom(day.ctx, 6);
+  let seen = 0;
+  const known = new Set();
+  for (let k = 0; k < 14400; k++) {
+    day.life.update(0.5, day.state, day.view);
+    assert.ok(day.life.aircraft.length <= 2);
+    for (const p of day.life.aircraft) if (!known.has(p)) { known.add(p); seen++; }
+  }
+  assert.ok(seen >= 3 && seen <= 12, 'in two hours of day: ' + seen);
+  const night = skyLife(2, 0.5);
+  seedRandom(night.ctx, 6);
+  night.life._nextPlane = 0;
+  night.life.update(0.5, night.state, night.view);
+  assert.ok(night.life._nextPlane >= 1800, 'the next one is a long way off at 2 in the morning');
+  assert.equal(day.life.movers, 0, 'and it does not ask for more frames');
+});
+
+test('a contrail is a stub in dry air and long where there is high cloud, grows from the aircraft, widens with age and drifts with the wind up there', () => {
+  const lifeOf = (cirrus) => {
+    const h = skyLife(12, cirrus);
+    seedRandom(h.ctx, 9);
+    let most = 0;
+    let least = 1e9;
+    for (let k = 0; k < 30; k++) {
+      const p = h.life._newPlane(h.state, false);
+      most = Math.max(most, p.life);
+      least = Math.min(least, p.life);
+    }
+    return [least, most];
+  };
+  const dry = lifeOf(0);
+  const moist = lifeOf(0.7);
+  assert.ok(dry[0] >= 20 && dry[1] <= 60, 'dry air: ' + dry.map((x) => x.toFixed(0)).join(' to ') + ' s');
+  assert.ok(moist[0] >= 240 && moist[1] <= 720, 'moist air: ' + moist.map((x) => x.toFixed(0)).join(' to ') + ' s');
+
+  const h = skyLife(12, 0.7);
+  seedRandom(h.ctx, 3);
+  const p = h.life._newPlane(h.state, true);
+  h.life.aircraft = [p];
+  p.t = Math.max(p.t, p.life + 5);
+  h.life._write(h.state);
+  const pieces = h.trail();
+  assert.ok(pieces.length >= 2 && pieces.length <= 16, 'pieces on the picture: ' + pieces.length);
+  assert.equal(h.craft().length, p.t < p.cross ? 1 : 0, 'and the aircraft at its head');
+  let prevEnd = null;
+  for (const q of pieces) {
+    const [cx, cy, hx] = q.f;
+    const ang = q.f[4];
+    const half = q.f[14];
+    assert.ok(half > 0 && hx >= half, 'the patch holds the piece');
+    assert.ok(q.f[8] > q.f[9], 'older towards its far end');
+    near(q.f[10], p.t, 1e-3, 'the time now');
+    near(q.f[11], p.life, 1e-3, 'how long it lasts');
+    assert.ok(q.f[10] - q.f[9] <= p.life + 1e-3, 'nothing older than it lasts');
+    // wider in km with age (on the picture it also depends on how far off that part is)
+    const start = [cx - Math.cos(ang) * half, cy - Math.sin(ang) * half];
+    const end = [cx + Math.cos(ang) * half, cy + Math.sin(ang) * half];
+    if (prevEnd) near(Math.hypot(start[0] - prevEnd[0], start[1] - prevEnd[1]), 0, 0.01, 'each piece starts where the last ended');
+    prevEnd = end;
+  }
+  const young = h.life._trailAt(p, 0);
+  const old = h.life._trailAt(p, p.life);
+  const km = (age, q) => (0.01 + 0.0008 * age);
+  assert.ok(km(p.life) > km(0) * 15, 'much wider at the end of its time');
+  assert.ok(young.dist > 20 && old.dist > 10);
+  // a fresh one grows: nothing behind an aircraft that has only just come into sight
+  const fresh = skyLife(12, 0.7);
+  const f = fresh.life._newPlane(fresh.state, false);
+  fresh.life.aircraft = [f];
+  fresh.life._write(fresh.state);
+  assert.equal(fresh.trail().length, 0, 'no trail at the start');
+
+  // the wind aloft carries the old end of it along, and leaves the aircraft where it is
+  const still = skyLife(12, 0.7, [0, 0]);
+  const windy = skyLife(12, 0.7, [180, 0]); // 180 km/h towards the east
+  seedRandom(still.ctx, 4);
+  seedRandom(windy.ctx, 4);
+  const a = still.life._newPlane(still.state, true);
+  const b = windy.life._newPlane(windy.state, true);
+  a.t = b.t = Math.max(a.t, 200);
+  near(Math.hypot(b.wind[0], b.wind[1]), 0.05, 1e-6, '180 km/h is 0.05 km/s');
+  const headA = still.life._trailAt(a, 0);
+  const headB = windy.life._trailAt(b, 0);
+  near(headA.sx, headB.sx, 1e-6, 'the aircraft is where it flies');
+  const oldA = still.life._trailAt(a, 200);
+  const oldB = windy.life._trailAt(b, 200);
+  assert.ok(Math.abs(oldA.sx - oldB.sx) > 5, 'its trail 200 s back has drifted: ' + (oldB.sx - oldA.sx).toFixed(1) + ' px');
+});
+
+test('aircraft can be switched off, show their lights only at night, and are drawn against the sky only', () => {
+  const h = skyLife(12, 0.5);
+  h.life.summon('plane');
+  assert.equal(h.life.aircraft.length, 1, 'called up from the test panel');
+  h.life.planes = false;
+  h.life.update(0.1, h.state, h.view);
+  assert.equal(h.life.aircraft.length, 0, 'gone at once when switched off');
+  h.life.summon('plane');
+  h.life._nextPlane = 0;
+  h.life.update(0.1, h.state, h.view);
+  assert.equal(h.life.aircraft.length, 0, 'and none comes while it is off');
+  assert.equal(sprites(h.life).filter((x) => x.type === 8).length, 0);
+  // by day no lights, by night the steady light and a flash now and then
+  const levels = (hour) => {
+    const n = skyLife(hour, 0.5);
+    seedRandom(n.ctx, 2);
+    n.life.summon('plane');
+    const p = n.life.aircraft[0];
+    const got = [];
+    for (let k = 0; k < 40 && p.t < p.cross - 5; k++) {
+      n.life.update(0.05, n.state, n.view);
+      const c = n.craft()[0];
+      if (c) got.push([c.f[8], c.f[9]]);
+    }
+    return got;
+  };
+  const day = levels(12);
+  const night = levels(23);
+  assert.ok(day.length > 10 && night.length > 10, 'in view');
+  assert.ok(day.every((x) => x[1] === 0), 'no lights by day');
+  assert.ok(night.every((x) => x[1] === 1), 'lights by night');
+  const flashes = night.filter((x) => x[0] === 1).length;
+  assert.ok(flashes >= 1 && flashes < night.length / 3, 'a short flash now and then: ' + flashes + ' of ' + night.length);
+  const sh = readSrc('engine/shaders/sprites.js');
+  const at = sh.indexOf('if (type == 8) {');
+  assert.ok(at > 0 && sh.slice(at, at + 400).includes('if (t > 0.0) discard;') && sh.slice(at, at + 400).includes('volT()'), 'behind the mountains and the cloud');
+});
+
+// ---- a rainbow ------------------------------------------------------------------------------------------------------
+test('a rainbow comes only with rain in the air and the sun shining on it from low enough, and stands opposite the sun', () => {
+  const { LE } = load(['engine/environment.js']);
+  const bow = LE.Environment.bowAmount;
+  // a shower clearing in the late afternoon: rain still in the air, the cloud mostly gone, the sun 20 degrees up
+  assert.ok(bow(0.5, 0.2, 20) > 0.7, 'a clearing shower: ' + bow(0.5, 0.2, 20));
+  assert.equal(bow(0, 0.2, 20), 0, 'none without rain');
+  assert.equal(bow(0.8, 0.9, 20), 0, 'none under a closed sky: the sun does not reach the rain');
+  assert.equal(bow(0.8, 0.2, 45), 0, 'none with the sun above 42 degrees: the whole bow is below the horizon');
+  assert.equal(bow(0.8, 0.2, -2), 0, 'none after sunset');
+  assert.ok(bow(0.8, 0.2, 39) < bow(0.8, 0.2, 30), 'fading as the sun climbs towards 42 degrees');
+  assert.ok(bow(0.1, 0.2, 20) < bow(0.5, 0.2, 20), 'fainter in thin rain');
+  for (const [r, o, a] of [[2, -1, 20], [1, 0, 10], [0.3, 0.5, 5]]) assert.ok(bow(r, o, a) >= 0 && bow(r, o, a) <= 1, 'between 0 and 1');
+  // the rain lingers in the air for the bow: quick to come, minutes to go, and the scene's state carries the amount
+  const env = readSrc('engine/environment.js');
+  assert.ok(env.includes('const bowTau = (w.rain > this.bowRain ? 30 : 300) / this.pace;'), 'half a minute up, five minutes down');
+  assert.ok(env.includes('s.bow = LE.Environment.bowAmount(this.bowRain, w.overcast, sunAlt);'));
+  // drawn from the sun's place alone: 42 degrees from the point opposite it, red outside; the second bow at 51, reversed
+  const sh = readSrc('engine/shaders/composite.js');
+  assert.ok(sh.includes('float ang = degrees(acos(clamp(dot(rd, -uSunDir), -1.0, 1.0)));'), 'measured from opposite the sun');
+  assert.ok(sh.includes('bowColours((ang - 40.3) / 2.2)') && sh.includes('bowColours(1.0 - (ang - 50.2) / 3.4) * 0.28'), 'two bows, the second reversed and fainter');
+  assert.ok(sh.includes('float inRain = t < 0.0 ? 1.0 : smoothstep(2.5, 12.0, t);'), 'not in front of near ground');
+  assert.ok(sh.indexOf('if (uBow > 0.002) col += rainbow(rd, t)') > sh.indexOf('if (uMeter == 1) {'), 'added after metering: it does not change the exposure');
+  // the colour ramp, worked out here as the shader does: violet inside, red outside, nothing beyond either edge
+  const colours = (x) => {
+    const st = (a, b, v) => { const t = Math.min(Math.max((v - a) / (b - a), 0), 1); return t * t * (3 - 2 * t); };
+    const e = st(-0.2, 0.08, x) * (1 - st(0.92, 1.2, x));
+    return [Math.exp(-(((x - 0.86) / 0.3) ** 2)) * e, Math.exp(-(((x - 0.5) / 0.24) ** 2)) * e, Math.exp(-(((x - 0.14) / 0.26) ** 2)) * e];
+  };
+  const [vr, , vb] = colours(0.1);
+  const [rr, , rb] = colours(0.9);
+  assert.ok(vb > vr * 3 && rr > rb * 3, 'violet at 40 degrees, red at 42');
+  assert.ok(colours(0.5)[1] > 0.9, 'green between');
+  assert.ok(Math.max(...colours(-0.3), ...colours(1.3)) < 1e-6, 'nothing outside the band');
+  // the switch, and the test panel's two-minute bow
+  assert.ok(readSrc('engine/renderer.js').includes("p.set('uBow', this.cfg.rainbow === false ? 0 : Math.max(state.bow || 0, this.bowForce || 0));"));
+});
+
+// ---- the bird of prey that sits on the tree --------------------------------------------------------------------------
+test('the tree has a perch on the very top of its crown, grown last, and it is found on the CPU where the shader puts it', () => {
+  const { LE } = load(['engine/gl.js', 'engine/foreground.js']);
+  const T = LE.growTree(7936, [-0.8, 0, 0.6]);
+  const snags = T.branches.filter((b) => b.snag);
+  assert.equal(snags.length, 1, 'one snag');
+  assert.equal(T.branches[T.branches.length - 1], snags[0], 'grown after everything else');
+  const nodes = snags[0].nodes;
+  const tip = nodes[nodes.length - 1];
+  assert.deepEqual(Array.from(T.perch.p), Array.from(tip.p), 'the perch is its tip');
+  // on top of the leaves, and hardly above them: a long bare stick standing out of the crown looked stuck on
+  let topY = -1e9;
+  for (let i = 0; i < T.leafCount; i++) topY = Math.max(topY, T.leaves[i * 21 + 1] + Math.max(T.leaves[i * 21 + 4], 0));
+  assert.ok(tip.p[1] > topY && tip.p[1] < topY + 0.1, `${((tip.p[1] - topY) * 100).toFixed(0)} cm above the topmost leaf`);
+  assert.ok(tip.p[1] <= T.boundHi[1], 'inside what is drawn of the tree');
+  assert.ok(nodes.every((n) => n.w[2] === 0), 'no twig flex: it moves with its limb only');
+  for (let i = 1; i < nodes.length; i++) {
+    assert.ok(nodes[i].w[0] > nodes[i - 1].w[0], 'bends more towards its tip');
+    assert.ok(nodes[i].r <= nodes[i - 1].r, 'and tapers');
+  }
+  // it starts on wood that is there: some other branch has a node at its foot, moving the same way
+  const foot = nodes[0];
+  const joined = T.branches.some((b) => !b.snag && b.nodes.some((n) => Math.hypot(n.p[0] - foot.p[0], n.p[1] - foot.p[1], n.p[2] - foot.p[2]) < 1e-9 && Math.abs(n.w[0] - foot.w[0]) < 1e-6));
+  assert.ok(joined, 'joined to the limb it rises from');
+  // the rest of the tree is as it was: the snag takes nothing from the random sequence (same leaves for the same seed,
+  // and no leaf on the snag)
+  const again = LE.growTree(7936, [-0.8, 0, 0.6]);
+  assert.equal(again.leafCount, T.leafCount);
+  assert.deepEqual(Array.from(again.perch.p), Array.from(T.perch.p));
+
+  // moved by the wind as the vertex shader moves it
+  const move = LE.Foreground.windMoved;
+  const P = [0.4, 5, -0.2];
+  const still = move(P, [0.8, 2.3, 0, 1], [1, 0, 0], [0, 0], new Float32Array(8), 5);
+  assert.deepEqual(Array.from(still), P, 'still air leaves it where it is');
+  // by hand: lean 0.3 m downwind and 0.1 across at the top (h = 1), wind along +x so across is +z
+  const limbs = new Float32Array([0.02, 0.01, 0.05, -0.03, 0, 0, 0, 0]);
+  const A = [0.8, 0.5 / 0.6366198, 0, 0]; // half way between the first two swings
+  const got = move(P, A, [1, 0, 0], [0.3, 0.1], limbs, 5);
+  const lx = 0.035;
+  const ly = -0.01 * (((A[1] * 5.1) % 1) > 0.5 ? 1 : -1);
+  near(got[0], P[0] + 0.3 + lx * 0.8, 1e-9, 'downwind');
+  near(got[1], P[1] + 0.6 * ly * 0.8, 1e-9, 'up and down with the swing across');
+  near(got[2], P[2] + 0.1 + ly * 0.8, 1e-9, 'across');
+  near(move([0, 2.5, 0], [0, 0, 0, 0], [1, 0, 0], [0.4, 0], limbs, 5)[0], 0.1, 1e-9, 'half way up it leans a quarter as far');
+  // the same sums as the shader's, line for line
+  const sh = readSrc('engine/shaders/tree.js');
+  for (const line of ['float h = clamp(P.y / uTreeH, 0.0, 1.2);', 'vec3 d = (W * uLean.x + side * uLean.y) * h * h;', 'float m = A.y * 0.6366198;', 'l.y *= fract(A.y * 5.1) > 0.5 ? 1.0 : -1.0;', 'd += (W * l.x + side * l.y + vec3(0.0, 0.6 * l.y, 0.0)) * A.x;']) {
+    assert.ok(sh.includes(line), 'the shader still does: ' + line);
+  }
+});
+
+/** Life with a tree to sit on: its perch sways a little, as the snag does in the wind. */
+function perchLife(over = {}) {
+  const h = testLife(12, { windSpeed: 6, ...over });
+  h.life._view = h.view;
+  h.life.state = h.state;
+  h.life._trafficSeeded = true;
+  h.life._nextVehicle = h.life._nextConvoy = h.life._nextAmbulance = h.life._nextPlane = 1e9;
+  h.life._nextPerch = 1e9;
+  h.life._nextRaptorCheck = 1e9;
+  h.life._nextFlock = h.life._nextGeese = 1e9;
+  // the tree stands 28 m off to the left, its top a little below the eye
+  h.perch = () => [-0.0245 + 0.0001 * Math.sin(h.life.t * 2.1), h.view.camY - 0.0004 + 0.00003 * Math.sin(h.life.t * 3.3), 0.0135];
+  h.life.perchAt = h.perch;
+  h.run = (seconds, each) => {
+    for (let t = 0; t < seconds; t += 0.05) {
+      h.life.update(0.05, h.state, h.view);
+      if (each) each(t);
+    }
+  };
+  h.bird = () => h.life.raptors.find((r) => r.mode === 'approach' || r.mode === 'settle' || r.mode === 'perched');
+  /** Runs until `done()` or for `most` seconds; returns the seconds it took, or -1. */
+  h.until = (done, most, each) => {
+    for (let t = 0; t < most; t += 0.05) {
+      h.life.update(0.05, h.state, h.view);
+      if (each) each(t);
+      if (done()) return t;
+    }
+    return -1;
+  };
+  return h;
+}
+
+test('a bird of prey comes down to the snag, sits exactly on it while it sways, turns its head, and flies off again', () => {
+  const h = perchLife();
+  seedRandom(h.ctx, 8);
+  h.life.summon('perch');
+  const r = h.bird();
+  assert.ok(r && r.mode === 'approach', 'on its way in');
+  let fastest = 0;
+  let slowestNear = 1;
+  const landedAt = h.until(() => r.mode === 'perched', 60, () => {
+    const at = h.perch();
+    const d = Math.hypot(r.pos[0] - at[0], r.pos[1] - at[1], r.pos[2] - at[2]);
+    const v = Math.hypot(...r.vel);
+    fastest = Math.max(fastest, v);
+    if (d < 0.004 && r.mode === 'approach') slowestNear = Math.min(slowestNear, v);
+  });
+  assert.ok(landedAt > 3 && landedAt < 45, 'down after ' + landedAt.toFixed(1) + ' s');
+  assert.ok(fastest < 0.015, 'at a bird\'s speed: ' + (fastest * 3600).toFixed(0) + ' km/h at most');
+  assert.ok(slowestNear < 0.004, 'slowed right down for the last metres: ' + (slowestNear * 3600).toFixed(0) + ' km/h');
+  assert.ok(r.sit >= 6 && r.sit <= 50, 'it will sit ' + r.sit.toFixed(0) + ' s');
+  assert.ok(r.sp.span < 0.001, 'a small falcon, not one of the big soaring birds: ' + r.sp.span * 1000 + ' m across');
+  // sitting: exactly on the moving perch, wings still, drawn sitting and after the tree, asking for no more frames
+  const looks = new Set();
+  let sat = 0;
+  h.run(Math.min(r.sit - 0.5, 20), () => {
+    if (r.mode !== 'perched') return;
+    sat++;
+    assert.deepEqual(r.pos, h.perch(), 'on the perch wherever it is');
+    assert.equal(r.amp, 0, 'wings folded');
+    looks.add(r.look);
+    const all = sprites(h.life);
+    const k = all.findIndex((x) => x.type === 9);
+    assert.ok(k >= 0, 'drawn sitting');
+    assert.ok(k >= h.life.nearFrom, 'after the tree, in front of it');
+    assert.ok(all[k].f[10] > 8 && all[k].f[10] < 30, 'about ' + all[k].f[10].toFixed(0) + ' px tall on a 3840 px picture');
+    assert.ok(Math.abs(all[k].f[8]) === 1, 'facing one way or the other');
+    assert.equal(h.life.movers, 0, 'no more frames for a sitting bird');
+  });
+  assert.ok(sat > 50 && looks.size >= 2, 'its head turned: ' + looks.size + ' ways in ' + (sat * 0.05).toFixed(0) + ' s');
+  // and off: it drops forward, beats its wings, and is a soaring bird again
+  h.run(r.sit + 1);
+  assert.equal(r.mode, 'leave', 'flown off, out of the picture');
+  assert.ok(r.flapLeft > 0 || r.amp > 0, 'beating its wings');
+  const at = h.perch();
+  h.run(4);
+  assert.ok(Math.hypot(r.pos[0] - at[0], r.pos[1] - at[1], r.pos[2] - at[2]) > 0.01, 'and away from the tree');
+  assert.ok(!sprites(h.life).some((x) => x.type === 9));
+});
+
+test('the bird comes in to the tree and leaves it in one smooth movement: low, swooping up, braking evenly, and never a jump', () => {
+  const h = perchLife();
+  seedRandom(h.ctx, 8);
+  h.life.summon('perch');
+  const r = h.bird();
+  let prev = r.pos.slice();
+  let pv = null;
+  let worst = 0;
+  let worstAt = '';
+  let sitWas = null;
+  let hop = 0;
+  let fade = 0;
+  let lowest = 1e9;
+  let upAtTouch = 0;
+  let foldAtSit = -1;
+  let leftFor = 0;
+  let was = r.mode;
+  for (let k = 0; k < 2400 && leftFor < 3; k++) {
+    h.life.update(0.05, h.state, h.view);
+    const at = h.perch();
+    const v = r.pos.map((x, i) => (x - prev[i]) / 0.05);
+    // (sitting, it moves with the tree; the step on to it is covered by the settling)
+    const jerk = pv && r.mode !== 'perched' && was !== 'perched' ? Math.hypot(...v.map((x, i) => x - pv[i])) / 0.05 : 0;
+    if (jerk > worst) [worst, worstAt] = [jerk, r.mode + ' after ' + was + ', step ' + k];
+    if (r.mode === 'approach') lowest = Math.min(lowest, r.pos[1] - at[1]);
+    // on the picture: the sitting bird fades in where the flying one's body is and does not move as it takes over,
+    // and the two together are always one whole bird
+    const all = sprites(h.life);
+    const sit = all.find((x) => x.type === 9);
+    const fly = all.find((x) => x.type === 0);
+    if (sit) {
+      if (sitWas && r.mode !== 'leave') hop = Math.max(hop, Math.hypot(sit.f[0] - sitWas.f[0], sit.f[1] - sitWas.f[1]));
+      if (sitWas) fade = Math.max(fade, Math.abs(sit.f[6] - sitWas.f[6]));
+      else fade = Math.max(fade, sit.f[6]);
+      if (fly) assert.ok(Math.abs(sit.f[6] + fly.f[6] - 1) < 0.02, 'one whole bird: ' + sit.f[6] + ' + ' + fly.f[6]);
+      else assert.ok(sit.f[6] > 0.98 || r.mode !== 'perched');
+    }
+    sitWas = sit;
+    if (r.mode === 'settle' && was === 'approach') upAtTouch = v[1];
+    if (r.mode === 'perched' && was === 'settle') foldAtSit = r.fold;
+    if (r.mode === 'perched' && r.sit > 1) r.sit = 1;
+    if (r.mode === 'leave') leftFor += 0.05;
+    // (leaving, it is followed by its body again, not its feet: that step is not a movement)
+    pv = was === 'perched' ? null : v;
+    was = r.mode;
+    prev = r.pos.slice();
+  }
+  assert.ok(leftFor >= 3, 'it came, sat and left');
+  assert.ok(worst < 0.02, 'never a jerk: ' + (worst * 1000).toFixed(1) + ' m/s2 at most (' + worstAt + ')');
+  assert.ok(lowest < -0.0002 && lowest > -0.002, 'it comes in ' + (-lowest * 1000).toFixed(1) + ' m below its perch');
+  assert.ok(upAtTouch > 0.0003, 'and is rising as its feet touch: ' + (upAtTouch * 1000).toFixed(2) + ' m/s');
+  assert.equal(foldAtSit, 1, 'its wings are shut before it sits still');
+  assert.ok(hop < 1.5, 'the sitting bird does not hop as it takes over: ' + hop.toFixed(2) + ' px at most on a 3840 px picture');
+  assert.ok(fade < 0.3, 'and comes and goes by degrees: ' + fade.toFixed(2) + ' a step at most');
+  assert.ok(r.fold === 0, 'and open again on the way out');
+});
+
+test('a bird sits on the tree only in fair weather, only when one is about, one at a time, and not without a tree', () => {
+  // rain: none comes in, and one that is sitting leaves at once
+  const wet = perchLife();
+  wet.life.summon('perch');
+  const r = wet.bird();
+  assert.ok(wet.until(() => r.mode === 'perched', 60) >= 0, 'it came down');
+  r.sit = 1e6;
+  wet.state.weather.rain = 0.4;
+  wet.life.birds = true;
+  wet.run(0.2);
+  assert.notEqual(r.mode, 'perched', 'off when the rain starts');
+  // a gale: the one on its way in gives up
+  const gale = perchLife({ windSpeed: 45 });
+  gale.life.summon('perch');
+  const g = gale.life.raptors[0];
+  gale.run(1);
+  assert.ok(g && g.mode !== 'approach' && g.mode !== 'perched', 'no perching in a gale: ' + (g && g.mode));
+  // by itself: only a bird that is already about, near enough, and only one
+  const h = perchLife();
+  seedRandom(h.ctx, 12);
+  h.life._nextPerch = 0;
+  h.run(0.1);
+  assert.equal(h.life.raptors.filter((x) => x.mode === 'approach' && x.sp.span < 0.001).length, 1, 'a falcon comes in by itself');
+  assert.ok(h.life._nextPerch >= 300, 'and it is minutes before the next chance');
+  for (let i = 0; i < 3; i++) h.life.summon('raptor');
+  assert.ok(h.life.raptors.filter((x) => x.sp.span > 0.002).every((x) => x.mode !== 'approach'), 'the big soaring birds stay up');
+  const dark = perchLife();
+  dark.state.astro.sunAltDeg = -20;
+  dark.life._nextPerch = 0;
+  dark.run(0.1);
+  assert.equal(dark.life.raptors.length, 0, 'none at night');
+  h.life._nextPerch = 0;
+  h.run(0.1);
+  assert.equal(h.life.raptors.filter((x) => x.mode === 'approach' || x.mode === 'perched').length, 1, 'never two');
+  // no tree (switched off): nothing to sit on
+  const bare = perchLife();
+  bare.life.perchAt = () => null;
+  bare.life.summon('perch');
+  bare.life.summon('raptor');
+  bare.life._nextPerch = 0;
+  bare.run(0.5);
+  assert.ok(!bare.life.raptors.some((x) => x.mode === 'approach' || x.mode === 'perched'));
+  // main.js gives life the perch from the tree, and the renderer draws the near bird after the tree
+  assert.ok(readSrc('main.js').includes('const p = renderer.fg && renderer.fg.perchEye();'));
+  const rn = readSrc('engine/renderer.js');
+  assert.ok(/this\.fg\.draw\(state\);[^}]*\}\n      this\._setClip\(clip\);\n      this\._spritePass\(state, true\);/.test(rn) && rn.includes('this.fg.draw(state);\n          this._spritePass(state, true);'), 'in both kinds of frame');
+});
+
 // ---------------------------------------------------------------- the motion's clock (birds, leaves, the tree)
 // A frame that came seconds late moved every bird across the whole gap at once, and a gap over 2 s made the falling
 // leaves start over: on screen, birds and leaves vanished and appeared somewhere else.
@@ -3017,7 +4021,7 @@ test('the page moves birds and leaves on the motion clock, and a pause resumes i
   assert.ok(/sceneClock\.resume\(lastReal\);\s*env\.refreshSky\(\);/.test(main), 'a resume goes on from the held picture, with the sun where it is now');
   assert.ok(/renderer\.refreshSky\(\);\s*renderer\.forgetFrame\(\);/.test(main), 'and does not time the pause as a frame on the GPU');
   assert.ok(/renderer\.forgetFrame\(\);[^}]*renderer\.forgetPictures\(\);/.test(main), 'and draws the next scene whole, not from pictures kept before it');
-  assert.ok(/renderer\.setArea\(restMs \? restArea : null\);\s*const drew = renderer\.render\(state, dt\);/.test(main),
+  assert.ok(/renderer\.setArea\(restMs \? restArea : null\);\s*renderer\.onStill = showStill;\s*const drew = renderer\.render\(state, dt\);/.test(main),
     'the free screen\'s part of the width reaches the renderer, in the app\'s rest only');
   // measured on the UHD 730: at 20 fades a second the free screen took 14–16 % of the chip, as much as the old rest
   assert.ok(/if \(restMs && restArea\) rate = Math\.min\(rate, FADE_FPS\);/.test(main), 'and its fades come at the dissolve\'s rate, 10 a second');
@@ -3154,4 +4158,311 @@ test('a slow frame watched at every refresh still counts in full', () => {
   signal(true);
   assert.equal(r.frameDone(), true);
   near(r.gpuBusyMs, 400 - 8, 1e-9, 'the GPU really was busy that long');
+});
+
+// ---------------------------------------------------------------- 2.4.0 steps 10 to 12
+/** A small baked view for the place finders: 400 by 200, a degree to nine pixels, level ground 5 km off unless told otherwise. */
+function bakedView(over = {}) {
+  const v = { w: 400, h: 200, pxAng: 0.002, horizonY: 0.5, camY: 2.8 };
+  return { v, dist: () => 5, normalY: () => 0.95, bare: () => true, ...over };
+}
+
+test('the waterfall is put on the tallest steep bare rock face in view, below the snow, and carries more water after rain', () => {
+  const { LE } = load(RENDER_FILES);
+  const R = LE.Renderer;
+  const cliff = (x, y) => x >= 198 && x <= 202 && y >= 80 && y < 140;
+  const b = bakedView({ normalY: (x, y) => (cliff(x, y) ? 0.2 : 0.95) });
+  const pick = (o = {}, maxY = 3.9) => R.pickFall(400, 40, 170, o.dist || b.dist, o.normalY || b.normalY, o.bare || b.bare, b.v, maxY);
+  const f = pick();
+  assert.ok(f, 'found');
+  near(f.x, 0, 0.02, 'straight ahead');
+  near(f.z, 5, 0.03, '5 km off');
+  near(f.y, 2.8 + 39 * 0.002 * 5, 0.02, 'its top is the top of the face');
+  near(f.foot, 2.8 - 20 * 0.002 * 5, 0.02, 'its foot the foot of the face');
+  assert.equal(pick({ normalY: () => 0.95 }), null, 'no steep face, no fall');
+  assert.equal(pick({ bare: () => false }), null, 'not down a forested slope');
+  assert.equal(pick({}, 3.0), null, 'not above the snow, where it would be frozen all year');
+  assert.equal(pick({ normalY: (x, y) => (cliff(x, y) && y < 90 ? 0.2 : 0.95) }), null, 'a face 100 m high is too small to carry one');
+  assert.equal(pick({ dist: () => 14 }), null, 'nor one too far off to see');
+  // a face broken by a nearer ridge half way up is two faces, not one
+  const split = pick({ dist: (x, y) => (y < 110 ? 5 : 6.5) });
+  assert.ok(split && split.y - split.foot < 0.35, 'two faces: ' + (split.y - split.foot).toFixed(2));
+  // of two faces the one that stands taller in the picture
+  const two = pick({ normalY: (x, y) => (cliff(x, y) || (x >= 98 && x <= 102 && y >= 100 && y < 130) ? 0.2 : 0.95) });
+  near(two.x, 0, 0.02, 'the taller of two');
+  assert.equal(R.fallFlow(0), 0.3, 'a thread in dry weather');
+  assert.equal(R.fallFlow(1), 1, 'in spate after rain');
+  assert.ok(R.fallFlow(0.5) > R.fallFlow(0.2) && R.fallFlow(7) === 1);
+  const sh = readSrc('engine/shaders/composite.js');
+  assert.ok(sh.includes('float wide = mix(0.0012, 0.0045, uFallFlow) * (0.6 + 0.8 * along);'), 'wider with more water, and towards its foot');
+  assert.ok(sh.includes('if (uFallFlow > 0.0 && !ledge) alb = mix(alb, vec3(0.78, 0.83, 0.88), waterfall(pos) * (1.0 - snow) * (1.0 - canopy));'), 'white water on the rock; hidden under snow');
+  assert.ok(sh.includes('abs(dot(rel, sight)) > 0.4'), 'only on its own face, not on ridges in front of it or behind');
+  const src = readSrc('engine/renderer.js');
+  assert.ok(src.includes('this._findFall();') && src.includes("p.set('uFallFlow', fall && this.cfg.waterfall !== false ? Renderer.fallFlow(w.wet) : 0);"));
+  // cloud shadows crossing the hills were there already: the deck's own density along the way to the sun
+  assert.ok(sh.includes('float cloudShadow(vec3 pos) {') && sh.includes('vec3 p = pos + L / ly * (hMid - pos.y);'));
+});
+
+test('festival nights: Tihar and Diwali by the year, every house lit with oil lamps, small fireworks over the villages', () => {
+  const { LE } = load(['engine/environment.js']);
+  const fest = (y, m, d, h) => LE.Environment.festival(new Date(y, m - 1, d, h, 0, 0));
+  assert.equal(fest(2026, 11, 8, 20), 1, 'the night of Laxmi Puja');
+  assert.equal(fest(2026, 11, 9, 3), 1, 'still that night after midnight');
+  assert.equal(fest(2026, 11, 7, 21), 0.5, 'the evening before');
+  assert.equal(fest(2026, 11, 9, 20), 0.7, 'the evening after');
+  assert.equal(fest(2026, 11, 10, 20), 0.5, 'Bhai Tika');
+  assert.equal(fest(2026, 11, 11, 20), 0, 'over');
+  assert.equal(fest(2026, 11, 6, 20), 0, 'not yet');
+  assert.equal(fest(2026, 5, 15, 22), 0, 'an ordinary night');
+  assert.equal(fest(2027, 10, 29, 22), 1, 'it moves with the moon: 2027');
+  assert.equal(fest(2025, 10, 20, 22), 1, '2025');
+  assert.equal(fest(2050, 11, 1, 22), 0, 'a year not in the table: no festival, never a guess');
+  assert.ok(readSrc('engine/environment.js').includes('s.festival = Environment.festival(s.now);'));
+  // the lamps
+  const sh = readSrc('engine/shaders/composite.js');
+  assert.ok(sh.includes('float fest = uFestival > 0.001 ? step(fract(id * 9.1), uFestival) : 0.0;'), 'that share of the houses');
+  assert.ok(sh.includes('float on = clamp(evening + allNight + earlyRiser + fest, 0.0, 1.0);') && sh.includes('on *= max(lit, max(allNight, fest));'), 'lit all night');
+  assert.ok(sh.includes('c = mix(c, vec3(1.0, 0.56, 0.22), fest);') && sh.includes('* (1.0 + 0.5 * fest);'), 'warmer and brighter');
+  assert.ok(readSrc('engine/renderer.js').includes("p.set('uFestival', this.cfg.life === false || this.cfg.lights === false ? 0 : Math.max(state.festival || 0, this.festForce || 0));"), 'part of the village lights');
+  // the fireworks
+  const night = (over = {}, festival = 1) => {
+    const h = hills(21, over);
+    h.state.festival = festival;
+    h.life.villageSmoke = false;
+    seedRandom(h.ctx, 11);
+    return h;
+  };
+  const count = (h, seconds = 900) => {
+    const seen = new Set();
+    h.run(seconds, () => h.life.fireworks.forEach((f) => seen.add(f)));
+    return seen.size;
+  };
+  const main = count(night());
+  assert.ok(main >= 8 && main <= 60, 'on the night itself, in 15 minutes: ' + main);
+  const beside = count(night({}, 0.5));
+  assert.ok(beside >= 2 && beside < main, 'fewer on the evenings around it: ' + beside);
+  assert.equal(count(night({}, 0)), 0, 'none on an ordinary night');
+  assert.equal(count(night({ rain: 0.5 })), 0, 'none in rain');
+  assert.equal(count(night({ fog: 0.9 })), 0, 'none in fog');
+  const dark = night();
+  dark.life.lights = false;
+  assert.equal(count(dark), 0, 'none with the village lights turned off');
+  const day = hills(12);
+  day.state.festival = 1;
+  assert.equal(count(day), 0, 'none by day');
+  // one rocket: up from a village, slowing to the top of its rise, then a ball of sparks there
+  const h = night();
+  const f = h.life._newFirework();
+  const home = h.life.smokeSources.reduce((a, b) => (Math.hypot(b.x - f.at[0], b.z - f.at[2]) < Math.hypot(a.x - f.at[0], a.z - f.at[2]) ? b : a));
+  assert.ok(Math.hypot(home.x - f.at[0], home.z - f.at[2]) < 0.045, 'from a village');
+  assert.ok(f.height >= 0.04 && f.height <= 0.07 && f.radius >= 0.012 && f.radius <= 0.022 && f.life <= 2.2, 'a small one');
+  const yAt = (age) => h.LE.Life.fireworkAt({ ...f, age })[1];
+  near(yAt(-f.rise), f.at[1], 1e-9, 'from the ground');
+  near(yAt(0), f.at[1] + f.height, 1e-9, 'to its height');
+  assert.ok(yAt(-f.rise * 0.5) - yAt(-f.rise) > yAt(0) - yAt(-f.rise * 0.5), 'slowing as it climbs');
+  near(yAt(1), yAt(0), 1e-9, 'the burst stays where it went off');
+  h.life.fireworks = [Object.assign(f, { age: 0.5 })];
+  h.life._write(h.state);
+  const sp = sprites(h.life).filter((x) => x.type === 10);
+  assert.equal(sp.length, 1);
+  const p = h.LE.Life.fireworkAt(f);
+  const dist = Math.hypot(p[0], p[1] - h.view.camY, p[2]);
+  near(sp[0].f[11], f.radius / dist / h.view.pxAng, 1e-3, 'as big on the picture as a burst that size, that far off');
+  assert.ok(sp[0].f[2] >= sp[0].f[11] * 1.8, 'with room for the sparks to sink');
+  const ss = readSrc('engine/shaders/sprites.js');
+  assert.ok(ss.includes('if (type == 10) {') && ss.includes('float thrown = 1.0 - exp(-age * 3.5);') && ss.includes('sp.y -= 0.15 * vC.w * age * age;'));
+  assert.ok(ss.includes('if (t > 0.0 && t < dist) discard;'), 'a nearer ridge hides it');
+});
+
+test('more life: black kites over the near villages, herds on the meadows by day, a monastery lamp at night, a helicopter now and then', () => {
+  // kites
+  const h = hills(12);
+  h.life.birds = true;
+  h.life.villageSmoke = false;
+  const villageAt = { x: 0.6, y: 2.3, z: 1.9 };
+  h.life.setSmokeSources([villageAt, { x: -3, y: 2.4, z: 8 }]);
+  seedRandom(h.ctx, 21);
+  const isKite = (r) => r.sp.span === 0.0015;
+  let most = 0;
+  let circled = 0;
+  h.run(1500, () => {
+    const kites = h.life.raptors.filter(isKite);
+    most = Math.max(most, kites.filter((k) => k.mode !== 'leave').length); // (one on its way out does not count)
+    for (const k of kites) {
+      if (k.mode !== 'circle') continue;
+      circled++;
+      assert.ok(Math.hypot(k.pos[0] - villageAt.x, k.pos[2] - villageAt.z) < 0.17, 'over the village');
+      assert.ok(k.pos[1] - villageAt.y >= 0.049 && k.pos[1] - villageAt.y <= 0.18, 'low over its roofs: ' + (k.pos[1] - villageAt.y).toFixed(3));
+    }
+  });
+  assert.ok(most >= 1 && most <= 3, 'one or two: ' + most);
+  assert.ok(circled > 100, 'and they circle there: ' + circled);
+  const far = hills(12);
+  far.life.birds = true;
+  far.life.villageSmoke = false;
+  far.life.setSmokeSources([{ x: -3, y: 2.4, z: 8 }]);
+  seedRandom(far.ctx, 21);
+  far.run(600, () => assert.equal(far.life.raptors.filter(isKite).length, 0, 'none over a village too far off to see one'));
+  const nightK = hills(23);
+  nightK.life.birds = true;
+  nightK.life.villageSmoke = false;
+  nightK.life.setSmokeSources([villageAt]);
+  nightK.run(300, () => assert.equal(nightK.life.raptors.filter(isKite).length, 0, 'none at night'));
+
+  // herds
+  const g = hills(12);
+  g.life.villageSmoke = false;
+  const n = [0.12, 0, 0.1];
+  n[1] = Math.sqrt(1 - n[0] * n[0] - n[2] * n[2]);
+  const meadow = { x: 0.3, y: 2.5, z: 1.4, n };
+  seedRandom(g.ctx, 31);
+  g.life.setPastures([meadow]);
+  const herd = g.life.herds[0];
+  assert.ok(herd.animals.length >= 4 && herd.animals.length <= 8, herd.animals.length + ' animals');
+  let moved = 0;
+  let last = herd.animals.map((a) => [a.x, a.z]);
+  g.run(1200, () => {
+    herd.animals.forEach((a, i) => {
+      const step = Math.hypot(a.x - last[i][0], a.z - last[i][1]);
+      assert.ok(step <= 0.00025 + 1e-9, 'a slow walk at most');
+      moved += step;
+      assert.ok(Math.hypot(a.x, a.z) <= 0.0301, 'within 30 m of the middle of the herd');
+      const p = g.LE.Life.animalAt(herd, a);
+      near((p[0] - meadow.x) * n[0] + (p[1] - meadow.y) * n[1] + (p[2] - meadow.z) * n[2], 0, 1e-9, 'on the slope of the meadow');
+    });
+    last = herd.animals.map((a) => [a.x, a.z]);
+  });
+  assert.ok(moved > 0.05, 'they wander: ' + (moved * 1000).toFixed(0) + ' m between them in 20 minutes');
+  g.state.snowLine = 5;
+  g.life._write(g.state);
+  const beasts = () => sprites(g.life).filter((x) => x.type === 11 && x.f[8] === 0);
+  assert.equal(beasts().length, herd.animals.length, 'each one drawn');
+  for (const b of beasts()) assert.ok(b.f[2] >= 1.2 && b.f[6] > 0 && b.f[6] <= 1, 'at least a pixel wide, fainter when really smaller');
+  g.state.snowLine = 2.4;
+  g.life._write(g.state);
+  assert.equal(beasts().length, 0, 'not on snow');
+  g.state.snowLine = 5;
+  g.life.animals = false;
+  g.life.update(1, g.state, g.view);
+  assert.equal(beasts().length, 0, 'the switch');
+  const dusk = hills(22);
+  dusk.life.villageSmoke = false;
+  dusk.life.setPastures([meadow]);
+  dusk.state.snowLine = 5;
+  dusk.life.update(1, dusk.state, dusk.view);
+  assert.equal(sprites(dusk.life).filter((x) => x.type === 11 && x.f[8] === 0).length, 0, 'taken in at night');
+
+  // the monastery
+  const lamp = (hh, glow, lights = true) => {
+    const m = hills(hh);
+    m.life.villageSmoke = false;
+    m.life.lights = lights;
+    m.life.setGompa({ x: 1, y: 3.1, z: 6 });
+    m.state.lampGlow = glow;
+    m.state.snowLine = 5;
+    m.life.update(1, m.state, m.view);
+    return sprites(m.life).filter((x) => x.type === 11 && x.f[8] === 1);
+  };
+  assert.equal(lamp(22, 1).length, 1, 'its lamp at night');
+  assert.equal(lamp(12, 0).length, 0, 'not by day');
+  assert.equal(lamp(22, 1, false).length, 0, 'it goes with the village lights');
+
+  // the helicopter
+  const s = skyLife(12, 0);
+  seedRandom(s.ctx, 41);
+  for (let k = 0; k < 30; k++) {
+    const c = s.life._newHeli(false);
+    const at = (c2) => s.LE.Life.heliAt(c2);
+    const p0 = at(c);
+    assert.ok(Math.abs(Math.atan2(p0[0], p0[2])) > s.view.hfov / 2, 'it comes in from out of sight');
+    let nearest = 1e9;
+    for (let q = c.s; q <= c.s1; q += 0.05) nearest = Math.min(nearest, Math.hypot(c.C[0] + c.dir[0] * q, c.C[1] + c.dir[1] * q));
+    // near enough to be seen for what it is: at 2.5 to 7 km it was a dot 6 px long (the user, 2026-11-17)
+    assert.ok(nearest > 0.7 && nearest <= 2.21, 'a km or two off: ' + nearest.toFixed(1));
+    assert.ok(c.y >= s.view.camY - 0.09 * nearest / 0.95 && c.y <= s.view.camY + 0.21 * nearest / 0.95, 'about the height of the eye, inside the picture');
+    assert.ok([0, 1, 2].includes(c.paint), 'in one of three paints');
+  }
+  // on the picture: tens of pixels long, with room in its patch for its lights; by day they are off, by night on,
+  // the red one flashing; and it is drawn at the birds' frame rate while it crosses
+  const heliSprite = (hour) => {
+    const n = skyLife(hour, 0);
+    seedRandom(n.ctx, 3);
+    n.life.summon('helicopter');
+    const flashes = new Set();
+    let f = null;
+    for (let k = 0; k < 40; k++) {
+      n.life.update(0.05, n.state, n.view);
+      f = sprites(n.life).find((x) => x.type === 11 && x.f[8] === 2).f;
+      flashes.add(f[14]);
+    }
+    return { f, flashes, movers: n.life.movers };
+  };
+  const hd = heliSprite(12);
+  assert.ok(hd.f[12] * 2 >= 17 && hd.f[12] * 2 <= 60, 'its length on the picture: ' + (hd.f[12] * 2).toFixed(0) + ' px');
+  assert.ok(hd.f[2] > hd.f[12] + 5 && hd.f[3] > hd.f[12] * 0.45 + 5, 'room for the rotor and the lights');
+  assert.equal(hd.f[13], 0, 'no lights by day');
+  assert.ok(hd.movers >= 1, 'it moves, so it is drawn often');
+  const hn = heliSprite(23);
+  assert.equal(hn.f[13], 1, 'lights on at night');
+  assert.ok(hn.flashes.has(0) && hn.flashes.has(1), 'the red light flashes');
+  const sp = readSrc('engine/shaders/sprites.js');
+  assert.ok(sp.includes('float cabin = ') && sp.includes('float boom = ') && sp.includes('float fin = ') && sp.includes('float disc = ') && sp.includes('float tailRotor = '), 'cabin, tail boom, fin, rotor and tail rotor');
+  assert.ok(sp.includes('fragColor = vec4(grade(L * T + skyH * (1.0 - T)) * a + lamps, a);'), 'its lights are added to it');
+  // the contrail by night: it was a black line over the stars; it hides less in the dark and is never darker than the sky
+  assert.ok(sp.includes('* seen * alpha * mix(1.0, 0.4, uNight);') && sp.includes('lightC = max(lightC, skyLUT(rd) * 1.15);'), 'a trail is never darker than the sky behind it');
+  {
+  s.life.heli = s.life._newHeli(false);
+  const before = s.LE.Life.heliAt(s.life.heli);
+  s.life.update(1, s.state, s.view);
+  const after = s.LE.Life.heliAt(s.life.heli);
+  near(Math.hypot(after[0] - before[0], after[2] - before[2]), 0.045, 1e-6, '45 m/s');
+  near(after[1], before[1], 1e-12, 'level');
+  }
+  let gone = false;
+  for (let k = 0; k < 2000 && !gone; k++) {
+    s.life.update(1, s.state, s.view);
+    gone = !s.life.heli;
+  }
+  assert.ok(gone, 'and it leaves');
+  s.life.summon('helicopter');
+  assert.ok(s.life.heli, 'the test panel calls one up');
+  s.life._write(s.state);
+  assert.equal(sprites(s.life).filter((x) => x.type === 11 && x.f[8] === 2).length, 1);
+  s.life.planes = false;
+  s.life.update(1, s.state, s.view);
+  assert.equal(s.life.heli, null, 'it goes with the aircraft switch');
+  const wet = skyLife(12, 0);
+  wet.state.weather.rain = 0.6;
+  wet.life._nextHeli = 0;
+  wet.life.update(1, wet.state, wet.view);
+  assert.equal(wet.life.heli, null, 'none sets out in rain');
+
+  // their places, found in the baked view
+  const { LE } = load(RENDER_FILES);
+  const R = LE.Renderer;
+  const b = bakedView();
+  const flat = () => [0, 1, 0];
+  const grassAt = (x, y) => y >= 60 && y < 90 && ((x > 40 && x < 120) || (x > 280 && x < 360));
+  const near2 = { ...b, dist: (x, y) => (y < 90 ? 2 : 6) };
+  const P = R.pickPastures(400, 40, 170, near2.dist, flat, grassAt, b.v);
+  assert.ok(P.length >= 2 && P.length <= 3, P.length + ' meadows');
+  for (let i = 0; i < P.length; i++) for (let j = 0; j < i; j++) assert.ok(Math.hypot(P[i].x - P[j].x, P[i].z - P[j].z) > 0.4, 'apart');
+  assert.equal(R.pickPastures(400, 40, 170, () => 6, flat, grassAt, b.v).length, 0, 'not so far off that an animal would not show');
+  assert.equal(R.pickPastures(400, 40, 170, near2.dist, () => [0.6, 0.8, 0], grassAt, b.v).length, 0, 'not on a steep slope');
+  assert.equal(R.pickPastures(400, 40, 170, near2.dist, flat, () => false, b.v).length, 0, 'only on grass');
+  // a ridge 5 km off against land 12 km off, up to row 120; above it the far land, then sky
+  const ridge = R.pickRidge(400, 40, 170, (x, y) => (y <= 120 ? 5 : y < 150 ? 12 : 0), b.v, 3.9);
+  assert.ok(ridge, 'a ridge found');
+  near(ridge.t, 5, 1e-9, 'on the nearer ridge');
+  near(ridge.y, 2.8 + 20 * 0.002 * 5, 0.03, 'at its crest');
+  assert.equal(R.pickRidge(400, 40, 170, () => 5, b.v, 3.9), null, 'a plain slope has no ridge line');
+  assert.equal(R.pickRidge(400, 40, 170, (x, y) => (y <= 120 ? 5 : 0), b.v, 2.9), null, 'not above the snow');
+  const src = readSrc('engine/renderer.js');
+  assert.ok(src.includes('this.life.setPastures(this.pastures);') && src.includes('this.life.setGompa(this.gompa);'));
+  const ss = readSrc('engine/shaders/sprites.js');
+  assert.ok(ss.includes('if (type == 11) {') && ss.includes('if (t > 0.0 && t < dist * 0.985 - 0.03) discard;'), 'only a ridge clearly nearer hides them');
+  // the switch for the animals, like the others
+  assert.equal(load(['config.js']).LE.config.animals, true);
+  assert.equal(load(['config.js'], { search: '?animals=0' }).LE.config.animals, false);
+  assert.ok(readSrc('services/host.js').includes("animals: [c.animals, 'animals'],") && readSrc('main.js').includes('life.animals = cfg.animals !== false;'));
 });

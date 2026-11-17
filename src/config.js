@@ -8,7 +8,7 @@
   const LE = (window.LE = window.LE || {});
 
   LE.config = {
-    version: '2.3.0',
+    version: '2.4.0',
 
     location: {
       name: 'Dhaka',
@@ -120,6 +120,10 @@
   c.fires = q.get('fires') !== '0'; // a field burning on a hill now and then
   c.lights = q.get('lights') !== '0'; // lights in the villages at night
   c.shootingStars = q.get('stars') !== '0'; // meteors and satellites. The stars themselves stay
+  c.rainbow = q.get('rainbow') !== '0'; // a rainbow when the sun comes out on the rain
+  c.planes = q.get('planes') !== '0'; // an airliner crossing high above now and then, with its contrail
+  c.animals = q.get('animals') !== '0'; // herds grazing on the near meadows by day
+  c.flags = q.get('flags') !== '0'; // the line of prayer flags from the tree to a stake on the rock
   if (['right-bottom', 'right-top', 'left-bottom', 'left-top'].includes(q.get('corner'))) c.ui.panelPosition = q.get('corner');
   if (['small', 'medium', 'large'].includes(q.get('panelsize'))) c.ui.panelSize = q.get('panelsize');
 

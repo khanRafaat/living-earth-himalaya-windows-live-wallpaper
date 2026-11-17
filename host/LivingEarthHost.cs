@@ -51,8 +51,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Khan Rafaat Abtahe")]
 [assembly: AssemblyCopyright("© 2026 Khan Rafaat Abtahe. MIT licence")]
 [assembly: AssemblyDescription("Living Earth Himalaya live wallpaper. Author: Khan Rafaat Abtahe")]
-[assembly: AssemblyVersion("2.3.0.0")]
-[assembly: AssemblyFileVersion("2.3.0.0")]
+[assembly: AssemblyVersion("2.4.0.0")]
+[assembly: AssemblyFileVersion("2.4.0.0")]
 
 namespace LivingEarth
 {
@@ -180,7 +180,7 @@ namespace LivingEarth
         public Place Manual;   // the place chosen by hand
         public Place Detected; // the last place found automatically
         public bool Road = true, Birds = true, Leaves = true; // what is in the scene
-        public bool Tree = true, Mist = true, Smoke = true, Fires = true, Lights = true, Stars = true;
+        public bool Tree = true, Mist = true, Smoke = true, Fires = true, Lights = true, Stars = true, Planes = true, Rainbow = true, Flags = true, Animals = true;
         public bool Banners = true; // clouds streaming from the high peaks in the wind
         public bool Panel = true; // the clock and weather panel
         public string Corner = "right-bottom";
@@ -238,6 +238,10 @@ namespace LivingEarth
             s.Fires = !(v.TryGetValue("fires", out x) && x == "off");
             s.Lights = !(v.TryGetValue("lights", out x) && x == "off");
             s.Stars = !(v.TryGetValue("stars", out x) && x == "off");
+            s.Planes = !(v.TryGetValue("planes", out x) && x == "off");
+            s.Rainbow = !(v.TryGetValue("rainbow", out x) && x == "off");
+            s.Flags = !(v.TryGetValue("flags", out x) && x == "off");
+            s.Animals = !(v.TryGetValue("animals", out x) && x == "off");
             s.Panel = !(v.TryGetValue("panel", out x) && x == "off");
             if (v.TryGetValue("corner", out x) && Array.IndexOf(Corners, x) >= 0) s.Corner = x;
             if (v.TryGetValue("panelsize", out x) && Array.IndexOf(PanelSizes, x) >= 0) s.PanelSize = x;
@@ -264,6 +268,10 @@ namespace LivingEarth
             b.Append("fires=").Append(Fires ? "on" : "off").Append("\r\n");
             b.Append("lights=").Append(Lights ? "on" : "off").Append("\r\n");
             b.Append("stars=").Append(Stars ? "on" : "off").Append("\r\n");
+            b.Append("planes=").Append(Planes ? "on" : "off").Append("\r\n");
+            b.Append("rainbow=").Append(Rainbow ? "on" : "off").Append("\r\n");
+            b.Append("flags=").Append(Flags ? "on" : "off").Append("\r\n");
+            b.Append("animals=").Append(Animals ? "on" : "off").Append("\r\n");
             b.Append("panel=").Append(Panel ? "on" : "off").Append("\r\n");
             b.Append("corner=").Append(Corner).Append("\r\n");
             b.Append("panelsize=").Append(PanelSize).Append("\r\n");
@@ -1110,6 +1118,10 @@ namespace LivingEarth
                 ", mist " + (settings.Mist ? "on" : "off") + ", peak clouds " + (settings.Banners ? "on" : "off") + ", smoke " + (settings.Smoke ? "on" : "off") +
                 ", fires " + (settings.Fires ? "on" : "off") + ", village lights " + (settings.Lights ? "on" : "off") +
                 ", shooting stars " + (settings.Stars ? "on" : "off") +
+                ", aircraft " + (settings.Planes ? "on" : "off") +
+                ", rainbow " + (settings.Rainbow ? "on" : "off") +
+                ", prayer flags " + (settings.Flags ? "on" : "off") +
+                ", grazing animals " + (settings.Animals ? "on" : "off") +
                 ", panel " + (settings.Panel ? settings.Corner + " " + settings.PanelSize : "hidden") +
                 ", Windows background " + (settings.WindowsBackground ? "on" : "off"));
             if (background != null && hadBackground && !settings.WindowsBackground && background.Restore()) PlaceSoon();
@@ -1530,6 +1542,10 @@ namespace LivingEarth
                 js.Append(", fires: ").Append(settings.Fires ? "true" : "false");
                 js.Append(", lights: ").Append(settings.Lights ? "true" : "false");
                 js.Append(", stars: ").Append(settings.Stars ? "true" : "false");
+                js.Append(", planes: ").Append(settings.Planes ? "true" : "false");
+                js.Append(", rainbow: ").Append(settings.Rainbow ? "true" : "false");
+                js.Append(", flags: ").Append(settings.Flags ? "true" : "false");
+                js.Append(", animals: ").Append(settings.Animals ? "true" : "false");
                 js.Append(", panel: ").Append(settings.Panel ? "true" : "false");
                 js.Append(", corner: ").Append(Js(settings.Corner));
                 js.Append(", panelSize: ").Append(Js(settings.PanelSize));
@@ -1603,6 +1619,10 @@ namespace LivingEarth
             if (!settings.Fires) q.Append("&fires=0");
             if (!settings.Lights) q.Append("&lights=0");
             if (!settings.Stars) q.Append("&stars=0");
+            if (!settings.Planes) q.Append("&planes=0");
+            if (!settings.Rainbow) q.Append("&rainbow=0");
+            if (!settings.Flags) q.Append("&flags=0");
+            if (!settings.Animals) q.Append("&animals=0");
             if (!settings.Panel) q.Append("&panel=0");
             q.Append("&corner=").Append(settings.Corner);
             q.Append("&panelsize=").Append(settings.PanelSize);
@@ -2482,7 +2502,7 @@ namespace LivingEarth
         private readonly ListBox results;
         private readonly ComboBox qualityBox, deviceBox, sizeBox, trafficBox;
         private readonly CheckBox startupBox, roadBox, birdsBox, leavesBox, windowsBox, updateBox;
-        private readonly CheckBox treeBox, mistBox, bannersBox, smokeBox, firesBox, lightsBox, starsBox, panelBox;
+        private readonly CheckBox treeBox, mistBox, bannersBox, smokeBox, firesBox, lightsBox, starsBox, planesBox, rainbowBox, flagsBox, animalsBox, panelBox;
         private readonly RadioButton topLeft, topRight, bottomLeft, bottomRight;
         private Place detected, manual;
         private int detectRun, searchRun;
@@ -2583,7 +2603,13 @@ namespace LivingEarth
             firesBox = Check("Burning fields", c4, y + 24, s.Fires);
             lightsBox = Check("Village lights", c1, y + 48, s.Lights);
             starsBox = Check("Shooting stars", c2, y + 48, s.Stars);
-            y += 76;
+            planesBox = Check("Aircraft", c3, y + 48, s.Planes);
+            rainbowBox = Check("Rainbow", c4, y + 48, s.Rainbow);
+            flagsBox = Check("Prayer flags", c1, y + 72, s.Flags);
+            flagsBox.Enabled = s.Tree; // they hang from the tree
+            treeBox.CheckedChanged += delegate { flagsBox.Enabled = treeBox.Checked; };
+            animalsBox = Check("Grazing animals", c2, y + 72, s.Animals);
+            y += 100;
 
             // ---- the clock and weather panel: whether it shows, its corner (laid out like the screen) and its size
             y = Heading("Clock and weather panel", y);
@@ -2839,6 +2865,10 @@ namespace LivingEarth
             s.Fires = firesBox.Checked;
             s.Lights = lightsBox.Checked;
             s.Stars = starsBox.Checked;
+            s.Planes = planesBox.Checked;
+            s.Rainbow = rainbowBox.Checked;
+            s.Flags = flagsBox.Checked;
+            s.Animals = animalsBox.Checked;
             s.Panel = panelBox.Checked;
             s.Corner = topLeft.Checked ? "left-top" : topRight.Checked ? "right-top" : bottomLeft.Checked ? "left-bottom" : "right-bottom";
             s.PanelSize = Settings.PanelSizes[Math.Max(0, sizeBox.SelectedIndex)];

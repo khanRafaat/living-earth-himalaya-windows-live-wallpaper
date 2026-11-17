@@ -344,6 +344,10 @@
             },
             ...[
               ['Shooting stars', 'shootingStars', 'Meteors and satellites. The stars stay'],
+              ['Aircraft', 'planes', 'An airliner crossing high above now and then, with its contrail'],
+              ['Rainbow', 'rainbow', 'A rainbow when the sun comes out on the rain, opposite the sun'],
+              ['Grazing animals', 'animals', 'Small herds on the near meadows by day, taken in at dusk'],
+              ['Prayer flags', 'flags', 'A line of prayer flags from the tree to a stake on the rock, moved by the real wind. They go with the tree'],
               ['Village lights', 'lights', 'Lights in the houses at night'],
               ['Forest mist', 'mist', 'Mist rising off the forest when the air is humid or after rain'],
               ['Peak clouds', 'banners', 'Clouds streaming downwind from the high peaks, when the air is moist and the wind blows up there'],
@@ -373,6 +377,7 @@
           ],
           buttons: [
             ['Raptor', () => life.summon('raptor'), 'Birds leave in rain, snow, fog and at night'],
+            ['Raptor on tree', () => life.summon('perch'), 'A small falcon comes in to sit on the top of the tree for a while, then flies off. Not in rain or strong wind'],
             ['Flock', () => life.summon('flock'), 'Birds leave in rain, snow, fog and at night'],
             ['Geese', () => life.summon('geese'), 'Birds leave in rain, snow, fog and at night'],
             ['Meteor', () => life.summon('meteor'), 'Shows in a dark sky'],
@@ -382,9 +387,17 @@
             ['Village smoke', () => life.summon('smoke'), 'Smoke from houses on the hills, where houses are in view'],
             ['Burning field', () => life.summon('fire'), 'A field burning on a hill: a tall plume, glowing at its foot after dark'],
             ['Satellite', () => life.summon('satellite'), 'Shows in a dark sky'],
+            ['Rainbow', () => { const R = renderer(); if (R) { R.bowForce = 1; clearTimeout(R._bowForceEnd); R._bowForceEnd = setTimeout(() => (R.bowForce = 0), 120000); } }, 'For two minutes, whatever the weather. It stands opposite the sun, so it shows only with the sun low and behind the view: late afternoon here'],
+            ['Festival night', () => { const R = renderer(); if (R) { R.festForce = life.festForce = 1; clearTimeout(R._festForceEnd); R._festForceEnd = setTimeout(() => (R.festForce = life.festForce = 0), 180000); life.summon('firework'); } }, 'For three minutes, as on the night of Tihar / Diwali: every house lit with oil lamps, and small fireworks over the villages. Shows after dark'],
+            ['Black kite', () => life.summon('kite'), 'Circling low over a village within 3 km, if one is in view. It belongs to the birds'],
+            ['Helicopter', () => life.summon('helicopter'), 'Part of the way along the valley, a few km off. It belongs to the aircraft'],
+            ['Aircraft', () => life.summon('plane'), 'An airliner part of the way across the sky. Its trail is long where there is high cloud, short in dry air'],
             ['Bus', () => life.summon('bus'), 'Somewhere on the road in view, going either way'],
             ['Jeep', () => life.summon('jeep'), 'Somewhere on the road in view, going either way'],
             ['Motorcycle', () => life.summon('motorcycle'), 'Somewhere on the road in view, going either way'],
+            ['Lorry', () => life.summon('lorry'), 'Somewhere on the road in view, going either way'],
+            ['Army convoy', () => life.summon('convoy'), 'A jeep leading three to six lorries, hazard lights on. Others pass the whole column or wait behind it'],
+            ['Ambulance', () => life.summon('ambulance'), 'Red and blue light on its roof. Those ahead of it pull in and slow down to let it by'],
             [
               'Lightning',
               () => {

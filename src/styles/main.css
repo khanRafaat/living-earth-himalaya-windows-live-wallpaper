@@ -29,6 +29,15 @@ body {
   display: block;
 }
 
+/* area rest: a still copy of the part of the scene behind your work (main.js showStill) */
+.still {
+  position: fixed;
+  top: 0;
+  height: 100%;
+  display: none;
+  pointer-events: none;
+}
+
 /* ---------- start-up veil ---------- */
 #veil {
   position: fixed;

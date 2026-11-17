@@ -250,6 +250,60 @@ void main() {
   gl_Position = projectEye(vPos);
 }`;
 
+  // Prayer flags (foreground.js buildFlags): squares of thin cotton hanging from a line, and the line and its stake.
+  // A flag hangs from its top edge. The wind lifts it away from hanging straight down, further in a gust, and waves
+  // run through it downwind, larger the harder it blows; in still air it hangs still.
+  S.treeFlagVertex = () => `#version 300 es
+precision highp float;
+layout(location = 0) in vec3 aP;   // a flag: the middle of its top edge on the line; the line and the stake: the point itself
+layout(location = 1) in vec4 aQ;   // a flag: along the line from there (m), down the cloth (m), its own phase, 5; else 0
+layout(location = 2) in vec3 aCol; // a flag's colour
+layout(location = 3) in vec3 aT;   // a flag: the way the line runs; the line and the stake: the surface normal
+${treeVS}
+out vec3 vPos;
+out vec3 vN;
+out vec4 vInfo;
+out vec2 vUV;
+out vec2 vBark;
+out vec3 vClumpN;
+out vec3 vSide;
+// Where a point of the cloth is, from the middle of its top edge: x m along the line, d m down the cloth.
+// The flag is held all along its top edge, so only the part of the wind that blows across the line can lift it;
+// the part along the line drags its hem that way. The waves run through the cloth the way the wind blows: down it
+// in a wind across the line, from one side of the flag to the other in a wind along the line.
+vec3 cloth(vec3 T, float x, float d, float phase, float gust) {
+  vec3 c = normalize(cross(T, vec3(0.0, 1.0, 0.0)));
+  float across = dot(uWindDir, c);
+  float along = dot(uWindDir, T);
+  float blow = clamp(uWindStr * (0.55 + 0.35 * gust), 0.0, 1.35);
+  float lift = blow * abs(across);
+  float run = x * along + d * sqrt(max(1.0 - along * along, 0.0));
+  float wave = sin(uFlutter * 9.0 + phase - run * 14.0) * 0.6 + sin(uFlutter * 15.0 + phase * 1.7 - run * 23.0) * 0.3;
+  float a = lift + wave * 0.45 * min(uWindStr * 2.0, 1.0) * (d / 0.36);
+  vec3 out1 = c * (across < 0.0 ? -1.0 : 1.0);
+  return T * x + (out1 * sin(a) - vec3(0.0, 1.0, 0.0) * cos(a) + T * (along * 0.35 * min(blow, 1.0))) * d;
+}
+void main() {
+  vClumpN = vec3(0.0);
+  vBark = vec2(0.0);
+  vec3 P = aP;
+  vec3 N = aT;
+  float key = terrainLight(aP.y) * crownLight(aP);
+  if (aQ.w > 2.5) {
+    float g = gustAt(aP);
+    P = aP + cloth(aT, aQ.x, aQ.y, aQ.z, g);
+    vec3 down = cloth(aT, aQ.x, aQ.y + 0.02, aQ.z, g) - cloth(aT, aQ.x, max(aQ.y - 0.02, 0.0), aQ.z, g);
+    vec3 side = cloth(aT, aQ.x + 0.02, aQ.y, aQ.z, g) - cloth(aT, aQ.x - 0.02, aQ.y, aQ.z, g);
+    N = normalize(cross(side, down));
+    vUV = vec2(aQ.x / 0.27 + 0.5, aQ.y / 0.36);
+  } else vUV = vec2(0.0);
+  vSide = aCol;
+  vPos = uSite + P;
+  vN = N;
+  vInfo = vec4(aQ.w, fract(aQ.z * 0.37), 1.0, key);
+  gl_Position = projectEye(vPos);
+}`;
+
   S.treeLeafVertex = () => `#version 300 es
 precision highp float;
 layout(location = 0) in vec3 aStem;
@@ -422,6 +476,14 @@ void main() {
     alb = mix(alb, vec3(0.04, 0.06, 0.022), smoothstep(0.25, 0.8, n.y) * smoothstep(-0.2, 0.5, nb) * 0.6 * (1.0 - smoothstep(0.6, 2.2, yl)));
     alb = mix(alb, mix(vec3(0.04, 0.032, 0.025), vec3(0.032, 0.046, 0.018), smoothstep(-0.2, 0.4, nb)), foot * 0.8);
     ao *= 1.0 - 0.4 * fiss;
+    if (dot(n, v) < 0.0) n = -n;
+  } else if (kind == 5) {
+    // a prayer flag: thin cotton in one of the five colours (vSide), faded a little towards its hem, the sun showing
+    // through it from behind
+    alb = vSide * (0.82 + 0.18 * smoothstep(1.0, 0.75, vUV.y)) * (0.9 + 0.2 * vr);
+    rough = 0.9;
+    trans = 0.9;
+    transC = vSide * 0.8;
     if (dot(n, v) < 0.0) n = -n;
   } else {
     // leaf, flower or petal card

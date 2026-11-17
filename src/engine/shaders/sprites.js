@@ -2,6 +2,8 @@
  * Sprites — the living layer drawn over the composite each frame:
  *   type 0 raptor · 1 chough · 2 goose/crane  (procedural flapping silhouettes)
  *   type 3 meteor · 4 satellite · 5 the glow of a fire on the hills by night · 6 road vehicle · 7 the light a vehicle throws ahead
+ *   type 8 an airliner high above, and a piece of its contrail
+ *   type 9 a bird of prey sitting on the tree
  * Each instance is a rotated quad. Fragments are depth-tested against the baked
  * terrain, lit with the same sky/sun as the scene, hazed by distance, and
  * tone-mapped exactly like the composite so they sit naturally in the image.
@@ -195,6 +197,23 @@ vec3 grade(vec3 col) {
 }
 
 // The same, for lamplight: the eye keeps the colour of a lamp at night, which grade() would turn grey-blue
+uniform float uWet; // how wet the land is (0 to 1): the road shines
+// The road (road.js): its map holds the way from a point to its centre line. How much of its surface is here, 0 to 1.
+uniform sampler2D uRoadMap;
+uniform vec4 uRoadBox; // x0, z0, 1/width, 1/depth
+uniform float uRoadOn;
+float onRoad(vec2 p) {
+  vec2 uv = (p - uRoadBox.xy) * uRoadBox.zw;
+  if (uRoadOn < 0.5 || uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return 0.0;
+  return 1.0 - smoothstep(0.0025, 0.004, length(textureLod(uRoadMap, uv, 0.0).xy));
+}
+// how far p is from the line from a to b
+float segD(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a;
+  vec2 ba = b - a;
+  return length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0));
+}
+
 vec3 gradeLamp(vec3 col) {
   col *= texelFetch(uAdapt, ivec2(0), 0).r;
   col *= 1.0 + uNight * (0.3 + 1.1 * uOvercast);
@@ -218,6 +237,20 @@ float lampGlow(vec2 d, float core, float halo, float haloAmt) {
 
 // A box seen from above is three segments added together, the sum of its length, width and height on the picture.
 // The distance to the outside of such a shape is the largest over those three directions.
+// A bird of prey sitting, wings folded, in units of its height with its feet at the origin. face: 1 looking right,
+// -1 left; look: its head turned a little, -1 to 1.
+float perchedSDF(vec2 q, float face, float look, float pxu) {
+  q.x *= face;
+  float d = sdSegment(q, vec2(-0.03, 0.22), vec2(0.03, 0.62)) - max(0.17, 0.7 * pxu);                 // body, leaning a little forward
+  d = min(d, sdSegment(q, vec2(-0.06, 0.2), vec2(-0.13, -0.24)) - max(0.065, 0.5 * pxu));             // tail, below the perch
+  d = min(d, sdSegment(q, vec2(-0.1, 0.5), vec2(-0.12, 0.12)) - max(0.075, 0.5 * pxu));               // the folded wing down its back
+  vec2 head = vec2(0.07 + 0.03 * look, 0.86);
+  d = min(d, length(q - head) - max(0.115, 0.6 * pxu));
+  d = min(d, sdSegment(q, head + vec2(0.1, -0.01), head + vec2(0.17 + 0.02 * look, -0.06)) - max(0.03, 0.4 * pxu)); // beak
+  d = min(d, sdSegment(q, vec2(0.0, 0.1), vec2(0.0, 0.0)) - max(0.035, 0.4 * pxu));                   // legs
+  return d;
+}
+
 float boxEdge(vec2 q, vec2 e, vec2 A, vec2 B, vec2 U) {
   float l = length(e);
   if (l < 1e-3) return -1e3;
@@ -265,15 +298,35 @@ vec4 vehicleFace(vec2 q, vec2 A, vec2 B, vec2 U, int kind, vec3 paint, float sid
   float det = A.x * B.y - A.y * B.x;
   float tu = abs(det) > 1e-3 ? (top.x * B.y - top.y * B.x) / det : 9.0;
   float tv = abs(det) > 1e-3 ? (A.x * top.y - A.y * top.x) / det : 9.0;
-  if (max(abs(tu), abs(tv)) <= 1.0 && kind != 2)
-    return vec4(kind == 0 ? mix(paint, vec3(0.6), 0.5) : paint * 0.9, max(uSunDir.y, 0.0)); // a bus's pale roof
+  // a lorry (3, and the army's 4): its cab is the front third, the rest a load under a tarpaulin, canvas for the army
+  bool lorry = kind == 3 || kind == 4;
+  vec3 tarp = kind == 4 ? paint * 0.7 + vec3(0.012, 0.012, 0.004) : mix(vec3(0.4, 0.37, 0.3), paint, 0.18);
+  const float CAB = 0.38;                       // where the cab ends, along its length from -1 at the back to 1
+  if (max(abs(tu), abs(tv)) <= 1.0 && kind != 2) {
+    vec3 roof = kind == 0 ? mix(paint, vec3(0.6), 0.5) : paint * 0.9;          // a bus's pale roof
+    if (lorry && tu < CAB) roof = tarp;
+    return vec4(roof, max(uSunDir.y, 0.0));
+  }
   // up its side, 0 at the road, 1 at the roof
-  vec2 run = (q.x - corner.x) * A.x * sa <= 0.0 && abs(A.x) > 1e-3 ? -2.0 * sa * A : -2.0 * sb * B;
+  bool longSide = (q.x - corner.x) * A.x * sa <= 0.0 && abs(A.x) > 1e-3;
+  vec2 run = longSide ? -2.0 * sa * A : -2.0 * sb * B;
   float along = abs(run.x) > 1e-3 ? clamp((q.x - corner.x) / run.x, 0.0, 1.0) : 0.0;
   float up = clamp((q.y - corner.y - along * run.y) / max(2.0 * U.y, 1e-3), 0.0, 1.0);
+  // where along its length this point is: on its long side from the nearer end, else the whole of that end
+  float fore = longSide ? sa * (1.0 - 2.0 * along) : sa;
   vec3 alb;
   if (kind == 2) alb = up > 0.48 ? paint : vec3(0.03);                         // the rider above the machine
-  else {
+  else if (lorry) {
+    bool cab = fore > CAB;
+    alb = cab ? paint : up > 0.36 ? tarp : paint * 0.55;                       // the load, over the boards of its bed
+    if (cab && up > 0.5 && up < 0.86) alb = vec3(0.035, 0.05, 0.06);           // the cab's windows
+    if (up < 0.2) alb = vec3(0.02);
+  } else if (kind == 6) {
+    alb = paint;                                                                // an ambulance: white,
+    if (up > 0.3 && up < 0.45) alb = vec3(0.62, 0.015, 0.015);                 // a red stripe along it,
+    if (fore > 0.25 && up > 0.55 && up < 0.86) alb = vec3(0.035, 0.05, 0.06);  // windows at the front only
+    if (up < 0.2) alb = vec3(0.02);
+  } else {
     alb = paint;
     if (up > 0.5 && up < 0.86) alb = vec3(0.035, 0.05, 0.06);                  // windows
     if (up < 0.2) alb = vec3(0.02);                                             // wheels, and the dark under it
@@ -291,15 +344,20 @@ void main() {
   vec3 col = vec3(0.0);
   float a = 0.0;
 
-  if (type <= 2) {
+  if (type <= 2 || type == 9) {
     // ---------------- birds ----------------
     if (t > 0.0 && t < dist) discard;
     float halfSpan = vA.z / 1.3;
     float pxu = 1.0 / halfSpan;
-    float d = birdSDF(vLocal / halfSpan, type, vC, vD.xy, pxu);
+    float d;
+    if (type == 9) {
+      // sitting on the tree: vC = (which way it faces, its head's turn, its height in px)
+      pxu = 1.0 / vC.z;
+      d = perchedSDF((vLocal + vec2(0.0, vC.z * 0.3)) / vC.z, vC.x, vC.y, pxu);
+    } else d = birdSDF(vLocal / halfSpan, type, vC, vD.xy, pxu);
     a = clamp(0.5 - d / pxu, 0.0, 1.0) * alpha;
     if (a <= 0.002) discard;
-    vec3 alb = type == 0 ? vec3(0.075, 0.06, 0.05) : type == 1 ? vec3(0.022, 0.022, 0.025) : vec3(0.30, 0.29, 0.27);
+    vec3 alb = type == 0 || type == 9 ? vec3(0.075, 0.06, 0.05) : type == 1 ? vec3(0.022, 0.022, 0.025) : vec3(0.30, 0.29, 0.27);
     vec3 here = uCamPos + rd * dist;
     vec3 Ts = transmittance(here.y, uSunDir.y);
     vec3 amb = skyLUT(vec3(0.0, 1.0, 0.0)) * PI * 0.5 + skyLUT(normalize(vec3(rd.x, 0.1, rd.z))) * PI * 0.25;
@@ -343,13 +401,170 @@ void main() {
     return;
   }
 
+  if (type == 10) {
+    // ---------------- a small firework over a village ----------------
+    // vC = (seconds since it burst, below zero while the rocket climbs; how long its sparks last; its own number; the
+    // radius of the burst in px), vD = its colour
+    if (t > 0.0 && t < dist) discard;
+    float age = vC.x;
+    vec3 c = vec3(0.0);
+    if (age < 0.0) {
+      c = vec3(1.0, 0.7, 0.4) * exp(-dot(vLocal, vLocal) / 0.8) * 0.4; // the rocket: a small warm spark
+    } else {
+      float thrown = 1.0 - exp(-age * 3.5); // thrown out fast, then slowed by the air
+      float fade = 1.0 - smoothstep(0.45, 1.0, age / vC.y);
+      for (int i = 0; i < 28; i++) {
+        float fi = float(i);
+        float a1 = fract(sin(fi * 12.9898 + vC.z) * 43758.5453) * 6.2832;
+        float z1 = fract(sin(fi * 78.233 + vC.z * 1.7) * 24634.6345) * 2.0 - 1.0;
+        // sparks all over a ball, seen from the side; they sink as they burn out
+        vec2 sp = vec2(cos(a1), sin(a1)) * sqrt(1.0 - z1 * z1) * vC.w * thrown;
+        sp.y -= 0.15 * vC.w * age * age;
+        vec2 dd = vLocal - sp;
+        c += vD.rgb * exp(-dot(dd, dd) / 0.6) * (0.6 + 0.4 * sin(uTime * 31.0 + fi * 2.4));
+      }
+      c *= fade;
+      c += vec3(1.0, 0.95, 0.85) * exp(-dot(vLocal, vLocal) / (vC.w * vC.w * 0.3)) * exp(-age * 14.0) * 0.5; // the flash
+    }
+    float Tf = exp(-dist * (0.012 + 0.003 * uMieScale));
+    fragColor = vec4(gradeLamp(c * uHeadE * 9.0 * Tf) * alpha, 0.0);
+    return;
+  }
+
+  if (type == 11) {
+    // ---------------- small things on the land and over it ----------------
+    // vC.x = what: 0 a grazing animal (vC.y its shade, vC.z which way it faces), 1 the lamp of a monastery on a ridge,
+    // 2 a helicopter (vC.y its rotor's turn, vC.z which way it flies, vC.w its paint; vD = half its length in px, how
+    // dark it is, its flashing light)
+    int what = int(vC.x + 0.5);
+    // they stand on the ground or just above it: only a ridge clearly nearer hides them
+    if (t > 0.0 && t < dist * 0.985 - 0.03) discard;
+    if (what == 1) {
+      float r2 = dot(vLocal, vLocal);
+      float flick = 0.9 + 0.1 * sin(uTime * 5.1) * sin(uTime * 3.3);
+      float Tl = exp(-dist * (0.012 + 0.003 * uMieScale));
+      fragColor = vec4(gradeLamp(vec3(1.0, 0.6, 0.28) * exp(-r2 / 1.1) * uHeadE * 2.2 * flick * Tl) * alpha, 0.0);
+      return;
+    }
+    vec2 q = vLocal / vA.zw; // -1 to 1 across the patch
+    q.x *= vC.z;
+    float d;
+    vec3 alb;
+    float pxu = 1.0 / max(min(vA.z, vA.w), 0.5);
+    float cover = -1.0;
+    vec3 lamps = vec3(0.0);
+    if (what == 0) {
+      // a body, and a head held low at the front
+      d = length(q * vec2(1.0, 1.55) - vec2(-0.08, 0.1)) - 0.72;
+      d = min(d, length((q - vec2(0.72, -0.25)) * vec2(1.3, 1.6)) - 0.3);
+      alb = mix(vec3(0.02, 0.017, 0.015), mix(vec3(0.16, 0.11, 0.07), vec3(0.42, 0.4, 0.36), step(0.75, vC.y)), step(0.4, vC.y));
+    } else {
+      // A transport helicopter from the side, in units of half its length, its nose a little down as it flies:
+      // the cabin with dark glass at the nose, the tail boom thinning to the fin, the tail rotor, the mast, the
+      // wheels; the main rotor is a blur one can see through, the blades showing in it as they come round.
+      vec2 s = vLocal / vD.x;
+      s.x *= vC.z;
+      s = vec2(s.x * 0.996 - s.y * 0.09, s.x * 0.09 + s.y * 0.996);
+      pxu = 1.0 / vD.x;
+      float cabin = (length((s - vec2(0.3, -0.04)) / vec2(0.42, 0.17)) - 1.0) * 0.17;
+      float boom = segD(s, vec2(0.0, 0.02), vec2(-0.84, 0.05)) - mix(0.022, 0.05, smoothstep(-0.84, 0.0, s.x));
+      float fin = segD(s, vec2(-0.8, 0.04), vec2(-0.92, 0.25)) - 0.028;
+      float hull = min(cabin, min(boom, fin));
+      float gear = min(segD(s, vec2(0.12, -0.18), vec2(0.1, -0.27)), segD(s, vec2(0.48, -0.17), vec2(0.5, -0.27))) - 0.014;
+      gear = min(gear, min(length(s - vec2(0.1, -0.28)), length(s - vec2(0.5, -0.28))) - 0.035);
+      float fit = min(gear, segD(s, vec2(0.22, 0.1), vec2(0.22, 0.21)) - 0.03); // wheels and mast
+      d = min(hull, fit);
+      float solid = clamp(0.5 - d / pxu, 0.0, 1.0);
+      float blade = max(abs(s.y - 0.225) - max(0.012, 0.45 * pxu), abs(s.x - 0.22) - 0.8); // never thinner than a pixel
+      float disc = clamp(0.5 - blade / pxu, 0.0, 1.0) * (0.45 + 0.25 * sin(vC.y + s.x * 9.0));
+      float tailRotor = clamp(0.5 - (length(s - vec2(-0.92, 0.25)) - 0.1) / pxu, 0.0, 1.0) * 0.3;
+      cover = max(solid, max(disc, tailRotor));
+      vec3 paint = vC.w < 0.5 ? vec3(0.5, 0.045, 0.035) : (vC.w < 1.5 ? vec3(0.085, 0.1, 0.055) : vec3(0.06, 0.14, 0.38));
+      vec3 upper = vC.w > 0.5 && vC.w < 1.5 ? paint : vec3(0.58);
+      alb = mix(upper, paint, max(step(s.y, -0.07), step(s.x, -0.45))); // the belly and the tail in its colour
+      if (cabin < 0.0 && s.x > 0.48 && s.y > -0.08) alb = vec3(0.03, 0.04, 0.06); // glass
+      if (fit < hull || solid < 0.5) alb = vec3(0.045, 0.047, 0.05);              // mast, wheels, blades
+      if (vD.y > 0.01) {
+        // its lights as the day goes: a red flash on the back, the side light that faces us (red on its left,
+        // green on its right), a white one at the tail and the lamp under its nose
+        float k = vD.x * vD.x;
+        vec2 e;
+        e = s - vec2(0.05, 0.15);
+        lamps += vec3(1.0, 0.1, 0.06) * vD.z * 1.4 * exp(-dot(e, e) * k / 1.4);
+        e = s - vec2(0.3, -0.06);
+        lamps += (vC.z > 0.0 ? vec3(1.0, 0.08, 0.05) : vec3(0.1, 1.0, 0.35)) * 0.5 * exp(-dot(e, e) * k / 0.8);
+        e = s - vec2(-0.9, 0.1);
+        lamps += vec3(1.0, 0.97, 0.9) * 0.3 * exp(-dot(e, e) * k / 0.8);
+        e = s - vec2(0.68, -0.14);
+        lamps += vec3(1.0, 0.95, 0.85) * 0.8 * exp(-dot(e, e) * k / 1.2);
+        lamps = gradeLamp(lamps * vD.y * uHeadE * 0.45 * exp(-dist * (0.012 + 0.003 * uMieScale))) * alpha;
+      }
+    }
+    a = (cover >= 0.0 ? cover : clamp(0.5 - d / pxu, 0.0, 1.0)) * alpha;
+    if (a <= 0.002 && dot(lamps, lamps) < 1e-6) discard;
+    vec3 here = uCamPos + rd * dist;
+    vec3 Ts = transmittance(here.y, uSunDir.y);
+    vec3 amb = skyLUT(vec3(0.0, 1.0, 0.0)) * PI * 0.5 + skyLUT(normalize(vec3(rd.x, 0.1, rd.z))) * PI * 0.25;
+    vec3 L = alb / PI * (amb + uSunE * Ts * 0.45 * max(uSunDir.y, 0.0) * (1.0 - 0.85 * uOvercast));
+    float T = exp(-dist * (0.012 + 0.0084 * uValleyHaze * 0.25 + 0.003 * uMieScale));
+    vec3 skyH = skyLUT(normalize(vec3(rd.x, max(rd.y, 0.02), rd.z)));
+    fragColor = vec4(grade(L * T + skyH * (1.0 - T)) * a + lamps, a);
+    return;
+  }
+
+  if (type == 8) {
+    // ---------------- an airliner, and a piece of its contrail ----------------
+    // Against the sky only, so the mountains hide it, and dimmed by whatever cloud is in front of it.
+    if (t > 0.0) discard;
+    float seen = volT() * smoothstep(0.0, 0.05, rd.y);
+    if (vD.w > 0.5) {
+      // the aircraft: a pale sunlit fleck by day; by night a steady red light and a white flash
+      float r2 = dot(vLocal, vLocal);
+      float day = 1.0 - uNight;
+      vec3 lit = uSunE * transmittance(10.5, uSunDir.y) * 0.1 + skyLUT(vec3(0.0, 1.0, 0.0)) * 0.8;
+      a = exp(-r2 / 0.7) * 0.75 * day * vC.z * seen;
+      vec3 lamps = (vec3(1.0, 0.12, 0.08) * 0.3 + vec3(1.0, 0.98, 0.95) * vC.x) * vC.y * exp(-r2 / 0.8) * vC.z * seen;
+      if (a <= 0.002 && dot(lamps, lamps) < 1e-5) discard;
+      fragColor = vec4(grade(lit) * a + lamps, a);
+      return;
+    }
+    // The trail: ice cloud, white in the sun, pink at sunset, faint under the moon. Narrow and dense behind the
+    // aircraft, wider and thinner with age, torn into pieces by the air, and gone at the end of its time.
+    float hl = vD.z;
+    if (abs(vLocal.x) > hl) discard;
+    float u = vLocal.x / (2.0 * hl) + 0.5;
+    float flown = mix(vC.x, vC.y, u);            // when the aircraft was here (s of its flight)
+    float age = vC.z - flown;
+    float wpx = mix(vD.x, vD.y, u);
+    float thin = min(wpx / 0.6, 1.0);            // under a pixel wide: fainter, not narrower
+    wpx = max(wpx, 0.6);
+    float across = vLocal.y / wpx;
+    float dens = exp(-across * across) * smoothstep(1.0, 4.0, age) * (1.0 - smoothstep(0.55 * vC.w, vC.w, age))
+               * pow(0.012 / (0.01 + 0.0008 * age), 0.35);
+    float n = noise2(vec2(flown * 0.33 + vE.x, across * 0.7 + vE.x * 3.1)) * 0.5 + 0.5;
+    float n2 = noise2(vec2(flown * 0.08 + vE.x * 1.7, 0.5)) * 0.5 + 0.5;
+    dens *= mix(1.0, smoothstep(0.2, 0.8, n) * 1.3 * (0.4 + 0.9 * n2), smoothstep(15.0, 150.0, age));
+    // In the dark it hides far less of the sky behind it (thin ice lets the stars through)...
+    a = clamp(dens * thin * 0.85, 0.0, 0.9) * seen * alpha * mix(1.0, 0.4, uNight);
+    if (a <= 0.002) discard;
+    float cs = dot(rd, uSunDir);
+    vec3 lightC = uSunE * transmittance(10.5, uSunDir.y) * (0.07 + 0.5 * pow(max(cs, 0.0), 6.0))
+                + uMoonE * transmittance(10.5, uMoonDir.y) * 0.05
+                + skyLUT(vec3(0.0, 1.0, 0.0)) * 1.3;
+    // ...and it is never darker than that sky: ice scatters light, it does not soak it up. (It was laid over the
+    // night sky with next to no light of its own, and showed as a black line.)
+    lightC = max(lightC, skyLUT(rd) * 1.15);
+    fragColor = vec4(grade(lightC) * a, a);
+    return;
+  }
+
   if (type == 6) {
     // ---------------- road vehicle ----------------
     vec2 q = vLocal;
     vec2 A = vC.xy;                              // half its length, pointing to the front
     vec2 B = vC.zw;                              // half its width
     vec2 U = vec2(0.0, vD.x);                    // half its height
-    int kind = int(vD.w + 0.5);                  // 0 bus, 1 jeep, 2 motorcycle
+    int kind = int(vD.w + 0.5);                  // 0 bus, 1 jeep, 2 motorcycle, 3 lorry, 4 army lorry, 5 army jeep, 6 ambulance
     float d = max(boxEdge(q, A, A, B, U), max(boxEdge(q, B, A, B, U), boxEdge(q, U, A, B, U)));
     a = clamp(0.5 - d, 0.0, 1.0) * alpha;
     if (t > 0.0 && t < dist - 0.012) a = 0.0;    // behind a nearer slope, a tree or the rock
@@ -401,7 +616,8 @@ void main() {
     float lamp = vD.z;                           // headlights, by the way it faces
     float tail = vE.x;                           // tail lights, brighter when braking
     float beam = vE.y;                           // 1 main beam, 0 dipped
-    int blink = int(vE.z + 0.5);                 // indicators lit at this moment: 1 left, 2 right, 3 both
+    int blink = int(vE.z + 0.5);                 // indicators lit at this moment: 1 left, 2 right, 3 both; and an
+                                                 // ambulance's roof light: 4 red, 8 blue
     vec2 spread = kind == 2 ? vec2(0.0) : B * 0.8;
     float seeThrough = 0.25 + 0.75 * fog;
     // in daylight a lamp is a small point of colour: the glow round it belongs to the dark
@@ -410,25 +626,34 @@ void main() {
     vec2 front = A - U * 0.4;
     if (lamp > 0.003 && lampSeen(vA.xy + front, dist)) {
       // main beam dazzles: a wider, brighter halo
-      float halo = mix(20.0, 44.0, beam);
-      float amt = mix(0.2, 0.45, beam);
+      float halo = mix(12.0, 28.0, beam);
+      float amt = mix(0.12, 0.3, beam);
       float g = lampGlow(q - front - spread, 0.8, halo, amt);
       if (kind != 2) g = 0.5 * (g + lampGlow(q - front + spread, 0.8, halo, amt)) + 0.5 * max(exp(-dot(q - front - spread, q - front - spread) / 0.8), exp(-dot(q - front + spread, q - front + spread) / 0.8));
-      glow += vec3(1.0, 0.93, 0.78) * g * lamp * (0.95 + 0.35 * beam) * seeThrough;
+      glow += vec3(1.0, 0.93, 0.78) * g * lamp * (0.7 + 0.3 * beam) * seeThrough;
     }
     vec2 back = -A - U * 0.45;
     if (tail > 0.003 && lampSeen(vA.xy + back, dist)) {
       // red, always on with the headlights; braking makes them brighter and their glow wider
       float braking = vE.w;
-      float halo = mix(8.0, 16.0, braking * dark);
-      float amt = mix(0.22, 0.42, braking) * haloBy;
+      float halo = mix(5.0, 10.0, braking * dark);
+      float amt = mix(0.14, 0.3, braking) * haloBy;
       float g = lampGlow(q - back - spread * 0.95, 0.7, halo, amt);
       if (kind != 2) g = max(g, lampGlow(q - back + spread * 0.95, 0.7, halo, amt));
-      glow += vec3(1.0, 0.06, 0.02) * g * tail * mix(0.55, 1.4, dark) * seeThrough;
+      glow += vec3(1.0, 0.06, 0.02) * g * tail * mix(0.55, 0.9, dark) * seeThrough;
     }
-    if (blink > 0) {
-      // amber at the front and back corners of that side: B points to its right
-      float night = mix(0.35, 1.0, dark);
+    if (blink >= 4) {
+      // an ambulance's roof light, red and blue in turn: a point that shows in daylight too, with a glow in the dark
+      vec2 roof = U + A * 0.3;
+      if (lampSeen(vA.xy + roof, dist)) {
+        vec3 c = (blink & 4) != 0 ? vec3(1.0, 0.06, 0.04) : vec3(0.1, 0.32, 1.0);
+        glow += c * lampGlow(q - roof, 0.75, 24.0, mix(0.07, 0.2, dark)) * mix(0.9, 1.0, dark) * seeThrough;
+      }
+    }
+    if ((blink & 3) != 0) {
+      // amber at the front and back corners of that side: B points to its right. By day a little stronger than a
+      // brake light, so a column's hazard lights can be seen
+      float night = mix(0.5, 1.0, dark);
       for (int side = 1; side <= 2; side++) {
         if ((blink & side) == 0) continue;
         vec2 sideV = (side == 2 ? B : -B) * (kind == 2 ? 1.6 : 0.95) - U * 0.4;
@@ -468,6 +693,13 @@ void main() {
       float outer = max(cone - 0.22, 0.35);
       float across = smoothstep(outer, 1.0 - (1.0 - cone) * 0.3, ax);
       float inBeam = across * across * (0.55 + 0.45 * across);
+      // A dipped headlight has a cut-off: it lights the road and what is below the lamp, and next to nothing above
+      // the lamp's own height, so it does not dazzle. Without it every vehicle lit a fan of treetops like a
+      // floodlight. Main beam (vE.y) has none and does reach the trees.
+      inBeam *= mix(1.0, mix(0.05, 1.0, vE.y), smoothstep(-0.01, 0.05, l.y - fwd.y));
+      // a flashing lamp (hazard lights, an indicator, an ambulance's roof light) shines all round, in its own colour
+      if (cone < -1.5) inBeam = 1.0;
+      vec3 tint = cone < -1.5 ? vE.yzw : vec3(1.0, 0.88, 0.72);
       float rr = r / (range * 0.3);
       float fall = (1.0 - smoothstep(range * 0.3, range, r)) / (1.0 + rr * rr);
       vec4 g0 = texelFetch(uG0, ic, 0);
@@ -476,8 +708,17 @@ void main() {
       float ndl = clamp(nl, 0.0, 1.0) * 0.75 + 0.25 * smoothstep(-0.6, 0.0, nl); // leaves catch it from any side
       vec3 g1 = texelFetch(uG1, ic, 0).rgb;
       vec3 alb = g1 * g1;
-      vec3 E = vec3(1.0, 0.88, 0.72) * strength * uHeadE * inBeam * fall * ndl;
+      vec3 E = tint * strength * uHeadE * inBeam * fall * ndl;
       add = gradeLamp(alb / PI * E);
+      // On a wet road the lamps themselves show in the tarmac: a streak of light between the vehicle and the eye
+      if (uWet > 0.01 && cone > -1.5) {
+        float road = onRoad(P.xz) * uWet;
+        if (road > 0.01) {
+          vec3 hv = normalize(-l - rd);
+          float glint = pow(max(dot(N, hv), 0.0), 120.0) * smoothstep(0.0, 0.3, ax);
+          add += gradeLamp(vec3(1.0, 0.88, 0.72) * strength * uHeadE * fall * glint * 1.5) * road;
+        }
+      }
     }
     // In rain, snow or mist the beam itself shows in the air, where the view passes closest to its axis
     float haze = vE.x;

@@ -156,6 +156,13 @@
       this.pictureAt = 0; // slow mode: when the picture now fading in was ready
       this._pictureJob = null; // slow mode: the picture being drawn
       this._area = null; // rest while you work on another screen: [x0, x1] of the width drawn again (setArea)
+      // In that rest only the free part of the screen is drawn at all: [x, width] in pixels while a frame is being
+      // drawn that way. WebGL keeps nothing of a frame where it is not drawn, so the part behind your work is shown
+      // by a still copy laid over it (main.js, through onStill), taken from a frame drawn whole.
+      this._clip = null;
+      this._onScreen = false;
+      this._stillFor = null; // the area the still copy was taken for ('x0,x1'), or null when there is none
+      this.onStill = null; // (area or null): take the still copy of what is outside it now, or take it away
       this._grassAt = null; // the wind in the grass: when it last moved on, and uGrassWind
       this._grassWind = [0, 0, 0, 0];
     }
@@ -233,6 +240,7 @@
         treeLight: new Program(gl, V, S.treeLight(), 'treeLight', X),
         treeBark: new Program(gl, S.treeBarkVertex(), S.treeFragment(), 'treeBark', X),
         treeLeaf: new Program(gl, S.treeLeafVertex(), S.treeFragment(), 'treeLeaf', X),
+        treeFlag: new Program(gl, S.treeFlagVertex(), S.treeFragment(), 'treeFlag', X),
         treeDrift: new Program(gl, S.treeDriftVertex(), S.treeDriftFragment(), 'treeDrift', X),
         treeComp: new Program(gl, S.treeCompVertex, S.treeComp(), 'treeComp', X),
       };
@@ -608,10 +616,16 @@
       // their noise repeats along the wind, so the wrap never shows
       const w = state.weather;
       const kmh = Math.hypot(w.deckX || 0, w.deckZ || 0);
-      const dt = this._bannerT == null ? 0 : Math.min(Math.max(state.time - this._bannerT, 0), 1);
+      // (up to 30 s a step, as the deck's drift: at rest a scene is drawn only every 2 s, and with 1 s counted of
+      // each the banners crept at half speed and looked stuck. Faster with the cloud speed setting, as the deck.)
+      const dt = this._bannerT == null ? 0 : Math.min(Math.max(state.time - this._bannerT, 0), 30);
       this._bannerT = state.time;
-      this._bannerFlow = ((this._bannerFlow || 0) + (dt * kmh) / 3600) % 2;
-      p.set('uBannerFlow', this._bannerFlow);
+      const speed = Math.min(Math.max((this.cfg.atmosphere && this.cfg.atmosphere.cloudSpeed) || 1, 0.5), 12);
+      this._bannerFlow = ((this._bannerFlow || 0) + (dt * kmh * speed) / 3600) % 2;
+      // the eddy behind the summit turns the cloud over (km of noise, upwards), wind or not; wrapped at 25 km,
+      // where the noise repeats (x3.0, x2.2 and x7.04 per km)
+      this._bannerChurn = ((this._bannerChurn || 0) + dt * speed * LE.Renderer.BANNER_CHURN) % 25;
+      p.set('uBannerFlow', [this._bannerFlow, this._bannerChurn]);
       p.set('uBanners', list.length);
       if (!list.length) return;
       const A = new Float32Array(16), B = new Float32Array(16);
@@ -671,16 +685,52 @@
       gl.bindFramebuffer(gl.FRAMEBUFFER, t ? t.fbo : null);
       if (t) gl.drawBuffers(t.bufs);
       gl.viewport(0, 0, w, h);
+      this._onScreen = !t;
+      if (this._clip) this._clipNow();
     }
 
-    /** r = [x, y, w, h], or null to disable scissoring */
+    /** Something is about to be drawn into a target of its own, bound without _target: the screen's clip must not cut it. */
+    _offScreen() {
+      this._onScreen = false;
+      if (this._clip) this._clipNow();
+    }
+
+    /** The clip of area rest: on for what is drawn to the screen, off for everything else. */
+    _clipNow() {
+      const gl = this.gl;
+      const c = this._onScreen ? this._clip : null;
+      if (c) {
+        gl.enable(gl.SCISSOR_TEST);
+        gl.scissor(c[0], 0, c[1], this.h);
+      } else gl.disable(gl.SCISSOR_TEST);
+    }
+
+    _setClip(c) {
+      if (c === this._clip) return;
+      this._clip = c;
+      this._clipNow();
+    }
+
+    /** True when the columns from x, w wide, are wholly outside the part of the screen being drawn. */
+    clipped(x, w) {
+      const c = this._clip;
+      return !!c && (x + w <= c[0] || x >= c[0] + c[1]);
+    }
+
+    /** r = [x, y, w, h], or null to disable scissoring. On the screen it never reaches outside the clip of area rest. */
     _scissor(r) {
       const gl = this.gl;
+      const c = this._onScreen ? this._clip : null;
       if (!r) {
-        gl.disable(gl.SCISSOR_TEST);
+        if (c) this._clipNow();
+        else gl.disable(gl.SCISSOR_TEST);
       } else {
         gl.enable(gl.SCISSOR_TEST);
-        gl.scissor(r[0], r[1], r[2], r[3]);
+        if (c) {
+          const x0 = Math.max(r[0], c[0]);
+          const x1 = Math.min(r[0] + r[2], c[0] + c[1]);
+          gl.scissor(x0, r[1], Math.max(x1 - x0, 0), r[3]);
+        } else gl.scissor(r[0], r[1], r[2], r[3]);
       }
     }
 
@@ -802,6 +852,7 @@
         this._holdExposure = false;
         this._findSmokeSources();
         this._findForestSources();
+        this._findFall();
         this._setStatus('running');
       } else {
         // B now holds the new shadows: cross-fade A → B, then swap
@@ -890,6 +941,7 @@
       p.set('uPlumeSteps', q.plumeSteps || 10);
       p.set('uTime', state.time % 2400); // wrapped, as everywhere: the smoke's climb repeats exactly in that time
       p.set('uHeadE', Math.min(state.exposure * 3e-4, HEAD_CAP)); // a fire's glow on its smoke, as a lamp's
+      p.set('uLampGlow', this.cfg.life === false || this.cfg.lights === false ? 0 : state.lampGlow || 0);
       if (plumes) {
         p.set('uPlumeA', L.plumeA);
         p.set('uPlumeB', L.plumeB);
@@ -944,6 +996,12 @@
       p.set('uRain', w.rain);
       p.set('uSnow', w.snow);
       p.set('uWet', w.wet);
+      // the waterfall: a thread in dry weather, in spate after rain (the land's wetness, which dries over 40 minutes)
+      const fall = this.fall;
+      p.set('uFallAt', fall ? [fall.x, fall.z, fall.y, fall.foot] : [0, 0, 0, 0]);
+      p.set('uFallFlow', fall && this.cfg.waterfall !== false ? Renderer.fallFlow(w.wet) : 0);
+      // the rainbow: the weather's own, or one called up from the test panel (it still stands where the sun puts it)
+      p.set('uBow', this.cfg.rainbow === false ? 0 : Math.max(state.bow || 0, this.bowForce || 0));
       p.set('uSnowLine', state.snowLine);
       p.set('uFlash', w.flash);
       p.set('uFlashPos', w.flashPos);
@@ -959,6 +1017,7 @@
       p.set('uValleyHaze', w.valleyHaze);
       p.set('uLampE', this.cfg.life === false || this.cfg.lights === false ? 0 : state.lampE);
       p.set('uLampDark', state.lampDark);
+      p.set('uFestival', this.cfg.life === false || this.cfg.lights === false ? 0 : Math.max(state.festival || 0, this.festForce || 0));
       p.set('uLocalHour', state.localHour);
       p.set('uGustDir', state.gustDir);
       p.set('uGustTravel', state.gustTravel);
@@ -972,6 +1031,7 @@
         p.set('uCrownR', tree.crownR);
         p.set('uTrunkTop', tree.trunkTop);
         p.set('uTreeSwayT', fg.swayOffset(state));
+        p.set('uTreeDir', state.treeDir || state.gustDir);
       }
       this._bind(p, {
         uG0: this.gbuf.tex[0],
@@ -986,6 +1046,7 @@
         uNoise2D: this.noise2D,
         uNoise3D: this.noise3D,
         uAdapt: this.adaptA.tex[0],
+        ...this._roadUniforms(p), // the wet road shines
       });
       if (meter) this._draw();
       else if (band) {
@@ -1019,6 +1080,11 @@
       this._adaptReset = false;
     }
 
+    /** How much water the fall carries (0 to 1) for how wet the land is: never dry, three times as much after rain. */
+    static fallFlow(wet) {
+      return 0.3 + 0.7 * clamp(wet, 0, 1);
+    }
+
     /** Projection parameters shared with the life simulation. */
     viewInfo() {
       const r = this.cfg.render;
@@ -1034,13 +1100,21 @@
       return [Math.sin(a) * TREE.r, TREE.y, Math.cos(a) * TREE.r, TREE.patch];
     }
 
-    _spritePass(state) {
+    /**
+     * The living layer. Most of it goes under the tree; a bird at the tree (life.nearFrom on) is drawn in a second
+     * pass after the tree, in front of it (`near`), which costs nothing when there is none.
+     */
+    _spritePass(state, near = false) {
       const life = this.life;
       if (!life || !life.count) return;
+      const split = Math.min(life.nearFrom ?? life.count, life.count);
+      const first = near ? split : 0;
+      const count = near ? life.count - split : split;
+      if (count <= 0) return;
       const gl = this.gl;
       const p = this.prog.sprites;
       gl.bindBuffer(gl.ARRAY_BUFFER, this.spriteBuf);
-      gl.bufferSubData(gl.ARRAY_BUFFER, 0, life.data, 0, life.count * LE.Life.FLOATS);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, life.data, first * LE.Life.FLOATS, count * LE.Life.FLOATS);
       this._target(null, this.w, this.h);
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
@@ -1060,7 +1134,9 @@
       // About 30 lux close in front of the lamps, against the sun's 100 000 at an irradiance of 1: capped, so on a
       // moonless night the patch reads as lamplight on the road instead of burning out white
       p.set('uHeadE', Math.min(state.exposure * 3e-4, HEAD_CAP));
+      p.set('uWet', w.wet);
       this._bind(p, {
+        ...this._roadUniforms(p), // lamps show in a wet road
         uG0: this.gbuf.tex[0],
         uG1: this.gbuf.tex[1],
         uVol: this.volA.tex[0],
@@ -1070,7 +1146,7 @@
         uShadow: this.shadowA.tex[0],
       });
       gl.bindVertexArray(this.spriteVAO);
-      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, life.count);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, count);
       gl.bindVertexArray(this.vao);
       gl.disable(gl.BLEND);
     }
@@ -1079,6 +1155,168 @@
      * Houses (each {t km away, a its azimuth, x, y, z}) into villages, each smoking from the house nearest its middle; at
      * most 14 of them, from every part of the view: the nearest village in each of seven slices of it, then the next.
      */
+    /**
+     * The place for the waterfall: the tallest steep, bare rock face in view between 3 and 10 km away, below the
+     * snow. `dist(x, y)` is the baked distance (km, 0 for sky), `normalY(x, y)` how far the ground there faces up
+     * (1 level, 0 a wall), `bare(x, y)` false under forest; rows count upwards. Returns the top of the face in the
+     * scene's km, the height of its foot and its distance, or null when no face is tall enough to carry a fall.
+     */
+    static pickFall(w, y0, y1, dist, normalY, bare, v, maxY) {
+      const at = (x, y) => {
+        const t = dist(x, y);
+        const a = (x - 0.5 * w) * v.pxAng;
+        const ty = (y - v.horizonY * v.h) * v.pxAng;
+        const n = Math.hypot(Math.sin(a), ty, Math.cos(a));
+        return { t, x: (Math.sin(a) / n) * t, y: v.camY + (ty / n) * t, z: (Math.cos(a) / n) * t };
+      };
+      const ok = (x, y) => {
+        const t = dist(x, y);
+        return t > 3 && t < 10 && normalY(x, y) < 0.6 && bare(x, y);
+      };
+      let best = null;
+      const x0 = Math.round(w * 0.06);
+      for (let x = x0; x < w - x0; x += 4) {
+        let y = y0;
+        while (y < y1) {
+          if (!ok(x, y)) {
+            y++;
+            continue;
+          }
+          const foot = at(x, y);
+          let top = foot;
+          let yy = y;
+          while (yy + 1 < y1 && ok(x, yy + 1) && Math.abs(dist(x, yy + 1) - top.t) < 0.04 * top.t) {
+            yy++;
+            top = at(x, yy);
+          }
+          const gain = top.y - foot.y;
+          // how tall it stands in the picture decides; a fall above the snow would be frozen all year
+          if (gain >= 0.12 && top.y < maxY && (!best || gain / top.t > best.score)) {
+            best = { x: top.x, y: top.y, z: top.z, foot: foot.y, t: top.t, score: gain / top.t };
+          }
+          y = yy + 1;
+        }
+      }
+      return best;
+    }
+
+    /**
+     * Meadows for grazing animals: open grass on a gentle slope, 0.6 to 3.5 km off (further, an animal is too small to
+     * show), with grass on both sides of it. Up to three, nearest first, at least 400 m apart. `normal(x, y)` is the
+     * baked normal [x, up, z]; `grass(x, y)` true on open meadow.
+     */
+    static pickPastures(w, y0, y1, dist, normal, grass, v) {
+      const found = [];
+      for (let y = y0; y < y1; y += 6) {
+        for (let x = 12; x < w - 12; x += 6) {
+          const t = dist(x, y);
+          if (!(t > 0.6 && t < 3.5) || !grass(x, y) || !grass(x - 6, y) || !grass(x + 6, y)) continue;
+          const n = normal(x, y);
+          if (n[1] < 0.9) continue;
+          const a = (x - 0.5 * w) * v.pxAng;
+          const ty = (y - v.horizonY * v.h) * v.pxAng;
+          const len = Math.hypot(Math.sin(a), ty, Math.cos(a));
+          found.push({ t, x: (Math.sin(a) / len) * t, y: v.camY + (ty / len) * t, z: (Math.cos(a) / len) * t, n });
+        }
+      }
+      found.sort((a, b) => a.t - b.t);
+      const out = [];
+      for (const f of found) {
+        if (out.length >= 3) break;
+        if (out.every((o) => Math.hypot(o.x - f.x, o.z - f.z) > 0.4)) out.push(f);
+      }
+      return out;
+    }
+
+    /**
+     * The place for the monastery: a point on a ridge line 3 to 9 km off, below the snow, that stands against the
+     * sky or against land at least 2 km further away, the most open such point (the largest step behind it).
+     */
+    static pickRidge(w, y0, y1, dist, v, maxY) {
+      let best = null;
+      const x0 = Math.round(w * 0.1);
+      for (let x = x0; x < w - x0; x += 8) {
+        for (let y = y0; y < y1 - 4; y++) {
+          const t = dist(x, y);
+          if (!(t > 3 && t < 9)) continue;
+          const behind = dist(x, y + 3);
+          const step = behind > 0 ? behind - t : 20;
+          if (step < 2) continue;
+          const a = (x - 0.5 * w) * v.pxAng;
+          const ty = (y - v.horizonY * v.h) * v.pxAng;
+          const len = Math.hypot(Math.sin(a), ty, Math.cos(a));
+          const py = v.camY + (ty / len) * t;
+          const score = Math.min(step, 20) / t;
+          if (py < maxY && (!best || score > best.score)) best = { x: (Math.sin(a) / len) * t, y: py, z: (Math.cos(a) / len) * t, t, score };
+        }
+      }
+      return best;
+    }
+
+    /** Once after the bake: reads the baked distances and slopes of the middle rows and picks the waterfall's place. */
+    _findFall() {
+      const gl = this.gl;
+      this.fall = null;
+      try {
+        const w = this.w;
+        const h = this.h;
+        const y0 = Math.floor(h * 0.2);
+        const rows = Math.floor(h * 0.85) - y0;
+        const g0 = new Float32Array(w * rows * 4);
+        const g1 = new Uint8Array(w * rows * 4);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.gbuf.fbo);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        gl.readPixels(0, y0, w, rows, gl.RGBA, gl.FLOAT, g0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT1);
+        gl.readPixels(0, y0, w, rows, gl.RGBA, gl.UNSIGNED_BYTE, g1);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        const i = (x, y) => ((y - y0) * w + x) * 4;
+        const normalY = (x, y) => {
+          // the baked normal (chunks.js octDecodeY): only how far it faces up is wanted
+          let ex = g0[i(x, y)];
+          let ey = g0[i(x, y) + 1];
+          const up = 1 - Math.abs(ex) - Math.abs(ey);
+          if (up < 0) {
+            const fx = (1 - Math.abs(ey)) * (ex >= 0 ? 1 : -1);
+            ey = (1 - Math.abs(ex)) * (ey >= 0 ? 1 : -1);
+            ex = fx;
+          }
+          return up / Math.hypot(ex, ey, up);
+        };
+        // (the same rows serve for the meadows where animals graze and for the ridge with the monastery)
+        const g3 = new Uint8Array(w * rows * 4);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.gbuf.fbo);
+        gl.readBuffer(gl.COLOR_ATTACHMENT3);
+        gl.readPixels(0, y0, w, rows, gl.RGBA, gl.UNSIGNED_BYTE, g3);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        const normal = (x, y) => {
+          let ex = g0[i(x, y)];
+          let ey = g0[i(x, y) + 1];
+          const up = 1 - Math.abs(ex) - Math.abs(ey);
+          if (up < 0) {
+            const fx = (1 - Math.abs(ey)) * (ex >= 0 ? 1 : -1);
+            ey = (1 - Math.abs(ex)) * (ey >= 0 ? 1 : -1);
+            ex = fx;
+          }
+          const l = Math.hypot(ex, ey, up) || 1;
+          return [ex / l, up / l, ey / l];
+        };
+        const distAt = (x, y) => g0[i(x, y) + 2];
+        this.pastures = Renderer.pickPastures(w, y0, y0 + rows, distAt, normal, (x, y) => g3[i(x, y) + 3] > 150 && g1[i(x, y) + 3] < 60, this.viewInfo());
+        const snow = this._lastState ? this._lastState.snowLine : 4.2;
+        this.gompa = Renderer.pickRidge(w, y0, y0 + rows, distAt, this.viewInfo(), Math.min(snow, 4.2) - 0.3);
+        if (this.life) {
+          this.life.setPastures(this.pastures);
+          this.life.setGompa(this.gompa);
+        }
+        this.fall = Renderer.pickFall(w, y0, y0 + rows, (x, y) => g0[i(x, y) + 2], normalY, (x, y) => g1[i(x, y) + 3] < 100, this.viewInfo(), Math.min(snow, 4.2) - 0.3);
+      } catch (e) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      }
+    }
+
     static villageChimneys(houses, hfov) {
       const sorted = Array.from(houses).sort((p, q) => p.t - q.t);
       const villages = [];
@@ -1451,6 +1689,17 @@
           f = 0;
         }
       }
+      // Area rest: only the free part of the screen is drawn. The first frame for an area, and the first after it
+      // ends, are drawn whole: the still copy over the rest is taken from the one and taken away after the other.
+      const area = this._area;
+      const areaKey = area ? area[0] + ',' + area[1] : null;
+      const whole = areaKey !== this._stillFor;
+      let clip = null;
+      if (area) {
+        const x = Math.max(0, Math.floor(area[0] * this.w));
+        clip = [x, Math.max(1, Math.min(this.w, Math.ceil(area[1] * this.w)) - x)];
+      }
+      this._setClip(whole ? null : clip);
       this._target(null, this.w, this.h);
       const w = state.weather;
       const falling = w.rain > 0.003 || w.snow > 0.003;
@@ -1474,8 +1723,18 @@
       this._bind(p, tex);
       this._draw();
       this._grassPass(state);
+      // (the birds and the traffic never go into the still copy: there they would hang in the air for as long as it lies)
+      this._setClip(clip);
       this._spritePass(state);
+      this._setClip(whole ? null : clip);
       this.fg.draw(state);
+      if (whole) {
+        this._stillFor = areaKey;
+        if (this.onStill) this.onStill(area);
+      }
+      this._setClip(clip);
+      this._spritePass(state, true);
+      this._setClip(null);
       this._fenceFrame();
       return true;
     }
@@ -1565,10 +1824,16 @@
         this._pictureJob = { state, time: state.time, y: 0, fresh: true };
       } else {
         this._compositePass(state, false);
+        // the whole screen has just been drawn: a still copy from area rest has nothing left to cover
+        if (this._stillFor !== null) {
+          this._stillFor = null;
+          if (this.onStill) this.onStill(null);
+        }
         if (this._slow) this._keepPicture();
         else {
           this._spritePass(state);
           this.fg.draw(state);
+          this._spritePass(state, true);
         }
       }
       if (timing) gl.endQuery(this.timerExt.TIME_ELAPSED_EXT);
@@ -1621,5 +1886,6 @@
     }
   }
 
+  Renderer.BANNER_CHURN = 0.004; // km of their noise a second that banner clouds turn over: a lump is another in 20 s
   LE.Renderer = Renderer;
 })();
