@@ -175,6 +175,7 @@ uniform vec2 uFlashPos;
 uniform float uFog;
 uniform int uDebugView;
 uniform float uValleyHaze;
+uniform float uSmog; // how much of the valley haze is smog (PM2.5): it takes in light as well as scattering it
 uniform float uLampE;
 uniform float uLampDark;
 uniform float uFestival; // a festival night (environment.js), 0 to 1: that share of the houses is lit with rows of oil lamps
@@ -608,6 +609,10 @@ vec3 aerial(vec3 col, vec3 rd, float t, float sunlit) {
   // Haze looking towards the sun ends up far brighter than anything else in view and erases the mountains
   // on that side, worst of all with a low sun, whose exposure is higher. Compress only that excess, which
   // keeps a glow around the sun and leaves the rest of the view as it was.
+  // Smog is soot and dust as much as droplets: it swallows some of the light and turns it grey-brown. Only the
+  // valley haze's share of the haze in view, so the high air stays clear blue above it.
+  float odV = heightOD(y0, rd.y, t, 1.7) * uValleyHaze;
+  hazeS *= mix(vec3(1.0), vec3(0.8, 0.71, 0.56), uSmog * odV / max(odM, 1e-5));
   float hazeL = dot(hazeS, vec3(0.2126, 0.7152, 0.0722));
   float knee = mix(0.5, 0.55, lowSun);
   float soft = mix(0.25, 0.4, lowSun);

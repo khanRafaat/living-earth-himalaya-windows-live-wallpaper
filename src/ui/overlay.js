@@ -92,9 +92,11 @@
 
       const isNight = (a.sunAltDeg ?? 10) < -0.8;
       if (weather) {
-        e.icon.innerHTML = ICONS[iconFor(weather.code, isNight)];
+        const misty = (weather.obscured === 'mist' || weather.obscured === 'fog') && (weather.code == null || weather.code <= 3);
+        e.icon.innerHTML = ICONS[iconFor(misty ? 45 : weather.code, isNight)];
         e.temp.textContent = this._temp(weather.temp);
-        e.cond.textContent = LE.weatherText(weather.code);
+        const air = LE.airText(weather);
+        e.cond.textContent = LE.weatherLabel(weather) + (air ? ' · ' + air : '');
         e.hum.textContent = weather.humidity !== null && weather.humidity !== undefined ? `${Math.round(weather.humidity)}%` : '—';
         const ws = weather.windSpeed;
         e.wind.textContent =

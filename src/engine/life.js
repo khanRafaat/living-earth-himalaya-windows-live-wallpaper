@@ -179,9 +179,13 @@
       this.villageSmoke = true; // smoke from the villages
       this.fires = true; // a field burning now and then
       this.shootingStars = true; // meteors and satellites
-      // Where a bird of prey can sit: a function giving the tip of the tree's snag now (km, scene axes), or null when
-      // there is no tree (main.js sets it from the foreground). Now and then one that is about comes down to it.
+      // Where a bird of prey can sit: perchAt(i) gives where place i on the tree is now (km, scene axes), or null when
+      // there is no tree; perchCount() how many there are; perchOut(i) the way out of the crown there (main.js sets them
+      // from the foreground). Now and then a falcon comes in to one of them, never the same one twice running.
       this.perchAt = null;
+      this.perchCount = null;
+      this.perchOut = null;
+      this._lastSite = null;
       this._nextPerch = rand(240, 900);
       this.nearFrom = 0; // sprites from here on are close to the tree and are drawn after it, in front (renderer.js)
       this.planes = true; // an airliner crossing high above, with its contrail
@@ -359,10 +363,10 @@
       if (!this.shootingStars && (kind === 'meteor' || kind === 'satellite')) return;
       if (kind === 'perch') {
         // one comes in to the tree from a little way off
-        const at = this.perchAt && this.perchAt();
-        if (!at) return;
+        const f = this._sites() ? this._newFalcon(this._pickSite(), true) : null;
+        if (!f) return;
         this.raptors = this.raptors.filter((x) => x.sp !== SPECIES.falcon);
-        this.raptors.push(this._newFalcon(at));
+        this.raptors.push(f);
       } else if (kind === 'raptor') this.raptors.push(this._newRaptor(true));
       else if (kind === 'kite') {
         const homes = this._kiteHomes();
@@ -562,9 +566,11 @@
       this._nextPerch -= dt;
       if (this._nextPerch <= 0) {
         this._nextPerch = rand(300, 900);
-        const at = this.perchAt && this.perchAt();
         const busy = this.raptors.some((r) => r.sp === SPECIES.falcon);
-        if (at && !busy && birdOK > 0.5 && this._perchWeather(state)) this.raptors.push(this._newFalcon(at));
+        if (this._sites() && !busy && birdOK > 0.5 && this._perchWeather(state)) {
+          const f = this._newFalcon(this._pickSite());
+          if (f) this.raptors.push(f);
+        }
       }
       // Black kites: one or two over the villages near enough to see them, whenever birds fly at all. They need no
       // thermals: they hang over the houses all day
@@ -655,24 +661,134 @@
       b.target = this._exitPoint(b.pos);
     }
 
-    /** The falcon that comes to the tree, 300 m out and a little above its perch `at`, on its way in. */
-    _newFalcon(at) {
+    /** How many places on the tree a bird can sit on (0 without a tree). */
+    _sites() {
+      if (!this.perchAt) return 0;
+      return this.perchCount ? this.perchCount() : 1;
+    }
+
+    /** Which of them the next falcon goes to: any, but not the one the last one sat on. */
+    _pickSite() {
+      const n = this._sites();
+      if (n <= 1) return 0;
+      if (this._lastSite == null || this._lastSite >= n) return Math.floor(Math.random() * n);
+      const i = Math.floor(Math.random() * (n - 1));
+      return i >= this._lastSite ? i + 1 : i;
+    }
+
+    /** Where this bird is to sit now (km), or null. */
+    _siteAt(r) {
+      return this.perchAt ? this.perchAt(r.site || 0) : null;
+    }
+
+    /**
+     * Does the straight line from a to b come within m km of the eye? 20 m: the flight curves off the straight line
+     * (it takes off the way it faces and turns), and must still keep 15 m from the eye.
+     */
+    _passesEye(a, b, m = 0.02) {
+      const e = [0, this._view.camY, 0];
+      const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+      const l2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2] || 1e-12;
+      const t = clamp(((e[0] - a[0]) * ab[0] + (e[1] - a[1]) * ab[1] + (e[2] - a[2]) * ab[2]) / l2, 0, 1);
+      return Math.hypot(a[0] + ab[0] * t - e[0], a[1] + ab[1] * t - e[1], a[2] + ab[2] * t - e[2]) < m;
+    }
+
+    /**
+     * The side of the crown a bird may come in to place `site` from, as an azimuth and how wide (cos): out from the
+     * place, or for the top of the crown the eye's side. Near the tree the bird is drawn over it, so it must not pass
+     * behind the leaves on its last stretch.
+     */
+    _openSide(site, at) {
+      const out = this.perchOut ? this.perchOut(site) : null;
+      const oh = out ? Math.hypot(out[0], out[2]) : 0;
+      if (oh > 0.35) return { az: Math.atan2(out[0], out[2]), cos: 0.2 };
+      return { az: Math.atan2(-at[0], -at[2]), cos: -0.35 };
+    }
+
+    /**
+     * The falcon that comes to place `site` on the tree. It sets out from anywhere round it: from out over the valley,
+     * from either side, from behind the viewer, higher or a little lower than the tree. One that would come out of the
+     * leaves' far side first swings round to the open side. One setting out in plain view starts so far off that it
+     * is too small to see and grows out of nothing; the test panel's one comes from a few hundred metres.
+     */
+    _newFalcon(site, summoned = false) {
+      const at = this.perchAt ? this.perchAt(site) : null;
+      if (!at) return null;
+      const open = this._openSide(site, at);
+      const toEye = Math.atan2(-at[0], -at[2]);
+      let start = null;
+      let via = null;
+      for (let k = 0; k < 24 && !start; k++) {
+        const az = rand(0, TAU);
+        // Gliding down to it at up to 7 degrees, or rising to it from a little below; a steeper dive would reach the
+        // perch from above instead of swooping up on to it. (On the eye's side of the tree the hill rises behind the
+        // viewer: not from below there.)
+        const eyeSide = Math.cos(az - toEye) > 0;
+        const slope = rand(eyeSide ? 0.01 : -0.05, 0.125);
+        let d = summoned ? rand(0.2, 0.32) : rand(0.35, 0.7);
+        let p = [at[0] + Math.sin(az) * d, at[1] + slope * d, at[2] + Math.cos(az) * d];
+        if (!summoned && this._inView(this._project(...p), 40)) {
+          d = rand(1.8, 2.4);
+          p = [at[0] + Math.sin(az) * d, at[1] + slope * d, at[2] + Math.cos(az) * d];
+        }
+        let v = null;
+        if (Math.cos(az - open.az) < open.cos) {
+          // round to the open side first, 70 m out from the tree and a little above it
+          const side = Math.sin(az - open.az) >= 0 ? 1 : -1;
+          const va = open.az + side * 70 * D2R;
+          v = [at[0] + Math.sin(va) * 0.07, at[1] + 0.008, at[2] + Math.cos(va) * 0.07];
+        }
+        if (v ? this._passesEye(p, v) || this._passesEye(v, at) : this._passesEye(p, at)) continue;
+        start = p;
+        via = v;
+      }
+      if (!start) {
+        // (nowhere clear found: in from the open side)
+        start = [at[0] + Math.sin(open.az) * 0.3, at[1] + 0.04, at[2] + Math.cos(open.az) * 0.3];
+      }
       const r = this._newRaptor(true);
-      const az = Math.atan2(at[0], at[2]) + rand(0.5, 1.1);
       r.sp = SPECIES.falcon;
-      r.pos = [at[0] + Math.sin(az) * 0.3, at[1] + 0.04, at[2] + Math.cos(az) * 0.3];
-      r.vel = [-Math.sin(az) * 0.012, 0, -Math.cos(az) * 0.012];
+      r.site = site;
+      r.pos = start;
+      r.via = via;
+      const aim = via || at;
+      const al = Math.hypot(aim[0] - start[0], aim[2] - start[2]) || 1;
+      r.vel = [((aim[0] - start[0]) / al) * 0.012, 0, ((aim[2] - start[2]) / al) * 0.012];
       r.mode = 'approach';
       r.nextFlap = 1;
+      r.alpha = summoned ? 1 : 0; // a far speck fades in rather than appearing
+      this._lastSite = site;
       return r;
     }
 
-    /** Away from the tree and out past the nearer edge of the picture, half a kilometre off or more. */
+    /**
+     * Away from the tree in any direction it can take from where it faces: across the picture, out over the valley,
+     * back past the viewer or out past an edge, climbing or dropping. One that heads out into the picture keeps going
+     * until it is too small to see (_stepRaptor), so it never vanishes in plain view.
+     */
     _leaveTree(r) {
+      const fx = r.face ? r.face[0] : r.vel[0];
+      const fz = r.face ? r.face[1] : r.vel[2];
+      const f0 = Math.hypot(fx, fz) > 1e-9 ? Math.atan2(fx, fz) : rand(0, TAU);
+      r.mode = 'leave';
+      r.via = null;
+      for (let k = 0; k < 24; k++) {
+        const az = f0 + rand(-1.9, 1.9);
+        const dy = rand(-0.08, 0.15);
+        let d = rand(0.6, 1.5);
+        let tg = [r.pos[0] + Math.sin(az) * d, r.pos[1] + dy, r.pos[2] + Math.cos(az) * d];
+        if (this._inView(this._project(...tg), 40)) {
+          d = rand(2.2, 3);
+          tg = [r.pos[0] + Math.sin(az) * d, r.pos[1] + dy * 1.5, r.pos[2] + Math.cos(az) * d];
+        }
+        if (this._passesEye(r.pos, tg)) continue;
+        r.target = tg;
+        return;
+      }
+      // (nowhere clear: out past the nearer edge of the picture)
       const side = Math.atan2(r.pos[0], r.pos[2]) >= 0 ? 1 : -1;
       const az = side * (this._view.hfov / 2 + 25 * D2R);
       const d = rand(0.5, 0.9);
-      r.mode = 'leave';
       r.target = [Math.sin(az) * d, r.pos[1] + rand(0.02, 0.08), Math.cos(az) * d];
     }
 
@@ -699,7 +815,7 @@
     _stepRaptor(r, dt, state) {
       const w = state.weather;
       const sp = 0.0125;
-      const at = (r.mode === 'approach' || r.mode === 'settle' || r.mode === 'perched') && this.perchAt ? this.perchAt() : null;
+      const at = r.mode === 'approach' || r.mode === 'settle' || r.mode === 'perched' ? this._siteAt(r) : null;
       // its wings open again after it leaves the perch
       if (r.mode !== 'settle') r.fold = Math.max(0, (r.fold || 0) - dt * 2.5);
       if (r.mode === 'settle') {
@@ -708,19 +824,26 @@
         if (!at) this._leaveTree(r);
         else {
           r.settle += dt / 0.7;
-          // drawn to the perch as by a spring that does not swing back, from the speed it arrived with
+          // Drawn to the perch as by a spring that does not swing back, from the speed it arrived with. Worked out in
+          // the perch's own frame, so a branch swaying in the wind does not leave it trailing behind (it then had to be
+          // put on to the perch with a jump of a few pixels when it sat).
           const W = 6;
           const h = Math.min(dt, 0.1);
+          const body = Life.perchBody(r);
+          if (!r.rel) r.rel = [r.pos[0] - at[0], r.pos[1] - at[1] - body, r.pos[2] - at[2]];
           for (let i = 0; i < 3; i++) {
-            r.vel[i] += (W * W * (at[i] + (i === 1 ? Life.perchBody(r) : 0) - r.pos[i]) - 2 * W * r.vel[i]) * h;
-            r.pos[i] += r.vel[i] * h;
+            r.vel[i] += (-W * W * r.rel[i] - 2 * W * r.vel[i]) * h;
+            r.rel[i] += r.vel[i] * h;
           }
+          r.pos = [at[0] + r.rel[0], at[1] + body + r.rel[1], at[2] + r.rel[2]];
           r.fold = Math.min(1, r.settle);
           r.bank = 0;
           r.phase += TAU * r.sp.flapHz * dt;
           r.amp = Math.max(0, 1 - r.settle * 1.4);
           r.alpha = 1;
-          if (r.settle >= 1) {
+          // sitting once its wings are shut and it is still on the perch (within 5 mm)
+          if (r.settle >= 1 && (Math.hypot(r.rel[0], r.rel[1], r.rel[2]) < 5e-6 || r.settle >= 2)) {
+            r.rel = null;
             r.mode = 'perched';
             r.sit = rand(6, 25) * (1 + smooth(14, 4, w.windSpeed));
             r.lookIn = rand(1, 3);
@@ -762,26 +885,37 @@
           const d = Math.hypot(dx, dz);
           const d3 = Math.hypot(dx, dy, dz);
           const speedNow = Math.hypot(r.vel[0], r.vel[1], r.vel[2]);
-          if (d3 < 0.0006 || (d3 < 0.003 && d3 < speedNow * dt * 1.5)) {
+          if (d3 < Math.max(0.0002, speedNow * 0.33) || (d3 < 0.003 && d3 < speedNow * dt * 1.5)) {
             // its feet reach the perch: it settles on to it and folds its wings (below), facing the way it came in
             r.mode = 'settle';
             r.settle = 0;
-            r.face = Math.hypot(r.vel[0], r.vel[2]) > 1e-6 ? [r.vel[0], r.vel[2]] : [dx || 1, dz];
+            r.rel = null;
+            r.face =Math.hypot(r.vel[0], r.vel[2]) > 1e-6 ? [r.vel[0], r.vel[2]] : [dx || 1, dz];
+            // On the side of the crown it turns as it folds its wings, to sit facing out, the way it will drop off
+            // again (it would otherwise face into the leaves). On the top it sits facing the way it came.
+            const out = this.perchOut ? this.perchOut(r.site || 0) : null;
+            if (out && Math.hypot(out[0], out[2]) > 0.35) {
+              const fa = Math.atan2(out[0], out[2]) + rand(-0.6, 0.6);
+              r.face = [Math.sin(fa), Math.cos(fa)];
+            }
           } else {
             // The way in, as one smooth line. It flies at a point below its perch that rises to it over the last
             // metres, so it comes in low and swoops up on to it, as a bird does to lose its speed. That speed falls
             // as under even braking (3 m/s2) to a walking pace at the perch. It turns gently far out and closely
-            // near the tree, and beats its wings to brake over the last 15 m.
+            // near the tree, and beats its wings to brake over the last 15 m. One that set out behind the tree first
+            // swings round to the open side (r.via), and no turn pulls harder than 1.4 g.
+            if (r.via && Math.hypot(r.via[0] - r.pos[0], r.via[1] - r.pos[1], r.via[2] - r.pos[2]) < 0.025) r.via = null;
             const low = Math.min(0.0012, d3 * 0.12);
-            const ax = dx;
-            const ay = dy - low;
-            const az = dz;
+            const ax = r.via ? r.via[0] - r.pos[0] : dx;
+            const ay = r.via ? r.via[1] - r.pos[1] : dy - low;
+            const az = r.via ? r.via[2] - r.pos[2] : dz;
             const al = Math.hypot(ax, ay, az) || 1;
-            const speed = Math.min(sp * 1.1, Math.sqrt(0.0008 * 0.0008 + 2 * 0.003 * d3));
+            const speed = Math.min(sp * 1.1, Math.sqrt(0.0006 * 0.0006 + 2 * 0.003 * Math.max(d3 - speedNow * 0.25, 0)));
             const k = 1 - Math.exp(-dt * (0.8 + 5 * smooth(0.06, 0.01, d3)));
-            r.vel[0] += ((ax / al) * speed - r.vel[0]) * k;
-            r.vel[1] += ((ay / al) * speed - r.vel[1]) * k;
-            r.vel[2] += ((az / al) * speed - r.vel[2]) * k;
+            const dv = [((ax / al) * speed - r.vel[0]) * k, ((ay / al) * speed - r.vel[1]) * k, ((az / al) * speed - r.vel[2]) * k];
+            const dl = Math.hypot(dv[0], dv[1], dv[2]);
+            const lim = dl > 0.014 * dt ? (0.014 * dt) / dl : 1;
+            for (let i = 0; i < 3; i++) r.vel[i] += dv[i] * lim;
             r.bank *= Math.exp(-dt * 2);
             if (d3 < 0.015) r.flapLeft = Math.max(r.flapLeft, 0.3);
           }
@@ -844,8 +978,21 @@
           r.omega = (Math.random() < 0.5 ? -1 : 1) * (sp / r.R);
           r.circleTime = rand(60, 220);
         }
-        if (r.mode === 'leave' && !this._inView(this._project(...r.pos), 80) && d < 0.15) r.dead = true;
-        if (r.mode === 'leave' && d < 0.02) r.dead = true;
+        if (r.mode === 'leave') {
+          const seen = this._inView(this._project(...r.pos), 80);
+          if (!seen && d < 0.15) r.dead = true;
+          if (d < 0.02) r.dead = true;
+          // A falcon off the tree is gone once it is out of the picture, or has shrunk to less than a pixel (one that
+          // flew straight out over the valley): never where it could still be seen.
+          if (r.sp === SPECIES.falcon) {
+            const v = this._view;
+            const far = Math.hypot(r.pos[0], r.pos[1] - v.camY, r.pos[2]);
+            const at = this.perchAt ? this.perchAt(0) : null;
+            const fromTree = at ? Math.hypot(r.pos[0] - at[0], r.pos[1] - at[1], r.pos[2] - at[2]) : 1;
+            if (!seen && fromTree > 0.25) r.dead = true;
+            if (r.sp.span / 2 / far / v.pxAng < 0.25) r.dead = true;
+          }
+        }
       }
       // occasional bursts of heavy wingbeats, otherwise soaring on still wings
       r.nextFlap -= dt;
@@ -2188,7 +2335,7 @@
     /** Is this bird at the tree: sitting on it, or within 45 m of its perch on the way in or out? */
     _nearTree(r) {
       if (r.mode === 'perched') return true;
-      const at = this.perchAt && this.perchAt();
+      const at = this._siteAt(r);
       return !!at && Math.hypot(r.pos[0] - at[0], r.pos[1] - at[1], r.pos[2] - at[2]) < 0.045;
     }
 
@@ -2248,7 +2395,7 @@
       // they open, the sitting shape and the flying one fade into each other where its body is, so neither pops up.
       // (The flying bird is drawn about its body, the sitting one from its feet: flying, its body is that much above
       // the perch, see Life.perchBody.)
-      const sitting = b.mode === 'perched' ? 1 : !b.face ? 0 : b.mode === 'settle' ? smooth(0.3, 1, b.settle) : b.mode === 'leave' ? b.fold || 0 : 0;
+      const sitting = b.mode === 'perched' ? 1 : !b.face ? 0 : b.mode === 'settle' ? smooth(0.5, 1, b.settle) : b.mode === 'leave' ? b.fold || 0 : 0;
       if (sitting > 0.01) {
         // Type 9: sitting, wings folded. Its feet are on the perch; the patch holds it and the tail hanging below.
         const tall = (b.sp.tall || 0.00062) / dist / v.pxAng; // px: as tall as its kind sits

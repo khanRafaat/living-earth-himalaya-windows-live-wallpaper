@@ -304,31 +304,51 @@
       const crownAO = clamp(0.45 + 0.55 * smooth(0.25, 1, len(q)) + 0.15 * q[1], 0.4, 1);
       l[16] *= crownAO * (0.6 + 0.4 * smooth(0.15, 0.95, len(rel) / l[20]));
     }
-    // Where a bird of prey can sit: on the very top of the crown, as they do. A bare shoot runs up through the leaves
-    // from the nearest stout wood to end a hand's width above the topmost leaf, so almost none of it shows (a long
-    // bare stick standing out of the crown looked stuck on). Grown last and without the random sequence, so the rest
-    // of the tree is exactly as it was; it has no twig flex, so it moves with its limb and the bird can be put on it
-    // exactly (Foreground.perchEye).
-    let perch = null;
+    // Where a bird of prey can sit: on the very top of the crown, as they do, and on a few more high points round it.
+    // To each a bare shoot runs up through the leaves from the nearest stout wood to end a hand's width above the leaf,
+    // so almost none of it shows (a long bare stick standing out of the crown looked stuck on). Grown last and without
+    // the random sequence, so the rest of the tree is exactly as it was; they have no twig flex, so they move with
+    // their limb and the bird can be put on one exactly (Foreground.perchEye).
+    // Only points on the side of the crown facing the eye, or on its top: the bird at the tree is drawn in front of
+    // it, so one sitting on the far side would float over the leaves.
+    const perches = [];
     {
+      const tipOf = (l) => [l[0] + l[3] * 0.5, l[1] + Math.max(l[4], 0), l[2] + l[5] * 0.5];
+      // the way out of the crown at a point on it (the normal of its ellipsoid)
+      const outAt = (p) => norm([(p[0] - crownC[0]) / (crownR[0] * crownR[0]), (p[1] - crownC[1]) / (crownR[1] * crownR[1]), (p[2] - crownC[2]) / (crownR[2] * crownR[2])]);
+      const toEye = norm([-awayDir[0], 0, -awayDir[2]]);
       let top = null;
-      let topY = -1e9;
+      for (const l of leaves) if (!top || tipOf(l)[1] > tipOf(top)[1]) top = l;
+      const spots = top ? [tipOf(top)] : [];
+      // the highest leaf in each sixth of the crown round its middle, in its upper part, facing the eye
+      const floor = lo[1] + 0.6 * (hi[1] - lo[1]);
+      const best = [];
       for (const l of leaves) {
-        const y = l[1] + Math.max(l[4], 0);
-        if (y > topY) [top, topY] = [l, y];
+        const p = tipOf(l);
+        if (p[1] < floor) continue;
+        const out = outAt(p);
+        if (dot(out, toEye) < -0.1) continue;
+        const k = Math.floor(((Math.atan2(p[2] - crownC[2], p[0] - crownC[0]) / (Math.PI * 2) + 1) % 1) * 6) % 6;
+        if (!best[k] || p[1] > best[k][1]) best[k] = p;
       }
-      let from = null;
-      let best = 1e9;
-      for (const b of branches) {
-        if (!top || b.level < 1 || b.level >= TWIG_LEVEL) continue;
-        for (const nd of b.nodes) {
-          if (nd.w[2] !== 0 || nd.r <= 0.018 || nd.p[1] > topY - 0.3) continue;
-          const d = Math.hypot(nd.p[0] - (top[0] + top[3] * 0.5), nd.p[2] - (top[2] + top[5] * 0.5)) + 0.4 * (topY - nd.p[1]);
-          if (d < best) [from, best] = [nd, d];
+      // the highest first, each at least 1.2 m from the others, five at most
+      for (const p of best.filter(Boolean).sort((a, b) => b[1] - a[1])) {
+        if (spots.length >= 5) break;
+        if (spots.every((q) => Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]) >= 1.2)) spots.push(p);
+      }
+      for (const at of spots) {
+        let from = null;
+        let near = 1e9;
+        for (const b of branches) {
+          if (b.snag || b.level < 1 || b.level >= TWIG_LEVEL) continue;
+          for (const nd of b.nodes) {
+            if (nd.w[2] !== 0 || nd.r <= 0.018 || nd.p[1] > at[1] - 0.3) continue;
+            const d = Math.hypot(nd.p[0] - at[0], nd.p[2] - at[2]) + 0.4 * (at[1] - nd.p[1]);
+            if (d < near) [from, near] = [nd, d];
+          }
         }
-      }
-      if (from) {
-        const end = [top[0] + top[3] * 0.5, topY + 0.07, top[2] + top[5] * 0.5];
+        if (!from) continue;
+        const end = [at[0], at[1] + 0.07, at[2]];
         const len = Math.hypot(end[0] - from.p[0], end[1] - from.p[1], end[2] - from.p[2]);
         const s0 = Math.pow(from.w[0] / LIMB_K, 1 / 1.3); // how far along the wood that point is from its fork
         const N = 6;
@@ -341,9 +361,10 @@
         }
         branches.push({ nodes, level: 2, sides: 6, snag: true });
         const tip = nodes[N];
-        perch = { p: tip.p.slice(), w: tip.w.slice() };
+        perches.push({ p: tip.p.slice(), w: tip.w.slice(), out: outAt(at) });
       }
     }
+    const perch = perches[0] || null;
     const boundLo = [lo[0] - 0.3, -0.4, lo[2] - 0.3];
     const boundHi = [hi[0] + 0.3, hi[1] + 0.3, hi[2] + 0.3];
     for (const b of branches) {
@@ -374,7 +395,8 @@
       boundLo,
       boundHi,
       tips: tips.length,
-      perch, // { p, w }: the tip of the snag at rest (m, the tree's frame) and its wind weights
+      perch, // { p, w, out }: the top of the crown's perch at rest (m, the tree's frame), its wind weights, the way out
+      perches, // all the places a bird can sit, the top one first
     };
   }
 
@@ -915,10 +937,24 @@
      * it (shaders/tree.js windOffset; it has no twig flex, so only the trunk's lean and its limb's swing). null without
      * a tree. Life puts the perched bird there.
      */
-    perchEye() {
+    perchEye(i = 0) {
       const T = this.tree;
-      if (!this.enabled || !T || !T.perch) return null;
-      return LE.Foreground.windMoved(T.perch.p, T.perch.w, this._windDir || [1, 0, 0], this.treeWind.lean, this.treeWind.limbs, T.height).map((x, k) => x + this.site[k]);
+      const s = this.enabled && T && T.perches && T.perches[i];
+      if (!s) return null;
+      return LE.Foreground.windMoved(s.p, s.w, this._windDir || [1, 0, 0], this.treeWind.lean, this.treeWind.limbs, T.height).map((x, k) => x + this.site[k]);
+    }
+
+    /** How many places on the tree a bird can sit on (0 without a tree). */
+    perchCount() {
+      const T = this.tree;
+      return this.enabled && T && T.perches ? T.perches.length : 0;
+    }
+
+    /** The way out of the crown at that place (a unit vector, scene axes), for a bird to come in from that side. */
+    perchOut(i = 0) {
+      const T = this.tree;
+      const s = this.enabled && T && T.perches && T.perches[i];
+      return s ? s.out.slice() : null;
     }
 
     /** How far (m) the crown has swayed downwind now, for the dappled shadow it casts on the rock. */

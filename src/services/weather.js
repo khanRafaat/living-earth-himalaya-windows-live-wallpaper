@@ -289,10 +289,43 @@
     }
 
     /**
+     * The nearest airport's report, handed over by the Windows app (host.js), or null. Returns whether it changed.
+     * { id, name, km, t (ms), temp, dewp (°C), vis (m), wx (METAR weather, e.g. "BR" or "-RA BR") }
+     */
+    setObservation(obs) {
+      const ok = obs && typeof obs === 'object' && typeof obs.t === 'number' && typeof obs.km === 'number' && isFinite(obs.t + obs.km);
+      const key = ok ? JSON.stringify(obs) : '';
+      if (key === (this._obsKey || '')) return false;
+      this._obsKey = key;
+      this.obs = ok ? obs : null;
+      return true;
+    }
+
+    /**
+     * WeatherAPI.com's weather now, when it is the source chosen in the Windows app, which fetches it with the user's
+     * own key (host.js), or null. Returns whether it changed.
+     * { t (ms), code (WeatherAPI's), text, cloud (%), vis (m), temp, dewp (°C), hum (%), wind (km/h), dir, gust, precip (mm),
+     *   pm25, pm10 (µg/m³), aqi (US EPA index, 1 good to 6 hazardous) }
+     */
+    setWeatherApi(w) {
+      const ok = w && typeof w === 'object' && typeof w.t === 'number' && isFinite(w.t);
+      const key = ok ? JSON.stringify(w) : '';
+      if (key === (this._wapiKey || '')) return false;
+      this._wapiKey = key;
+      this.wapi = ok ? w : null;
+      return true;
+    }
+
+    /**
      * Best real weather for "now" (real clock), or null.
-     * Adds: source ('live' | 'recent' | 'forecast'), ageMs.
+     * Adds: source ('live' | 'recent' | 'forecast'), ageMs. Over it: the ground weather from WeatherAPI.com when chosen
+     * (LE.withWeatherApi), then what a recent airport report near by saw (LE.withObservation), which wins.
      */
     current(nowMs = Date.now()) {
+      return LE.withObservation(LE.withWeatherApi(this._current(nowMs), this.wapi, nowMs), this.obs, nowMs);
+    }
+
+    _current(nowMs) {
       if (!this.data || !this.data.current) return null;
       const age = Math.max(0, nowMs - this.data.fetchedAt);
       const refreshMs = this.cfg.refreshMinutes * 60e3;
@@ -324,6 +357,151 @@
   }
 
   LE.WeatherService = WeatherService;
+
+  /** Relative humidity (%) from the temperature and the dew point (°C), by the Magnus formula. */
+  const humidityFrom = (t, td) => Math.min(100, (100 * Math.exp((17.625 * td) / (243.04 + td))) / Math.exp((17.625 * t) / (243.04 + t)));
+
+  /**
+   * What an airport near by actually saw, laid over the forecast: its visibility, temperature, humidity and any mist,
+   * fog, haze, smoke or dust. Forecast models miss these: on 2026-11-18 at 09:00 Dhaka airport reported mist and
+   * 1 km, the forecast 7.1 km and "overcast" (all of it thin high cloud). Only a report under 100 minutes old and from
+   * within 60 km counts. Rain, snow and cloud stay with the forecast.
+   */
+  LE.withObservation = function (rec, obs, nowMs = Date.now()) {
+    if (!rec || !obs) return rec;
+    const age = nowMs - obs.t;
+    if (!(age > -15 * 60e3 && age < 100 * 60e3) || !(obs.km <= 60)) return rec;
+    const out = Object.assign({}, rec);
+    const num = (v) => typeof v === 'number' && isFinite(v); // a report may lack any of them (null)
+    // a report says 9999 m (or "10+" miles) for anything clearer, so a larger forecast value stands
+    if (num(obs.vis) && obs.vis > 0) out.visibility = obs.vis >= 9999 ? Math.max(rec.visibility ?? 10000, 10000) : obs.vis;
+    if (num(obs.temp)) out.temp = obs.temp;
+    if (num(obs.temp) && num(obs.dewp)) out.humidity = Math.round(humidityFrom(obs.temp, obs.dewp));
+    // METAR weather groups: intensity (- +), VC (near by, not here), a descriptor (MI shallow, BC patches, PR partial,
+    // FZ freezing ...), then two-letter phenomena
+    const seen = new Set();
+    let thin = false;
+    for (let g of String(obs.wx || '').toUpperCase().split(/\s+/)) {
+      g = g.replace(/^[-+]/, '');
+      if (!g || g.startsWith('VC')) continue;
+      const d = /^(MI|BC|PR|DR|BL|SH|TS|FZ)/.exec(g);
+      if (d) g = g.slice(2);
+      for (let i = 0; i + 1 < g.length; i += 2) {
+        const p = g.slice(i, i + 2);
+        seen.add(p);
+        if (p === 'FG' && d && /MI|BC|PR/.test(d[1])) thin = true;
+      }
+    }
+    // its words for the sky give way to what the airport saw, whenever it saw something in the air or WeatherAPI did
+    if (seen.size || rec.obscured || rec.code === 45 || rec.code === 48) delete out.wapiText;
+    if (seen.has('FG') && !thin) {
+      out.obscured = 'fog';
+      if ((rec.code ?? 0) <= 3) out.code = 45;
+    } else {
+      // What it saw stands over what a forecast or WeatherAPI guessed: no fog there, no fog here
+      if (rec.code === 45 || rec.code === 48) out.code = codeFromCloud(rec.cloud);
+      if (seen.has('FG') || seen.has('BR')) out.obscured = 'mist';
+      else if (seen.has('FU')) out.obscured = 'smoke';
+      else if (seen.has('HZ')) out.obscured = 'haze';
+      else if (seen.has('DU') || seen.has('SA')) out.obscured = 'dust';
+      else delete out.obscured;
+    }
+    out.obs = { id: String(obs.id || '').slice(0, 8), t: obs.t };
+    return out;
+  };
+
+  /** The weather code for a sky with this much cloud (%) and nothing falling. */
+  const codeFromCloud = (c) => (c == null ? 2 : c >= 88 ? 3 : c >= 50 ? 2 : c >= 15 ? 1 : 0);
+
+  /**
+   * WeatherAPI.com's condition codes as the weather codes (WMO, as Open-Meteo's) the scene uses, or what they hide
+   * the view with. Its "possible" and "nearby" codes (1063-1087) mean nothing is falling here: the sky as its cloud
+   * says. Sleet falls as wet snow.
+   */
+  const WAPI_CODES = {
+    1000: 0, 1003: 2, 1006: 3, 1009: 3, 1030: 'mist', 1036: 'haze', 1135: 45, 1147: 48,
+    1063: null, 1066: null, 1069: null, 1072: null, 1087: null,
+    1114: 73, 1117: 75, 1150: 51, 1153: 51, 1168: 56, 1171: 57,
+    1180: 61, 1183: 61, 1186: 63, 1189: 63, 1192: 65, 1195: 65, 1198: 66, 1201: 67,
+    1204: 71, 1207: 73, 1210: 71, 1213: 71, 1216: 73, 1219: 73, 1222: 75, 1225: 75,
+    1237: 77, 1240: 80, 1243: 81, 1246: 82, 1249: 85, 1252: 86, 1255: 85, 1258: 86, 1261: 77, 1264: 77,
+    1273: 95, 1276: 95, 1279: 95, 1282: 95,
+  };
+  LE.WAPI_CODES = WAPI_CODES;
+
+  /**
+   * WeatherAPI.com's weather at the ground, laid over the forecast: temperature, humidity, wind, rain, visibility,
+   * what the sky is doing and how much cloud. Only while under an hour old. Its total cloud rescales the forecast's
+   * low, middle and high cloud in their own proportions, so the clouds keep their heights and move with the real
+   * winds up there, which WeatherAPI does not give. With no forecast at all it stands alone.
+   */
+  LE.withWeatherApi = function (rec, w, nowMs = Date.now()) {
+    if (!w) return rec;
+    const age = nowMs - w.t;
+    if (!(age > -15 * 60e3 && age < 60 * 60e3)) return rec;
+    const num = (v) => typeof v === 'number' && isFinite(v);
+    const out = Object.assign(rec ? {} : { source: 'live', ageMs: Math.max(0, age) }, rec);
+    if (num(w.temp)) out.temp = w.temp;
+    if (num(w.hum)) out.humidity = w.hum;
+    else if (num(w.temp) && num(w.dewp)) out.humidity = Math.round(humidityFrom(w.temp, w.dewp));
+    if (num(w.wind)) out.windSpeed = w.wind;
+    if (num(w.dir)) out.windDir = w.dir;
+    if (num(w.gust)) out.gusts = Math.max(w.gust, out.windSpeed ?? 0);
+    if (num(w.precip)) out.precip = out.rain = w.precip;
+    // it gives 10 km for anything clearer, so a larger forecast value stands
+    if (num(w.vis) && w.vis > 0) out.visibility = w.vis >= 10000 ? Math.max(rec?.visibility ?? 10000, 10000) : w.vis;
+    if (num(w.cloud)) {
+      const c = Math.min(Math.max(w.cloud, 0), 100);
+      const total = rec?.cloud;
+      if (rec && num(total) && total >= 5 && num(rec.cloudLow) && num(rec.cloudMid)) {
+        const k = c / total;
+        out.cloudLow = Math.min(100, rec.cloudLow * k);
+        out.cloudMid = Math.min(100, rec.cloudMid * k);
+        if (num(rec.cloudHigh)) out.cloudHigh = Math.min(100, rec.cloudHigh * k);
+      } else {
+        // no layers to share it out by: the total alone
+        out.cloudLow = out.cloudMid = null;
+      }
+      out.cloud = c;
+    }
+    // the air: fine particles make the smog that lies in the valleys (environment.js)
+    if (num(w.pm25) && w.pm25 >= 0) out.pm25 = w.pm25;
+    if (num(w.pm10) && w.pm10 >= 0) out.pm10 = w.pm10;
+    if (num(w.aqi) && w.aqi >= 1 && w.aqi <= 6) out.aqi = Math.round(w.aqi);
+    // and its own words for the sky, which say more than a weather code ("Smoky haze", "Patchy rain nearby")
+    if (typeof w.text === 'string' && w.text.trim()) out.wapiText = w.text.trim().slice(0, 40);
+    const m = WAPI_CODES[w.code];
+    delete out.obscured;
+    if (typeof m === 'number') out.code = m;
+    else {
+      // mist, haze, or "rain possible": the sky as its cloud says, light rain if some falls all the same
+      out.code = num(w.precip) && w.precip > 0.05 ? 61 : codeFromCloud(out.cloud);
+      if (typeof m === 'string') out.obscured = m;
+      if (m === undefined && rec && rec.code != null) out.code = rec.code; // a code it added since: the forecast's
+    }
+    out.wapi = { t: w.t };
+    return out;
+  };
+
+  /** The words for the weather now: the airport's mist or haze when it saw some, and thin high cloud as such. */
+  LE.weatherLabel = function (rec) {
+    if (!rec) return 'Unknown';
+    if (rec.wapiText) return rec.wapiText;
+    const c = rec.code;
+    const ob = { mist: 'Mist', haze: 'Haze', smoke: 'Smoke', dust: 'Dust' }[rec.obscured];
+    if (ob && (c == null || c <= 3)) return ob;
+    if (c === 3 && rec.cloudLow != null && rec.cloudMid != null) {
+      const deck = 1 - (1 - Math.min(Math.max(rec.cloudLow, 0), 100) / 100) * (1 - Math.min(Math.max(rec.cloudMid, 0), 100) / 100);
+      if (deck < 0.2) return 'High cloud';
+    }
+    return LE.weatherText(c);
+  };
+
+  /** How the air is, from the US EPA index WeatherAPI.com gives with its weather, or ''. */
+  LE.airText = function (rec) {
+    const i = rec && rec.aqi;
+    return i >= 1 && i <= 6 ? 'air ' + ['good', 'moderate', 'poor', 'unhealthy', 'very unhealthy', 'hazardous'][i - 1] : '';
+  };
 
   LE.weatherText = function (code) {
     const map = {

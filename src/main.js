@@ -93,6 +93,14 @@
       if (source === 'forecast') parts.push(`Offline · using forecast (${age})`);
       else if (weather.status === 'offline' || weather.status === 'error') parts.push(`Offline · last update ${age}`);
       else parts.push(`Live · updated ${age}`);
+      // what WeatherAPI.com and the nearest airport said, when they are laid over the forecast
+      const ob = weatherRecord().rec;
+      const hm = (t) => {
+        const d = new Date(t);
+        return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      };
+      if (ob && ob.wapi) parts.push(`WeatherAPI ${hm(ob.wapi.t)}`);
+      if (ob && ob.obs && ob.obs.id) parts.push(`airport ${ob.obs.id} ${hm(ob.obs.t)}`);
     }
     parts.push(`Sky mood synced to ${location.name}`);
     return parts.join(' · ');
@@ -356,11 +364,14 @@
       life.planes = cfg.planes !== false;
       life.animals = cfg.animals !== false;
       life.lights = cfg.lights !== false; // festival fireworks go with the village lights
-      // the snag on the tree, where a bird of prey can sit: where its tip is now, in the scene's km
-      life.perchAt = () => {
-        const p = renderer.fg && renderer.fg.perchEye();
+      // the places on the tree where a bird of prey can sit: where each is now, in the scene's km, and which way is
+      // out of the crown there
+      life.perchAt = (i = 0) => {
+        const p = renderer.fg && renderer.fg.perchEye(i);
         return p ? [p[0] / 1000, view.camY + p[1] / 1000, p[2] / 1000] : null;
       };
+      life.perchCount = () => (renderer.fg ? renderer.fg.perchCount() : 0);
+      life.perchOut = (i = 0) => (renderer.fg ? renderer.fg.perchOut(i) : null);
       life.traffic = demo.on ? 'busy' : cfg.traffic || 'normal'; // the demo shows a busy road, without touching the setting
       stepLife(state);
       if (d) for (const k of d.summons) life.summon(k);
@@ -744,6 +755,17 @@
     location = { lat: loc.lat, lon: loc.lon, name, source: 'host' };
     env.setLocation(location);
     if (km > 10) weather.start(location.lat, location.lon);
+  };
+
+  // Used by src/services/host.js: the nearest airport's report, which the Windows app reads for the page (a page may
+  // not). It shows the mist and fog the forecast misses.
+  window.leSetObservation = function (obs) {
+    if (weather.setObservation(obs)) pushWeather();
+  };
+  // Used by src/services/host.js: WeatherAPI.com's weather now, when it is the source chosen in the Windows app, which
+  // fetches it with the user's own key (the key itself never reaches the page).
+  window.leSetWeatherApi = function (w) {
+    if (weather.setWeatherApi(w)) pushWeather();
   };
 
   pushWeather();

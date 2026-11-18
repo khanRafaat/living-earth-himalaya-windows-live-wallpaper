@@ -111,15 +111,24 @@
     const wetCloud = Math.max(rain, snow * 0.7);
 
     // Valley mist from humidity. Every target here comes from the data alone, so the weather on
-    // screen changes only when the data does.
-    const mist = smooth(52, 97, hum);
+    // screen changes only when the data does. An airport near by that reports mist or fog (rec.obscured, weather.js
+    // LE.withObservation) fills the valleys whatever the humidity says.
+    const ob = rec.obscured;
+    const mist = Math.max(smooth(52, 97, hum), ob === 'mist' || ob === 'fog' ? 0.85 : 0);
 
-    let fog = isFog ? 0.9 : vis < 1000 ? 0.7 : vis < 2500 ? 0.3 : 0;
+    // Fog in the valleys below the viewpoint, thicker and higher the shorter the visibility; it went in two steps (at
+    // 1000 and 2500 m). Haze, smoke or dust thicken the air instead (below), they are not fog.
+    let fog = isFog ? 0.9 : ob === 'haze' || ob === 'smoke' || ob === 'dust' ? 0 : 0.75 * smooth(4000, 700, vis);
+    if (ob === 'fog') fog = Math.max(fog, 0.8);
     if (rain > 0.8) fog = Math.max(fog, 0.15);
 
+    // Smog, from the fine particles in the air when WeatherAPI.com gives them (PM2.5, µg/m³): it lies in the valleys,
+    // thicker and browner the dirtier the air. A winter morning in Dhaka has about 100; clean mountain air under 10.
+    const smog = rec.pm25 != null ? smooth(12, 150, rec.pm25) : 0;
+
     // sky haze (Mie density multiplier) and the denser haze that layers the valleys
-    const haze = 1.3 + 2.2 * smooth(12000, 2500, vis) * (1 - fog) + 2.0 * wetCloud + 0.8 * smooth(70, 98, hum);
-    const valleyHaze = 5 + 8 * smooth(15000, 3000, vis) * (1 - fog) + 6 * wetCloud + 4 * smooth(65, 98, hum);
+    const haze = 1.3 + 2.2 * smooth(12000, 2500, vis) * (1 - fog) + 2.0 * wetCloud + 0.8 * smooth(70, 98, hum) + 0.6 * smog;
+    const valleyHaze = 5 + 8 * smooth(15000, 3000, vis) * (1 - fog) + 6 * wetCloud + 4 * smooth(65, 98, hum) + 6 * smog * (1 - fog);
     const winds = cloudWinds(rec);
     // Banner clouds on the high peaks (volume.js): they need moist air and a steady wind up there to carry it past the
     // summits. A closed deck, steady rain or snow, or fog hide the peaks instead.
@@ -143,6 +152,7 @@
       fogTop: 1.85 + 0.8 * fog,
       haze,
       valleyHaze,
+      smog,
       banner,
       windSpeed: Math.max(rec.windSpeed ?? 8, 0),
       windDir: rec.windDir ?? 270,
@@ -174,6 +184,7 @@
     fogTop: [1.6, 1.2],
     haze: [1.5, 1.5],
     valleyHaze: [1.5, 1.5],
+    smog: [1.5, 1.5],
     banner: [2.0, 1.6], // banner clouds take a few minutes to form, and a little less to dissolve
     windSpeed: [0.6, 0.8],
     gusts: [0.6, 0.8],
@@ -533,6 +544,7 @@
       wo.fogTop = w.fogTop;
       wo.haze = w.haze;
       wo.valleyHaze = w.valleyHaze;
+      wo.smog = w.smog;
       wo.wet = this.wet;
       wo.banner = w.banner;
       wo.deckX = deckX; // the wind at the clouds (km/h, scene axes): banner clouds stream along it, as the deck drifts

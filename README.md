@@ -21,7 +21,7 @@ You do not need Lively, Wallpaper Engine, Steam, an installer, admin rights or a
 
 ## Download and set your wallpaper
 
-### **[Download LivingEarthHimalaya-2.4.0.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.4.0/LivingEarthHimalaya-2.4.0.exe)**
+### **[Download LivingEarthHimalaya-2.5.0.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.5.0/LivingEarthHimalaya-2.5.0.exe)**
 
 About 2.4 MB. For Windows 11 version 24H2 or later.
 
@@ -53,10 +53,12 @@ The mountains now sit behind your desktop icons like a normal wallpaper, with a 
 | Wallpaper mode | **Animate while you look at the desktop** is the lightest. **Animate unless a window is maximized or full screen** moves more often. **Paused** keeps a still picture. When it doesn't animate, the picture holds still and draws nothing, so your apps have the graphics chip to themselves; it moves on with the real sky when you come back. With two screens, while you work in an app on one, the other keeps moving gently if it shows the desktop, and only that screen's scene is drawn again. |
 | In the scene | Turn each part on or off: the road and its traffic (light, normal or busy), the tree on the rock, flying leaves, birds, shooting stars, aircraft, rainbows, prayer flags, grazing animals, village lights, forest mist, clouds on the peaks, village smoke and burning fields. Changing the road shapes the mountains again, which takes a few minutes. |
 | Clock and weather panel | Show it or hide it, and choose its corner and size. |
+| Weather from | **Open-Meteo** (free, no key) or **WeatherAPI.com**. WeatherAPI.com needs a free key of your own from [weatherapi.com](https://www.weatherapi.com/); paste it in the box beside it. It then gives the weather at the ground (temperature, humidity, wind, rain, visibility, the sky in its own words such as "Smoky haze", and how much cloud) and the air quality: dirty air lies as grey-brown smog in the valleys, and the panel says how the air is. Open-Meteo still gives the height of the clouds and the winds up high. The key stays on your PC, encrypted for your Windows account. |
 | Quality | **Auto** adjusts to your graphics. **Eco** is the lightest, then **Balanced** and **High**. **Ultra** is for powerful graphics only. |
 | Draw with | **Automatic** looks at your PC: a graphics card draws at full speed; graphics built into the processor (such as Intel UHD) get at most a quarter of the chip's time, so the desktop and your apps stay smooth; with no graphics chip, the processor draws. **Graphics chip (GPU)** always uses the graphics chip, with up to half its time. **Processor (CPU)** leaves the graphics chip free: the picture is softer, the clouds change more slowly, it uses at most a quarter of the processor, and the first picture takes longer after each start. |
 | Start with Windows | Starts the wallpaper when you sign in, with no window to click through. |
 | Update automatically | Twice a day it looks on GitHub for a new version. A new one is downloaded, checked against the SHA-256 that GitHub gives for it, and put in while the PC is locked, after 20 minutes without use, or at the next sign-in. It takes the place of the old exe, so Start with Windows keeps working. Turn it off to update by hand. |
+| Airport weather | Every half hour the app reads what the nearest airport (within 60 km) reports: visibility, mist, fog, haze or smoke, temperature and dew point. Forecasts often miss morning fog; with this, the valleys fill with fog when the airport sees it, and the panel says "Mist" or "Fog" and names the airport. Only a rough area is asked about. |
 | Show the scene in Windows Settings too | Also sets a still picture of the scene, matching the time of day, as the Windows desktop background, so Settings > Personalization shows it. Your previous background comes back when you exit. |
 
 ### What the app uses
@@ -126,11 +128,11 @@ While you work in an app on one screen, the other screen keeps moving gently as 
 
 - **Light follows the real sky.** The sun and moon are calculated for your location and your PC clock, so sunrise, golden hour, sunset, blue hour and night happen at the true times. The moon shows its real phase, and the stars turn around the pole through the night.
 - **Real positions only.** The sun and moon are drawn exactly where they really are. When they are out of view you still see their light, such as pink alpenglow or moonlit snow, but nothing is faked into view.
-- **Weather follows your location.** Live data from [Open-Meteo](https://open-meteo.com/) (free, no key) sets the mood of the mountain sky: cloud cover, rain, storms, fog, mist and wind. The panel always names the place, so it is not presented as Himalayan weather.
+- **Weather follows your location.** Live data from [Open-Meteo](https://open-meteo.com/) (free, no key) sets the mood of the mountain sky: cloud cover, rain, storms, fog, mist and wind. In the Windows app you can take the weather at the ground from [WeatherAPI.com](https://www.weatherapi.com/) instead, with a free key of your own. The app also reads the nearest airport's report, so real morning fog and mist show even when the forecast misses them: the valleys and the forest below fill with fog while the viewpoint and the peaks stay clear above it. The panel always names the place, so it is not presented as Himalayan weather.
 - **Clouds move with the real wind.** Low, middle and high cloud each follow the live wind at their own height and at true speed.
 - **Banner clouds on the peaks.** On humid, windy days a cloud streams from the top of the highest summits, the way real "cloud factories" form in the lee of a peak. Each streams downwind with the real wind at that height, forms and fades on its own rhythm, and is lit by the sun like the rest of the sky.
 - **Weather changes play out naturally.** Clouds build first and then the rain starts. Rain stops before the sky clears. A change arrives from the side the wind is coming from.
-- **Wind in the trees.** Gusts travel across the forest and meadows in the real wind direction, at the real gust speed, and the outlines of the nearer trees move with them. A tree rhododendron on the cliff edge moves with the live wind speed and direction, gets wet in rain, turns white in snow, changes colour with the season and flowers red in spring. Its fallen leaves drift past on the wind. A line of prayer flags runs from its trunk to a stake on the rock: the wind lifts them to its lee side and the waves run through the cloth downwind. Now and then by day a falcon comes in, sits on the top of the tree for a while and flies off again. Where it really snows, snow settles on the tree, the rock and the hills within a quarter of an hour. Snow only falls when the weather at your location says so: in a warm country such as Bangladesh it never does, while the highest summits keep their snow all year, as the real Himalaya does.
+- **Wind in the trees.** Gusts travel across the forest and meadows in the real wind direction, at the real gust speed, and the outlines of the nearer trees move with them. A tree rhododendron on the cliff edge moves with the live wind speed and direction, gets wet in rain, turns white in snow, changes colour with the season and flowers red in spring. Its fallen leaves drift past on the wind. A line of prayer flags runs from its trunk to a stake on the rock: the wind lifts them to its lee side and the waves run through the cloth downwind. Now and then by day a falcon comes in from any side, sits for a while on the top of the tree or on one of its upper branches, and flies off again in any direction. Where it really snows, snow settles on the tree, the rock and the hills within a quarter of an hour. Snow only falls when the weather at your location says so: in a warm country such as Bangladesh it never does, while the highest summits keep their snow all year, as the real Himalaya does.
 - **A mountain road with traffic.** Buses, jeeps and motorcycles wind along a road through the forest. They slow for hairpins, overtake when the road ahead is clear, and stop for passengers. At night their dipped headlights light the road ahead, with red tail lights that brighten when they brake. Lorries grind up the hill, now and then an army column passes with its hazard lights on, and when an ambulance comes with its roof light flashing, everyone pulls to the edge to let it by. After rain the road is dark and glints towards the sun.
 - **Mist and smoke in 3D.** After rain or on humid mornings, mist lifts off the forest in soft patches and drifts with the real wind. Wood smoke rises from villages all across the valley, near and far, and drifts downwind as a thin blue-grey haze. Each village keeps its own hours: fires are lit one after another around breakfast and supper, die down slowly, and some keep a fire in all day. On a calm morning the smoke lies in flat layers; in the afternoon sun it climbs and thins out. Now and then a field burns on a hill, its smoke glowing from below at night.
 - **Wildlife and village life,** following the real clock, season and weather:
@@ -162,7 +164,7 @@ While you work in an app on one screen, the other screen keeps moving gently as 
 ## Frequently asked questions
 
 ### How do I get a live wallpaper on Windows 11?
-On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.4.0.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
+On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.5.0.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
 
 ### Do I need Lively or Wallpaper Engine?
 No. The exe sets the wallpaper by itself on Windows 11 version 24H2 or later, with nothing else to install. Lively is only for older versions of Windows.
@@ -180,7 +182,7 @@ It uses your graphics chip while it animates, and it is built to stay out of the
 Yes. It was designed for a dual monitor desktop, as one 3840 × 1080 panorama across both screens. It also works on a single monitor.
 
 ### What does it send over the internet?
-It asks [Open-Meteo](https://open-meteo.com/) for the weather at your location, and the app can look up where you are. It has no accounts, no ads and no tracking. See [Privacy](#privacy).
+It asks [Open-Meteo](https://open-meteo.com/) for the weather at your location (and [WeatherAPI.com](https://www.weatherapi.com/) if you choose it), the app reads the nearest airport's weather report, and the app can look up where you are. It has no accounts, no ads and no tracking. See [Privacy](#privacy).
 
 ### Can I use the code in my own project?
 Yes. The MIT licence allows it, including commercially, as long as the copyright and licence notice stay with it.
@@ -192,6 +194,8 @@ The wallpaper needs a rough location for the sun, moon and weather. You can choo
 - [Open-Meteo](https://open-meteo.com/): the weather forecast, and the app's place-name search.
 - [ipwho.is](https://ipwho.is/): the app's automatic location, based on your IP address, only when Windows location gives no answer.
 - [OpenStreetMap Nominatim](https://nominatim.openstreetmap.org/): the name of the place at a position, in the app.
+- [aviationweather.gov](https://aviationweather.gov/) (the US NOAA Aviation Weather Center): the airport weather reports, in the app. It is asked for every report in an area of about 150 km by 150 km round you, rounded to half a degree, so your exact position is not sent. Turn it off with **Airport weather**.
+- [WeatherAPI.com](https://www.weatherapi.com/): the weather at the ground, in the app, only when you choose it and give your own key. It gets your place to about a kilometre and your key, every 15 minutes.
 - [GitHub](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases): the app asks for the latest release twice a day and downloads a new version from there. No location or anything else about you goes with it.
 
 ## If something looks wrong
@@ -269,4 +273,4 @@ Questions, ideas and bug reports are welcome: open an issue on GitHub or send an
 
 [MIT](LICENSE) © 2026 Khan Rafaat Abtahe.
 
-Weather data: [Open-Meteo](https://open-meteo.com/) (CC BY 4.0). Sun and moon formulas adapted from SunCalc (BSD-2-Clause), with moon orbit terms from Meeus, *Astronomical Algorithms*.
+Weather data: [Open-Meteo](https://open-meteo.com/) (CC BY 4.0). Airport reports: [NOAA Aviation Weather Center](https://aviationweather.gov/) (public domain). Optional ground weather: [WeatherAPI.com](https://www.weatherapi.com/). Sun and moon formulas adapted from SunCalc (BSD-2-Clause), with moon orbit terms from Meeus, *Astronomical Algorithms*.

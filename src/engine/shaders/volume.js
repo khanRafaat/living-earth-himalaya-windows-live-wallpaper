@@ -349,6 +349,17 @@ void main() {
   if (uPlumes > 0 || uMist > 0.005 || uFog > 0.005) {
     {
       float shadowS = t < 0.0 ? 1.0 : texelFetch(uShadow, fci, 0).r;
+      // The ground's shadow for the mist just in front of it, read over a few pixels round this one, so a sharp shadow
+      // edge on the slope behind does not cut a sharp edge into the mist
+      float shadowSoft = shadowS;
+      if (t >= 0.0 && (uMist > 0.005 || uFog > 0.005)) {
+        ivec2 lim = ivec2(uRes) - 1;
+        shadowSoft = (shadowS * 2.0
+          + texelFetch(uShadow, clamp(fci + ivec2(6, 0), ivec2(0), lim), 0).r
+          + texelFetch(uShadow, clamp(fci - ivec2(6, 0), ivec2(0), lim), 0).r
+          + texelFetch(uShadow, clamp(fci + ivec2(0, 6), ivec2(0), lim), 0).r
+          + texelFetch(uShadow, clamp(fci - ivec2(0, 6), ivec2(0), lim), 0).r) / 6.0;
+      }
       float phS = mix(phaseHG(cosS, 0.55), 1.0 / (4.0 * PI), 0.4) * 4.0 * PI;
       float phM = mix(phaseHG(cosM, 0.55), 1.0 / (4.0 * PI), 0.4) * 4.0 * PI;
       // with a low sun, mist is golden only looking towards it or in front of land the sun lights.
@@ -469,9 +480,11 @@ void main() {
         vec3 p = uCamPos + rd * s;
         float sig = mistDensity(p);
         if (sig < 1e-4) continue;
-        // samples near the surface share its shadow (valleys in shade keep dim mist)
-        float nearSurf = t < 0.0 ? 0.0 : smoothstep(0.25, 0.9, s / tEnd);
-        float sh = mix(1.0, shadowS, nearSurf * 0.85);
+        // Samples close to the ground share its shadow (valleys in shade keep dim mist), but only those within a few
+        // hundred metres of it. Taken by the share of the way to the ground, kilometres of mist in front of a slope took
+        // on the outline of every shadow on it, and stood as hard grey islands in the valley mist (user, 2026-11-18).
+        float nearSurf = t < 0.0 ? 0.0 : 1.0 - smoothstep(0.15, 0.8, tEnd - s);
+        float sh = mix(1.0, shadowSoft, nearSurf * 0.85);
         float shS = uKeyIsSun > 0.5 ? sh : 1.0;
         float shM = uKeyIsSun > 0.5 ? 1.0 : sh;
         shS *= smoothstep(-0.35, 0.35, p.y - shadeLine);

@@ -51,8 +51,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Khan Rafaat Abtahe")]
 [assembly: AssemblyCopyright("© 2026 Khan Rafaat Abtahe. MIT licence")]
 [assembly: AssemblyDescription("Living Earth Himalaya live wallpaper. Author: Khan Rafaat Abtahe")]
-[assembly: AssemblyVersion("2.4.0.0")]
-[assembly: AssemblyFileVersion("2.4.0.0")]
+[assembly: AssemblyVersion("2.5.0.0")]
+[assembly: AssemblyFileVersion("2.5.0.0")]
 
 namespace LivingEarth
 {
@@ -188,9 +188,31 @@ namespace LivingEarth
         public string Traffic = "normal";
         public bool WindowsBackground = true; // Windows' own background shows a still of the scene
         public bool AutoUpdate = true; // the exe puts in a new version from GitHub by itself (Updater)
+        public bool Airport = true; // the nearest airport's report of mist, fog and visibility (Observer)
+        public string Source = "openmeteo"; // the weather at the ground: Open-Meteo, or WeatherAPI.com with the user's key
+        public string WeatherApiKey = ""; // the user's own; in the file only encrypted for this Windows user (Protect)
+        public static readonly string[] Sources = { "openmeteo", "weatherapi" };
 
         /** The place the wallpaper uses, or null for the page's default. */
         public Place Current { get { return !AutoLocation && Manual != null ? Manual : Detected; } }
+
+        // The WeatherAPI key is kept encrypted for this Windows user (DPAPI): another account on the PC, or the file copied
+        // somewhere else, can't read it. Nothing on failure: then it is as if no key was given.
+        private static readonly byte[] KeySalt = Encoding.UTF8.GetBytes("Living Earth Himalaya: WeatherAPI key");
+
+        public static string Protect(string key)
+        {
+            if (string.IsNullOrEmpty(key)) return "";
+            try { return Convert.ToBase64String(ProtectedData.Protect(Encoding.UTF8.GetBytes(key), KeySalt, DataProtectionScope.CurrentUser)); }
+            catch (Exception) { return ""; }
+        }
+
+        public static string Unprotect(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return "";
+            try { return Encoding.UTF8.GetString(ProtectedData.Unprotect(Convert.FromBase64String(text.Trim()), KeySalt, DataProtectionScope.CurrentUser)); }
+            catch (Exception) { return ""; }
+        }
 
         public Settings Copy() { return (Settings)MemberwiseClone(); }
 
@@ -248,6 +270,9 @@ namespace LivingEarth
             if (v.TryGetValue("traffic", out x) && Array.IndexOf(Traffics, x) >= 0) s.Traffic = x;
             s.WindowsBackground = !(v.TryGetValue("windowsbackground", out x) && x == "off");
             s.AutoUpdate = !(v.TryGetValue("autoupdate", out x) && x == "off");
+            s.Airport = !(v.TryGetValue("airport", out x) && x == "off");
+            if (v.TryGetValue("source", out x) && Array.IndexOf(Sources, x) >= 0) s.Source = x;
+            if (v.TryGetValue("weatherapikey", out x)) s.WeatherApiKey = Unprotect(x);
             return s;
         }
 
@@ -278,6 +303,9 @@ namespace LivingEarth
             b.Append("traffic=").Append(Traffic).Append("\r\n");
             b.Append("windowsbackground=").Append(WindowsBackground ? "on" : "off").Append("\r\n");
             b.Append("autoupdate=").Append(AutoUpdate ? "on" : "off").Append("\r\n");
+            b.Append("airport=").Append(Airport ? "on" : "off").Append("\r\n");
+            b.Append("source=").Append(Source).Append("\r\n");
+            if (WeatherApiKey.Length > 0) b.Append("weatherapikey=").Append(Protect(WeatherApiKey)).Append("\r\n");
             WritePlace(b, "manual", Manual);
             WritePlace(b, "detected", Detected);
             File.WriteAllText(path, b.ToString(), new UTF8Encoding(false));
@@ -492,6 +520,327 @@ namespace LivingEarth
             foreach (string p in parts)
                 if (!string.IsNullOrEmpty(p) && !seen.Contains(p)) seen.Add(p);
             return string.Join(", ", seen.ToArray());
+        }
+    }
+
+    // ====================================================================== the nearest airport's weather
+    /// <summary>
+    /// What the nearest airport reports (its METAR): visibility, mist, fog, haze or smoke, temperature and dew point.
+    /// Forecasts often miss these: on 2026-11-18 Dhaka airport reported mist and 1 km all morning while the forecast said
+    /// 7 km. A web page can't read the reports (aviationweather.gov sends no CORS headers), so the exe reads them every
+    /// half hour and hands the nearest one to the page in state.js. Only a rough area is asked about: the place widened
+    /// by 60 km and rounded out to whole half-degrees.
+    /// </summary>
+    public static class Observer
+    {
+        public const string Url = "https://aviationweather.gov/api/data/metar?format=json&hours=2&bbox=";
+        private const string Agent = "LivingEarthHimalaya-weather (+" + Program.ProjectUrl + ")";
+        public const double MaxKm = 60;
+        public const int MaxAgeMinutes = 120;
+
+        public sealed class Report
+        {
+            public string Id = "", Name = "", Wx = "";
+            public double Km, Temp = double.NaN, Dewp = double.NaN, Vis = double.NaN; // Vis in metres, 9999 for 10 km or more
+            public long Time; // when it was observed, ms since 1970 (UTC)
+
+            /// <summary>For state.js: { id, name, km, t, temp, dewp, vis, wx }.</summary>
+            public string Js()
+            {
+                return "{ id: " + Q(Id) + ", name: " + Q(Name) + ", km: " + Locator.F(Math.Round(Km, 1)) +
+                       ", t: " + Time.ToString(CultureInfo.InvariantCulture) + ", temp: " + Num(Temp) + ", dewp: " + Num(Dewp) +
+                       ", vis: " + Num(Vis) + ", wx: " + Q(Wx) + " }";
+            }
+
+            public string Text
+            {
+                get
+                {
+                    return Id + " " + Km.ToString("0.#", CultureInfo.InvariantCulture) + " km, " +
+                           new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(Time).ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture) +
+                           ", visibility " + (double.IsNaN(Vis) ? "?" : Vis >= 9999 ? "10 km or more" : Vis.ToString("0", CultureInfo.InvariantCulture) + " m") +
+                           (Wx.Length > 0 ? ", " + Wx : "") + (double.IsNaN(Temp) ? "" : ", " + Temp.ToString("0", CultureInfo.InvariantCulture) + " °C");
+                }
+            }
+
+            private static string Num(double v) { return double.IsNaN(v) ? "null" : Locator.F(v); }
+
+            // a JS string, as the app's Js: letters, digits and a few signs as they are, everything else escaped
+            private static string Q(string s)
+            {
+                var b = new StringBuilder("'");
+                foreach (char c in s)
+                {
+                    if (c < 128 && (char.IsLetterOrDigit(c) || c == ' ' || c == ',' || c == '.' || c == '-')) b.Append(c);
+                    else b.Append("\\u").Append(((int)c).ToString("x4"));
+                }
+                return b.Append('\'').ToString();
+            }
+        }
+
+        /// <summary>The area asked about, south,west,north,east: 60 km round the place, rounded out to half-degrees.</summary>
+        public static string Box(double lat, double lon)
+        {
+            double dLat = MaxKm / 111.0, dLon = MaxKm / (111.0 * Math.Max(0.2, Math.Cos(lat * Math.PI / 180)));
+            double s = Math.Max(-90, Math.Floor((lat - dLat) * 2) / 2), n = Math.Min(90, Math.Ceiling((lat + dLat) * 2) / 2);
+            double w = Math.Max(-180, Math.Floor((lon - dLon) * 2) / 2), e = Math.Min(180, Math.Ceiling((lon + dLon) * 2) / 2);
+            return Locator.F(s) + "," + Locator.F(w) + "," + Locator.F(n) + "," + Locator.F(e);
+        }
+
+        /// <summary>The reports of the last two hours in that area, as the site sends them. Throws when it can't be reached.</summary>
+        public static string Fetch(string box)
+        {
+            var req = (HttpWebRequest)WebRequest.Create(Url + box);
+            req.UserAgent = Agent;
+            req.Accept = "application/json";
+            req.Timeout = 15000;
+            req.ReadWriteTimeout = 15000;
+            req.AutomaticDecompression = DecompressionMethods.GZip;
+            using (var res = (HttpWebResponse)req.GetResponse())
+            using (var rd = new StreamReader(res.GetResponseStream(), Encoding.UTF8))
+                return rd.ReadToEnd();
+        }
+
+        /// <summary>
+        /// The newest report of the nearest station within 60 km, if it is under two hours old; null otherwise, or when the
+        /// answer is not what the site sends.
+        /// </summary>
+        public static Report Pick(string json, double lat, double lon, DateTime nowUtc)
+        {
+            object parsed;
+            try { parsed = new JavaScriptSerializer().DeserializeObject(json ?? ""); }
+            catch (Exception) { return null; }
+            var list = parsed as object[];
+            if (list == null) return null;
+            long now = (long)(nowUtc - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
+            Report best = null;
+            foreach (object o in list)
+            {
+                var d = o as Dictionary<string, object>;
+                if (d == null) continue;
+                string id = Str(d, "icaoId");
+                double sLat = Num(d, "lat"), sLon = Num(d, "lon"), t = Num(d, "obsTime");
+                if (id.Length == 0 || double.IsNaN(sLat) || double.IsNaN(sLon) || double.IsNaN(t)) continue;
+                long ms = (long)(t * 1000);
+                if (ms > now + 15 * 60000L || ms < now - MaxAgeMinutes * 60000L) continue;
+                double km = Locator.Km(lat, lon, sLat, sLon);
+                if (km > MaxKm) continue;
+                // the nearest station, and of its reports the newest
+                if (best != null && (best.Id == id ? ms <= best.Time : km >= best.Km)) continue;
+                best = new Report
+                {
+                    Id = id.Length > 8 ? id.Substring(0, 8) : id,
+                    Name = Clip(Str(d, "name"), 60),
+                    Km = km,
+                    Time = ms,
+                    Temp = Num(d, "temp"),
+                    Dewp = Num(d, "dewp"),
+                    Vis = Visibility(d),
+                    Wx = Clip(Str(d, "wxString"), 40),
+                };
+            }
+            return best;
+        }
+
+        /// <summary>
+        /// Visibility in metres. The site gives statute miles, and "6+" or "10+" for the clearest (a report's 9999, 10 km
+        /// or more), which is 9999 here.
+        /// </summary>
+        public static double Visibility(Dictionary<string, object> d)
+        {
+            object o;
+            if (d == null || !d.TryGetValue("visib", out o) || o == null) return double.NaN;
+            string s = Convert.ToString(o, CultureInfo.InvariantCulture).Trim();
+            if (s.EndsWith("+", StringComparison.Ordinal)) return 9999;
+            double mi;
+            if (!double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out mi) || mi < 0) return double.NaN;
+            return Math.Min(9999, Math.Round(mi * 1609.344 / 10) * 10);
+        }
+
+        private static string Clip(string s, int n) { return s.Length > n ? s.Substring(0, n) : s; }
+
+        private static string Str(Dictionary<string, object> d, string key)
+        {
+            object o;
+            return d.TryGetValue(key, out o) && o != null ? Convert.ToString(o, CultureInfo.InvariantCulture).Trim() : "";
+        }
+
+        private static double Num(Dictionary<string, object> d, string key)
+        {
+            object o;
+            if (!d.TryGetValue(key, out o) || o == null) return double.NaN;
+            double v;
+            if (o is string) return double.TryParse((string)o, NumberStyles.Float, CultureInfo.InvariantCulture, out v) ? v : double.NaN;
+            try { return Convert.ToDouble(o, CultureInfo.InvariantCulture); }
+            catch (Exception) { return double.NaN; }
+        }
+    }
+
+    // ====================================================================== WeatherAPI.com
+    /// <summary>
+    /// The weather at the ground from WeatherAPI.com, when the user chooses it and gives a key of their own: temperature,
+    /// humidity, wind, rain, visibility, what the sky is doing and how much cloud, updated every 15 minutes. The page lays
+    /// it over Open-Meteo, which still gives the cloud heights and the winds up high (weather.js, LE.withWeatherApi). The
+    /// key goes only to WeatherAPI.com: never into state.js, the log or anything else.
+    /// </summary>
+    public static class WeatherApi
+    {
+        public const string Url = "https://api.weatherapi.com/v1/current.json?aqi=yes"; // with the air quality: smog in the valleys
+        private const string Agent = "LivingEarthHimalaya-weather (+" + Program.ProjectUrl + ")";
+
+        public sealed class Report
+        {
+            public string Text = "";
+            public int Code;
+            public double Cloud = double.NaN, Vis = double.NaN, Temp = double.NaN, Dewp = double.NaN, Hum = double.NaN;
+            public double Wind = double.NaN, Dir = double.NaN, Gust = double.NaN, Precip = double.NaN; // km/h, degrees, mm
+            public double Pm25 = double.NaN, Pm10 = double.NaN, Aqi = double.NaN; // µg/m³, and the US EPA index 1-6
+            public long Time; // when it was last updated, ms since 1970 (UTC)
+
+            /// <summary>For state.js: { t, code, text, cloud, vis, temp, dewp, hum, wind, dir, gust, precip, pm25, pm10, aqi }.</summary>
+            public string Js()
+            {
+                return "{ t: " + Time.ToString(CultureInfo.InvariantCulture) + ", code: " + Code.ToString(CultureInfo.InvariantCulture) +
+                       ", text: " + Q(Text) + ", cloud: " + N(Cloud) + ", vis: " + N(Vis) + ", temp: " + N(Temp) + ", dewp: " + N(Dewp) +
+                       ", hum: " + N(Hum) + ", wind: " + N(Wind) + ", dir: " + N(Dir) + ", gust: " + N(Gust) + ", precip: " + N(Precip) +
+                       ", pm25: " + N(Pm25) + ", pm10: " + N(Pm10) + ", aqi: " + N(Aqi) + " }";
+            }
+
+            public string Line
+            {
+                get
+                {
+                    return new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(Time).ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture) +
+                           ", " + Text + (double.IsNaN(Vis) ? "" : ", " + (Vis / 1000).ToString("0.#", CultureInfo.InvariantCulture) + " km") +
+                           (double.IsNaN(Temp) ? "" : ", " + Temp.ToString("0.#", CultureInfo.InvariantCulture) + " °C") +
+                           (double.IsNaN(Cloud) ? "" : ", cloud " + Cloud.ToString("0", CultureInfo.InvariantCulture) + "%") +
+                           (double.IsNaN(Pm25) ? "" : ", PM2.5 " + Pm25.ToString("0", CultureInfo.InvariantCulture));
+                }
+            }
+
+            private static string N(double v) { return double.IsNaN(v) ? "null" : Locator.F(v); }
+
+            // a JS string, as the app's Js: letters, digits and a few signs as they are, everything else escaped
+            private static string Q(string s)
+            {
+                var b = new StringBuilder("'");
+                foreach (char c in s)
+                {
+                    if (c < 128 && (char.IsLetterOrDigit(c) || c == ' ' || c == ',' || c == '.' || c == '-')) b.Append(c);
+                    else b.Append("\\u").Append(((int)c).ToString("x4"));
+                }
+                return b.Append('\'').ToString();
+            }
+        }
+
+        /// <summary>The place as asked about: to two decimals, about a kilometre.</summary>
+        public static string Where(double lat, double lon)
+        {
+            return Locator.F(Math.Round(lat, 2)) + "," + Locator.F(Math.Round(lon, 2));
+        }
+
+        /// <summary>A key as WeatherAPI.com gives them: letters and digits only. Anything else is not sent.</summary>
+        public static bool KeyLooksRight(string key)
+        {
+            return key != null && Regex.IsMatch(key, "^[A-Za-z0-9]{16,64}$");
+        }
+
+        /// <summary>
+        /// The weather now at that place, as the site sends it. Throws when it can't be reached, or with the site's own
+        /// words when it refuses (a wrong or disabled key), never with the key in the message.
+        /// </summary>
+        public static string Fetch(string key, string where)
+        {
+            if (!KeyLooksRight(key)) throw new InvalidOperationException("the key is not one WeatherAPI.com gives (letters and digits)");
+            var req = (HttpWebRequest)WebRequest.Create(Url + "&key=" + key + "&q=" + where);
+            req.UserAgent = Agent;
+            req.Accept = "application/json";
+            req.Timeout = 15000;
+            req.ReadWriteTimeout = 15000;
+            req.AutomaticDecompression = DecompressionMethods.GZip;
+            try
+            {
+                using (var res = (HttpWebResponse)req.GetResponse())
+                using (var rd = new StreamReader(res.GetResponseStream(), Encoding.UTF8))
+                    return rd.ReadToEnd();
+            }
+            catch (WebException ex)
+            {
+                string said = null;
+                var res = ex.Response as HttpWebResponse;
+                if (res != null)
+                {
+                    try
+                    {
+                        using (var rd = new StreamReader(res.GetResponseStream(), Encoding.UTF8))
+                            said = Refusal(rd.ReadToEnd());
+                    }
+                    catch (Exception) { }
+                }
+                throw new InvalidOperationException((said ?? ex.Message).Replace(key, "(key)"));
+            }
+        }
+
+        /// <summary>The site's reason for refusing, from its answer { error: { code, message } }, or null.</summary>
+        public static string Refusal(string json)
+        {
+            try
+            {
+                var d = new JavaScriptSerializer().DeserializeObject(json ?? "") as Dictionary<string, object>;
+                object e;
+                var err = d != null && d.TryGetValue("error", out e) ? e as Dictionary<string, object> : null;
+                object m;
+                return err != null && err.TryGetValue("message", out m) && m != null ? Convert.ToString(m, CultureInfo.InvariantCulture) : null;
+            }
+            catch (Exception) { return null; }
+        }
+
+        /// <summary>The weather now from the site's answer, or null when it is not what the site sends.</summary>
+        public static Report Parse(string json)
+        {
+            Dictionary<string, object> d;
+            try { d = new JavaScriptSerializer().DeserializeObject(json ?? "") as Dictionary<string, object>; }
+            catch (Exception) { return null; }
+            object o;
+            var c = d != null && d.TryGetValue("current", out o) ? o as Dictionary<string, object> : null;
+            if (c == null) return null;
+            double t = Num(c, "last_updated_epoch");
+            if (double.IsNaN(t)) return null;
+            var cond = c.TryGetValue("condition", out o) ? o as Dictionary<string, object> : null;
+            var air = c.TryGetValue("air_quality", out o) ? o as Dictionary<string, object> : null;
+            double code = Num(cond, "code");
+            double vis = Num(c, "vis_km");
+            string text = cond != null && cond.TryGetValue("text", out o) && o != null ? Convert.ToString(o, CultureInfo.InvariantCulture).Trim() : "";
+            return new Report
+            {
+                Time = (long)(t * 1000),
+                Code = double.IsNaN(code) ? 0 : (int)code,
+                Text = text.Length > 40 ? text.Substring(0, 40) : text,
+                Cloud = Num(c, "cloud"),
+                Vis = double.IsNaN(vis) ? double.NaN : Math.Round(vis * 1000),
+                Temp = Num(c, "temp_c"),
+                Dewp = Num(c, "dewpoint_c"),
+                Hum = Num(c, "humidity"),
+                Wind = Num(c, "wind_kph"),
+                Dir = Num(c, "wind_degree"),
+                Gust = Num(c, "gust_kph"),
+                Precip = Num(c, "precip_mm"),
+                Pm25 = Num(air, "pm2_5"),
+                Pm10 = Num(air, "pm10"),
+                Aqi = Num(air, "us-epa-index"),
+            };
+        }
+
+        private static double Num(Dictionary<string, object> d, string key)
+        {
+            object o;
+            if (d == null || !d.TryGetValue(key, out o) || o == null || o is string) return double.NaN;
+            try
+            {
+                double v = Convert.ToDouble(o, CultureInfo.InvariantCulture);
+                return double.IsInfinity(v) ? double.NaN : v;
+            }
+            catch (Exception) { return double.NaN; }
         }
     }
 
@@ -915,6 +1264,20 @@ namespace LivingEarth
         private readonly ToolStripMenuItem updateItem;
         private DateTime nextUpdateCheck = DateTime.MaxValue; // set when the wallpaper starts
         private bool checkingUpdate;
+
+        // The nearest airport's weather (Observer)
+        private const int ObserveEveryMinutes = 30, ObserveRetryMinutes = 10;
+        private DateTime nextObserve = DateTime.MinValue;
+        private bool observing, observeFailed;
+        private string observedBox = ""; // the area the report is for: a new place asks again at once
+        private Observer.Report observed;
+
+        // WeatherAPI.com, when it is the source chosen (WeatherApi)
+        private const int WapiEveryMinutes = 15, WapiRetryMinutes = 10;
+        private DateTime nextWapi = DateTime.MinValue;
+        private bool wapiFetching, wapiFailed;
+        private string wapiFor = ""; // the place and key the weather is for (in memory only): a new one asks again at once
+        private WeatherApi.Report wapi;
         private Updater.Release ready; // downloaded and checked, waiting for a moment nobody is looking
         private string readyFile;
         private string balloonUrl;     // where clicking the tray's message goes
@@ -1123,7 +1486,9 @@ namespace LivingEarth
                 ", prayer flags " + (settings.Flags ? "on" : "off") +
                 ", grazing animals " + (settings.Animals ? "on" : "off") +
                 ", panel " + (settings.Panel ? settings.Corner + " " + settings.PanelSize : "hidden") +
-                ", Windows background " + (settings.WindowsBackground ? "on" : "off"));
+                ", Windows background " + (settings.WindowsBackground ? "on" : "off") +
+                ", airport weather " + (settings.Airport ? "on" : "off") +
+                ", weather from " + (settings.Source == "weatherapi" ? "WeatherAPI.com (" + (settings.WeatherApiKey.Length > 0 ? "key given" : "no key") + ")" : "Open-Meteo"));
             if (background != null && hadBackground && !settings.WindowsBackground && background.Restore()) PlaceSoon();
             nextBackground = DateTime.MinValue; // the place may have changed, and with it the sun
             if (form.DemoRequested) SetDemo(true);
@@ -1221,6 +1586,8 @@ namespace LivingEarth
                 ApplyPace(now);
                 if (now >= nextBackground) UpdateBackground(now);
                 if (settings.AutoLocation && !detecting && now >= nextDetect) DetectLocation();
+                ObserveTick(now);
+                WeatherApiTick(now);
                 UpdateTick(now);
             }
             catch (Exception ex)
@@ -1555,6 +1922,8 @@ namespace LivingEarth
                 if (p != null)
                     js.Append(", place: { lat: ").Append(Locator.F(p.Lat)).Append(", lon: ").Append(Locator.F(p.Lon))
                       .Append(", name: ").Append(Js(p.Name)).Append(" }");
+                if (settings.Airport && observed != null) js.Append(", obs: ").Append(observed.Js());
+                if (settings.Source == "weatherapi" && wapi != null) js.Append(", wapi: ").Append(wapi.Js());
                 js.Append(" }");
             }
             js.Append(");\n");
@@ -2191,6 +2560,108 @@ namespace LivingEarth
             }
         }
 
+        // Once a second: read the nearest airport's report every half hour, and at once for a new place. Not with the
+        // setting off, not in the tests' own scenes, and not before the wallpaper runs.
+        private void ObserveTick(DateTime now)
+        {
+            if (!settings.Airport || queryOverride != null || !running)
+            {
+                observed = null;
+                return;
+            }
+            Place p = settings.Current;
+            double lat = p != null ? p.Lat : 23.7104, lon = p != null ? p.Lon : 90.4074; // the page's default: Dhaka
+            string box = Observer.Box(lat, lon);
+            if (box != observedBox && observed != null) observed = null; // it was for somewhere else
+            if (observing || (now < nextObserve && box == observedBox)) return;
+            observing = true;
+            observedBox = box;
+            nextObserve = now.AddMinutes(ObserveEveryMinutes);
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                Observer.Report r = null;
+                string error = null;
+                try { r = Observer.Pick(Observer.Fetch(box), lat, lon, DateTime.UtcNow); }
+                catch (Exception ex) { error = ex.Message; }
+                try { invoker.BeginInvoke(new MethodInvoker(delegate { Observed(box, r, error); })); }
+                catch (InvalidOperationException) { }
+            });
+        }
+
+        private void Observed(string box, Observer.Report r, string error)
+        {
+            observing = false;
+            if (quitting || box != observedBox) return;
+            if (error != null)
+            {
+                // keep the last report: the page stops using it once it is too old
+                nextObserve = DateTime.UtcNow.AddMinutes(ObserveRetryMinutes);
+                if (!observeFailed) Log("airport weather: " + error);
+                observeFailed = true;
+                return;
+            }
+            observeFailed = false;
+            if (r == null)
+            {
+                if (observed != null || nextObserve == DateTime.MinValue) Log("airport weather: no report from within " + Observer.MaxKm + " km in the last two hours");
+                observed = null;
+                return;
+            }
+            if (observed == null || observed.Text != r.Text) Log("airport weather: " + r.Text);
+            observed = r;
+        }
+
+        // Once a second: WeatherAPI.com's weather every 15 minutes while it is the source chosen with a key, and at once for
+        // a new place or key. Not in the tests' own scenes, and not before the wallpaper runs.
+        private void WeatherApiTick(DateTime now)
+        {
+            string key = settings.WeatherApiKey;
+            if (settings.Source != "weatherapi" || key.Length == 0 || queryOverride != null || !running)
+            {
+                wapi = null;
+                wapiFor = "";
+                return;
+            }
+            Place p = settings.Current;
+            string where = WeatherApi.Where(p != null ? p.Lat : 23.7104, p != null ? p.Lon : 90.4074); // the page's default: Dhaka
+            string want = where + "|" + key;
+            if (want != wapiFor && wapi != null) wapi = null; // it was for somewhere else, or another key
+            if (wapiFetching || (now < nextWapi && want == wapiFor)) return;
+            wapiFetching = true;
+            wapiFor = want;
+            nextWapi = now.AddMinutes(WapiEveryMinutes);
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                WeatherApi.Report r = null;
+                string error = null;
+                try
+                {
+                    r = WeatherApi.Parse(WeatherApi.Fetch(key, where));
+                    if (r == null) error = "an answer it could not read";
+                }
+                catch (Exception ex) { error = ex.Message.Replace(key, "(key)"); }
+                try { invoker.BeginInvoke(new MethodInvoker(delegate { WeatherApiFetched(want, r, error); })); }
+                catch (InvalidOperationException) { }
+            });
+        }
+
+        private void WeatherApiFetched(string want, WeatherApi.Report r, string error)
+        {
+            wapiFetching = false;
+            if (quitting || want != wapiFor) return;
+            if (error != null)
+            {
+                // keep the last weather: the page stops using it after an hour
+                nextWapi = DateTime.UtcNow.AddMinutes(WapiRetryMinutes);
+                if (!wapiFailed) Log("weatherapi: " + error + "; Open-Meteo meanwhile");
+                wapiFailed = true;
+                return;
+            }
+            wapiFailed = false;
+            if (wapi == null || wapi.Line != r.Line) Log("weatherapi: " + r.Line);
+            wapi = r;
+        }
+
         // Once a second: look on GitHub when it is time, and put a downloaded version in while nobody is looking
         private void UpdateTick(DateTime now)
         {
@@ -2500,9 +2971,10 @@ namespace LivingEarth
         private readonly Button detectButton, searchButton, setButton, cancelButton;
         private readonly TextBox searchBox;
         private readonly ListBox results;
-        private readonly ComboBox qualityBox, deviceBox, sizeBox, trafficBox;
+        private readonly ComboBox qualityBox, deviceBox, sizeBox, trafficBox, sourceBox;
+        private readonly TextBox keyBox;
         private readonly CheckBox startupBox, roadBox, birdsBox, leavesBox, windowsBox, updateBox;
-        private readonly CheckBox treeBox, mistBox, bannersBox, smokeBox, firesBox, lightsBox, starsBox, planesBox, rainbowBox, flagsBox, animalsBox, panelBox;
+        private readonly CheckBox treeBox, mistBox, bannersBox, smokeBox, firesBox, lightsBox, starsBox, planesBox, rainbowBox, flagsBox, animalsBox, airportBox, panelBox;
         private readonly RadioButton topLeft, topRight, bottomLeft, bottomRight;
         private Place detected, manual;
         private int detectRun, searchRun;
@@ -2609,6 +3081,8 @@ namespace LivingEarth
             flagsBox.Enabled = s.Tree; // they hang from the tree
             treeBox.CheckedChanged += delegate { flagsBox.Enabled = treeBox.Checked; };
             animalsBox = Check("Grazing animals", c2, y + 72, s.Animals);
+            // the mist and fog the airport near by sees, which forecasts miss (Observer)
+            airportBox = Check("Airport weather", c3, y + 72, s.Airport);
             y += 100;
 
             // ---- the clock and weather panel: whether it shows, its corner (laid out like the screen) and its size
@@ -2621,7 +3095,7 @@ namespace LivingEarth
             bottomLeft = Radio(corners, "Bottom left", 0, 24);
             bottomRight = Radio(corners, "Bottom right", 116, 24);
             Controls.Add(corners);
-            var sizeLabel = new Label { Text = "Size", Location = new Point(W - Pad - 104 - 38, y + 4), AutoSize = true };
+            var sizeLabel = new Label { Text = "Size", Location = new Point(W - Pad - 104 - 38, y + 4), Size = new Size(34, 18) }; // not taller: the weather source sits below it
             Controls.Add(sizeLabel);
             sizeBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(W - Pad - 104, y), Width = 104 };
             sizeBox.Items.AddRange(new object[] { "Small", "Medium", "Large" });
@@ -2629,6 +3103,26 @@ namespace LivingEarth
             Controls.Add(sizeBox);
             corners.Enabled = sizeBox.Enabled = sizeLabel.Enabled = s.Panel;
             panelBox.CheckedChanged += delegate { corners.Enabled = sizeBox.Enabled = sizeLabel.Enabled = panelBox.Checked; };
+            // where the weather at the ground comes from, beside the corners: Open-Meteo, or WeatherAPI.com with a key of
+            // the user's own (WeatherApi)
+            var sourceLabel = new Label { Text = "Weather from", Location = new Point(Pad + 352, y + 28), AutoSize = true };
+            Controls.Add(sourceLabel);
+            sourceBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(Pad + 438, y + 24), Width = 122 };
+            sourceBox.Items.AddRange(new object[] { "Open-Meteo", "WeatherAPI.com" });
+            sourceBox.SelectedIndex = Math.Max(0, Array.IndexOf(Settings.Sources, s.Source));
+            Controls.Add(sourceBox);
+            keyBox = new TextBox { Location = new Point(Pad + 566, y + 24), Width = W - 2 * Pad - 566, Text = s.WeatherApiKey, UseSystemPasswordChar = true, MaxLength = 64 };
+            Controls.Add(keyBox);
+            keyBox.Enabled = sourceBox.SelectedIndex == 1;
+            sourceBox.SelectedIndexChanged += delegate { keyBox.Enabled = sourceBox.SelectedIndex == 1; };
+            var sourceTips = new ToolTip();
+            FormClosed += delegate { sourceTips.Dispose(); };
+            const string KeyTip = "WeatherAPI.com needs a free key of your own: sign up at weatherapi.com and paste it here.\n" +
+                                  "It stays on this PC, encrypted for your Windows account. Cloud heights and the winds up high\n" +
+                                  "still come from Open-Meteo, and the airport report still wins for fog.";
+            sourceTips.SetToolTip(sourceBox, KeyTip);
+            sourceTips.SetToolTip(keyBox, KeyTip);
+            sourceTips.SetToolTip(sourceLabel, KeyTip);
             y += 52;
             Note(this, "Turning the road on or off shapes the mountains again, which takes a few minutes. " +
                        "With two screens side by side, left and right mean the left and right screen.", Pad, y, W - 2 * Pad, 34);
@@ -2869,6 +3363,9 @@ namespace LivingEarth
             s.Rainbow = rainbowBox.Checked;
             s.Flags = flagsBox.Checked;
             s.Animals = animalsBox.Checked;
+            s.Airport = airportBox.Checked;
+            s.Source = Settings.Sources[Math.Max(0, sourceBox.SelectedIndex)];
+            s.WeatherApiKey = keyBox.Text.Trim();
             s.Panel = panelBox.Checked;
             s.Corner = topLeft.Checked ? "left-top" : topRight.Checked ? "right-top" : bottomLeft.Checked ? "left-bottom" : "right-bottom";
             s.PanelSize = Settings.PanelSizes[Math.Max(0, sizeBox.SelectedIndex)];

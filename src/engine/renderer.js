@@ -1015,6 +1015,7 @@
       p.set('uFog', w.fog);
       p.set('uDebugView', this.cfg.debugView | 0);
       p.set('uValleyHaze', w.valleyHaze);
+      p.set('uSmog', w.smog || 0);
       p.set('uLampE', this.cfg.life === false || this.cfg.lights === false ? 0 : state.lampE);
       p.set('uLampDark', state.lampDark);
       p.set('uFestival', this.cfg.life === false || this.cfg.lights === false ? 0 : Math.max(state.festival || 0, this.festForce || 0));

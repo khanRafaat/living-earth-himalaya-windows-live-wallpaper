@@ -1920,6 +1920,272 @@ test('in still air only a few leaves let go, and they fall nearly straight', () 
   assert.ok(windy.drift.length > fg.drift.length + 10, 'many more in a strong wind');
 });
 
+// ---------------------------------------------------------------- the nearest airport's report (the exe reads it)
+// 2026-11-18, 09:30 Dhaka: the forecast the app used, and what Dhaka airport (VGHS) reported at the same time
+const FORECAST_1118 = { code: 3, cloud: 91, cloudLow: 0, cloudMid: 0, cloudHigh: 91, humidity: 79, visibility: 7140, windSpeed: 5.6, windDir: 330, precip: 0, temp: 23.4, source: 'live' };
+const VGHS_1118 = (now, over = {}) => ({ id: 'VGHS', name: 'Dhaka/Shahjalal Intl, 32, BD', km: 2.3, t: now - 10 * 60e3, temp: 21, dewp: 19, vis: 1000, wx: 'BR', ...over });
+
+function airport() {
+  const h = load(['config.js', 'services/astronomy.js', 'services/storage.js', 'services/weather.js', 'engine/environment.js']);
+  const targets = (rec) => {
+    const env = new h.LE.Environment(h.LE.config);
+    env.setWeather(rec, 'live');
+    env.update(new Date('2026-11-18T03:30:00Z'), 1, 1);
+    return env.state.weather;
+  };
+  return { LE: h.LE, merge: (rec, obs, now = Date.now()) => h.LE.withObservation(rec, obs, now), targets };
+}
+
+test("the airport's report is laid over the forecast: this morning's mist and 1 km, with humidity from the dew point", () => {
+  const { LE, merge } = airport();
+  const now = Date.now();
+  const r = merge(FORECAST_1118, VGHS_1118(now), now);
+  assert.equal(r.visibility, 1000);
+  assert.equal(r.temp, 21);
+  near(r.humidity, 88, 0.6, 'humidity from 21 / 19 °C');
+  assert.equal(r.obscured, 'mist');
+  assert.equal(r.code, 3, 'mist is not fog: the code stays');
+  assert.equal(r.cloudHigh, 91, 'cloud stays with the forecast');
+  assert.equal(r.windSpeed, 5.6, 'and the wind');
+  assert.equal(r.source, 'live');
+  assert.deepEqual({ ...r.obs }, { id: 'VGHS', t: now - 10 * 60e3 });
+  assert.equal(FORECAST_1118.visibility, 7140, 'the forecast itself is not changed');
+  assert.equal(LE.weatherLabel(r), 'Mist');
+  assert.equal(LE.weatherLabel(FORECAST_1118), 'High cloud', 'without the report: high cloud, not "Overcast"');
+  assert.equal(LE.weatherLabel({ ...FORECAST_1118, cloudLow: 80 }), 'Overcast');
+  assert.equal(LE.weatherLabel({ code: 3, cloud: 95 }), 'Overcast', 'no layers known: as the code says');
+  assert.equal(LE.weatherLabel(null), 'Unknown');
+});
+
+test('only a recent report from near by counts, and "10 km or more" keeps a clearer forecast', () => {
+  const { merge } = airport();
+  const now = Date.now();
+  assert.equal(merge(FORECAST_1118, VGHS_1118(now, { t: now - 101 * 60e3 }), now), FORECAST_1118, 'over 100 minutes old');
+  assert.equal(merge(FORECAST_1118, VGHS_1118(now, { t: now + 20 * 60e3 }), now), FORECAST_1118, 'from the future');
+  assert.equal(merge(FORECAST_1118, VGHS_1118(now, { km: 61 }), now), FORECAST_1118, 'over 60 km away');
+  assert.equal(merge(FORECAST_1118, null, now), FORECAST_1118, 'none');
+  assert.equal(merge(null, VGHS_1118(now), now), null, 'nothing to lay it over');
+  assert.equal(merge({ ...FORECAST_1118, visibility: 24000 }, VGHS_1118(now, { vis: 9999, wx: '' }), now).visibility, 24000);
+  assert.equal(merge(FORECAST_1118, VGHS_1118(now, { vis: 9999, wx: '' }), now).visibility, 10000);
+  const blank = merge(FORECAST_1118, VGHS_1118(now, { vis: null, temp: null, dewp: null, wx: '' }), now);
+  assert.equal(blank.visibility, 7140, 'numbers the report lacks stay with the forecast');
+  assert.equal(blank.temp, 23.4);
+  assert.equal(blank.humidity, 79);
+  assert.equal(blank.obscured, undefined);
+});
+
+test("the report's weather groups: fog, mist, haze, smoke, dust; near by or shallow fog is not fog here; rain stays the forecast's", () => {
+  const { LE, merge } = airport();
+  const now = Date.now();
+  const wx = (w, base = FORECAST_1118) => merge(base, VGHS_1118(now, { wx: w }), now);
+  assert.equal(wx('FG').code, 45);
+  assert.equal(wx('FG').obscured, 'fog');
+  assert.equal(LE.weatherLabel(wx('FG')), 'Fog');
+  assert.equal(wx('FZFG').code, 45, 'freezing fog is fog');
+  for (const w of ['MIFG', 'BCFG', 'PRFG']) {
+    assert.equal(wx(w).code, 3, w + ' is not a fog that covers the place');
+    assert.equal(wx(w).obscured, 'mist', w);
+  }
+  assert.equal(wx('VCFG').obscured, undefined, 'fog in the vicinity: not here');
+  assert.equal(wx('HZ').obscured, 'haze');
+  assert.equal(LE.weatherLabel(wx('HZ')), 'Haze');
+  assert.equal(wx('FU').obscured, 'smoke');
+  assert.equal(wx('DU').obscured, 'dust');
+  assert.equal(wx('FU HZ').obscured, 'smoke');
+  const rain = { ...FORECAST_1118, code: 61, precip: 0.6 };
+  assert.equal(wx('-RA BR', rain).code, 61);
+  assert.equal(wx('-RA BR', rain).precip, 0.6);
+  assert.equal(LE.weatherLabel(wx('-RA BR', rain)), 'Light rain', 'rain is named before the mist');
+  assert.equal(wx('FG', rain).code, 61, 'fog does not replace rain');
+  assert.equal(wx('').obscured, undefined);
+  assert.equal(wx(undefined).obscured, undefined);
+});
+
+test("the weather service keeps the exe's report, and the scene fills the valleys with fog below the viewpoint", async () => {
+  const { weather } = newWeather(async () => ok({}));
+  const now = Date.now();
+  assert.equal(weather.setObservation(VGHS_1118(now)), true);
+  assert.equal(weather.setObservation(VGHS_1118(now)), false, 'the same report again: no change');
+  assert.equal(weather.setObservation(null), true);
+  assert.equal(weather.setObservation({ id: 'X' }), false, 'not a report: as none');
+  assert.equal(weather.obs, null);
+  weather.setObservation(VGHS_1118(now));
+  weather.start(23.87, 90.4);
+  await sleep(30);
+  weather.stop();
+  assert.equal(weather.current().obscured, 'mist');
+  assert.equal(weather.current().visibility, 1000);
+
+  const { merge, targets, LE } = airport();
+  const plain = targets(FORECAST_1118);
+  const seen = targets(merge(FORECAST_1118, VGHS_1118(now), now));
+  assert.equal(plain.fog, 0, 'the forecast alone: no fog');
+  assert.ok(seen.fog > 0.65 && seen.mist >= 0.85, `with the airport's 1 km and mist: fog ${seen.fog}, mist ${seen.mist}`);
+  assert.ok(seen.fogTop < LE.config.render.cameraAltitude - 0.3, `the fog stays below the viewpoint: top ${seen.fogTop} km`);
+  const hazy = targets(merge(FORECAST_1118, VGHS_1118(now, { wx: 'HZ', vis: 2500 }), now));
+  assert.equal(hazy.fog, 0, 'haze is not fog');
+  assert.ok(hazy.haze > plain.haze + 0.5, `haze thickens the air: ${hazy.haze} against ${plain.haze}`);
+  // fog from visibility has no steps
+  let last = targets({ ...FORECAST_1118, visibility: 6000 }).fog;
+  for (let vis = 5950; vis >= 300; vis -= 50) {
+    const f = targets({ ...FORECAST_1118, visibility: vis }).fog;
+    assert.ok(f >= last - 1e-9 && f - last < 0.03, `fog ${last} to ${f} at ${vis} m`);
+    last = f;
+  }
+});
+
+test('the exe hands the report to the page, and the panel says where it came from', () => {
+  const host = readFileSync(new URL('services/host.js', SRC), 'utf8');
+  assert.ok(host.includes('if (window.leSetObservation) window.leSetObservation(options.obs || null);'));
+  const main = readFileSync(new URL('main.js', SRC), 'utf8');
+  assert.ok(main.includes('window.leSetObservation = function (obs) {'));
+  assert.ok(main.includes('if (weather.setObservation(obs)) pushWeather();'));
+  assert.ok(main.includes('parts.push(`airport ${ob.obs.id} '));
+  const overlay = readFileSync(new URL('ui/overlay.js', SRC), 'utf8');
+  assert.ok(overlay.includes("e.cond.textContent = LE.weatherLabel(weather) + (air ? ' · ' + air : '');"));
+});
+
+// ---------------------------------------------------------------- WeatherAPI.com, when chosen in the exe
+// 2026-11-18, 10:15 Dhaka: what WeatherAPI.com said for Uttara (the exe hands it over without the key)
+const WAPI_1118 = (now, over = {}) => ({ t: now - 10 * 60e3, code: 1036, text: 'Smoky haze', cloud: 70, vis: 7000, temp: 24.7, dewp: 17, hum: 62, wind: 7.6, dir: 10, gust: 14.1, precip: 0, pm25: 97.6, pm10: 108, aqi: 4, ...over });
+
+test("WeatherAPI's ground weather is laid over the forecast, and its cloud keeps the forecast's heights", () => {
+  const { LE } = airport();
+  const now = Date.now();
+  const r = LE.withWeatherApi(FORECAST_1118, WAPI_1118(now), now);
+  assert.equal(r.temp, 24.7);
+  assert.equal(r.humidity, 62);
+  assert.equal(r.windSpeed, 7.6);
+  assert.equal(r.windDir, 10);
+  assert.equal(r.gusts, 14.1);
+  assert.equal(r.precip, 0);
+  assert.equal(r.visibility, 7000);
+  assert.equal(r.obscured, 'haze');
+  assert.equal(r.code, 2, '70% cloud and haze: partly cloudy');
+  assert.equal(LE.weatherLabel(r), 'Smoky haze', 'in its own words');
+  assert.equal(LE.weatherLabel({ ...r, wapiText: undefined }), 'Haze');
+  assert.equal(r.pm25, 97.6);
+  assert.equal(r.aqi, 4);
+  assert.equal(LE.airText(r), 'air unhealthy');
+  assert.equal(LE.airText(FORECAST_1118), '', 'none without WeatherAPI');
+  assert.equal(r.cloud, 70);
+  near(r.cloudHigh, 70, 1e-9, 'all of it high, as the forecast had it');
+  assert.equal(r.cloudLow, 0);
+  assert.equal(r.cloudMid, 0);
+  assert.equal(r.source, 'live');
+  assert.deepEqual({ ...r.wapi }, { t: now - 10 * 60e3 });
+  assert.equal(FORECAST_1118.temp, 23.4, 'the forecast itself is not changed');
+  // layers in proportion
+  const layered = LE.withWeatherApi({ ...FORECAST_1118, cloud: 60, cloudLow: 40, cloudMid: 20, cloudHigh: 10 }, WAPI_1118(now, { cloud: 90, code: 1009 }), now);
+  near(layered.cloudLow, 60, 1e-9, 'low');
+  near(layered.cloudMid, 30, 1e-9, 'mid');
+  near(layered.cloudHigh, 15, 1e-9, 'high');
+  assert.equal(layered.code, 3);
+  const flat = LE.withWeatherApi({ ...FORECAST_1118, cloud: 0, cloudHigh: 0 }, WAPI_1118(now, { cloud: 50, code: 1003 }), now);
+  assert.equal(flat.cloudLow, null, 'no layers to share it out by: the total alone');
+  assert.equal(flat.cloud, 50);
+  const alone = LE.withWeatherApi(null, WAPI_1118(now), now);
+  assert.equal(alone.temp, 24.7, 'with no forecast at all it stands alone');
+  assert.equal(alone.source, 'live');
+  // 10 km means 10 km or more
+  assert.equal(LE.withWeatherApi({ ...FORECAST_1118, visibility: 24000 }, WAPI_1118(now, { vis: 10000 }), now).visibility, 24000);
+  // only while fresh
+  assert.equal(LE.withWeatherApi(FORECAST_1118, WAPI_1118(now, { t: now - 61 * 60e3 }), now), FORECAST_1118, 'over an hour old');
+  assert.equal(LE.withWeatherApi(FORECAST_1118, null, now), FORECAST_1118, 'none');
+  const blank = LE.withWeatherApi(FORECAST_1118, WAPI_1118(now, { temp: null, hum: null, vis: null, cloud: null, wind: null }), now);
+  assert.equal(blank.temp, 23.4, 'numbers it lacks stay with the forecast');
+  assert.equal(blank.visibility, 7140);
+  assert.equal(blank.cloudHigh, 91);
+});
+
+test("WeatherAPI's conditions become the scene's weather codes; 'possible' is not rain", () => {
+  const { LE } = airport();
+  const now = Date.now();
+  const code = (c, over = {}) => LE.withWeatherApi(FORECAST_1118, WAPI_1118(now, { code: c, ...over }), now);
+  assert.equal(code(1000, { cloud: 0 }).code, 0);
+  assert.equal(code(1135).code, 45);
+  assert.equal(code(1135).obscured, undefined);
+  assert.equal(code(1147).code, 48);
+  assert.equal(code(1030).obscured, 'mist');
+  assert.equal(LE.weatherLabel(code(1030, { text: '' })), 'Mist');
+  assert.equal(code(1183).code, 61);
+  assert.equal(code(1195).code, 65);
+  assert.equal(code(1243).code, 81);
+  assert.equal(code(1276).code, 95);
+  assert.equal(code(1225).code, 75);
+  assert.equal(code(1063, { precip: 0, cloud: 95 }).code, 3, 'rain possible, none falling: overcast');
+  assert.equal(code(1063, { precip: 0.4 }).code, 61, 'some falling all the same: light rain');
+  assert.equal(code(1087, { cloud: 60 }).code, 2, 'thunder nearby is not thunder here');
+  assert.equal(code(1999).code, 3, "a code it added since: the forecast's");
+  for (const [k, v] of Object.entries(LE.WAPI_CODES)) {
+    if (typeof v === 'number') assert.notEqual(LE.weatherText(v), 'Unknown', `${k} → ${v} is a code the scene knows`);
+  }
+});
+
+test("WeatherAPI's air quality lays smog in the valleys, thicker the dirtier the air, and none without it", () => {
+  const { LE, targets } = airport();
+  const now = Date.now();
+  const clean = targets(LE.withWeatherApi(FORECAST_1118, WAPI_1118(now, { pm25: 5 }), now));
+  const dhaka = targets(LE.withWeatherApi(FORECAST_1118, WAPI_1118(now), now));
+  const worse = targets(LE.withWeatherApi(FORECAST_1118, WAPI_1118(now, { pm25: 250 }), now));
+  const none = targets(FORECAST_1118);
+  assert.equal(none.smog, 0, 'Open-Meteo alone: no smog');
+  assert.ok(clean.smog < 0.01, `clean air: ${clean.smog}`);
+  assert.ok(dhaka.smog > 0.5 && dhaka.smog < 0.8, `this morning in Dhaka: ${dhaka.smog}`);
+  assert.equal(worse.smog, 1);
+  assert.ok(dhaka.valleyHaze > clean.valleyHaze + 3, `thicker in the valleys: ${dhaka.valleyHaze} against ${clean.valleyHaze}`);
+  assert.ok(dhaka.haze - clean.haze < 0.6, 'the sky above stays much as it was');
+  const shader = readFileSync(new URL('engine/shaders/composite.js', SRC), 'utf8');
+  assert.ok(shader.includes('hazeS *= mix(vec3(1.0), vec3(0.8, 0.71, 0.56), uSmog * odV / max(odM, 1e-5));'));
+  const renderer = readFileSync(new URL('engine/renderer.js', SRC), 'utf8');
+  assert.ok(renderer.includes("p.set('uSmog', w.smog || 0);"));
+  for (const [i, word] of [[1, 'air good'], [3, 'air poor'], [6, 'air hazardous']]) assert.equal(LE.airText({ aqi: i }), word);
+  assert.equal(LE.airText({ aqi: 9 }), '');
+});
+
+test('the airport report wins over WeatherAPI: its mist over their haze, and no fog where it sees none', () => {
+  const { LE, merge } = airport();
+  const now = Date.now();
+  const both = (w, o) => merge(LE.withWeatherApi(FORECAST_1118, WAPI_1118(now, w), now), VGHS_1118(now, o), now);
+  const today = both({}, {});
+  assert.equal(today.visibility, 1000, 'the airport measured 1 km');
+  assert.equal(today.obscured, 'mist');
+  assert.equal(LE.weatherLabel(today), 'Mist', "the airport's mist, not WeatherAPI's words");
+  assert.equal(today.pm25, 97.6, 'the air quality stays');
+  assert.equal(LE.weatherLabel(both({ code: 1183, text: 'Patchy light rain' }, { vis: 9999, wx: '' })), 'Patchy light rain', 'its words stand when the airport saw nothing in the air');
+  assert.equal(today.temp, 21);
+  assert.equal(today.windSpeed, 7.6, "the wind stays WeatherAPI's");
+  assert.equal(today.cloud, 70);
+  assert.ok(today.wapi && today.obs, 'both are named');
+  const clearAirport = both({ code: 1135, vis: 400 }, { vis: 9999, wx: '' });
+  assert.notEqual(clearAirport.code, 45, 'WeatherAPI says fog, the airport sees none: no fog');
+  assert.equal(clearAirport.obscured, undefined);
+  assert.equal(both({ code: 1030 }, { wx: 'HZ', vis: 4000 }).obscured, 'haze', 'what the airport sees');
+});
+
+test("the weather service keeps WeatherAPI's weather from the exe and lays the airport's over it", async () => {
+  const { weather } = newWeather(async () => ok({}));
+  const now = Date.now();
+  assert.equal(weather.setWeatherApi(WAPI_1118(now)), true);
+  assert.equal(weather.setWeatherApi(WAPI_1118(now)), false, 'the same again: no change');
+  assert.equal(weather.setWeatherApi({ code: 1000 }), true, 'not weather: as none');
+  assert.equal(weather.wapi, null);
+  weather.setWeatherApi(WAPI_1118(now));
+  weather.setObservation(VGHS_1118(now));
+  weather.start(23.87, 90.4);
+  await sleep(30);
+  weather.stop();
+  const r = weather.current();
+  assert.equal(r.windDir, 10, "WeatherAPI's wind");
+  assert.equal(r.visibility, 1000, "the airport's visibility");
+  assert.equal(r.obscured, 'mist');
+  const host = readFileSync(new URL('services/host.js', SRC), 'utf8');
+  assert.ok(host.includes('if (window.leSetWeatherApi) window.leSetWeatherApi(options.wapi || null);'));
+  const main = readFileSync(new URL('main.js', SRC), 'utf8');
+  assert.ok(main.includes('if (weather.setWeatherApi(w)) pushWeather();'));
+  assert.ok(main.includes('if (ob && ob.wapi) parts.push(`WeatherAPI ${hm(ob.wapi.t)}`);'));
+});
+
 // ---------------------------------------------------------------- the test panel (?debug=1)
 function panelWeather(base, fields) {
   const h = load(['config.js', 'services/astronomy.js', 'engine/environment.js', 'ui/debugpanel.js']);
@@ -1963,8 +2229,8 @@ test('temperature decides rain or snow, and thunder and visibility do what they 
   assert.equal(panelWeather('clear', { thunder: 1 }).w.storm, 1, 'thunder on');
   assert.equal(panelWeather('storm', { thunder: 0 }).w.storm, 0, 'thunder off in a storm');
   near(panelWeather('clear', { visibility: 300 }).w.fog, 0.9, 1e-9, 'thick fog');
-  near(panelWeather('clear', { visibility: 800 }).w.fog, 0.7, 1e-9, 'fog');
-  near(panelWeather('clear', { visibility: 2000 }).w.fog, 0.3, 1e-9, 'thin fog');
+  near(panelWeather('clear', { visibility: 800 }).w.fog, 0.75, 0.01, 'fog');
+  near(panelWeather('clear', { visibility: 2000 }).w.fog, 0.49, 0.02, 'thin fog');
   assert.equal(panelWeather('fog', { visibility: 30000 }).w.fog, 0, 'and it clears');
 });
 
@@ -2061,8 +2327,9 @@ function seedRandom(ctx, seed) {
   vm.runInContext(`(() => { let a = ${seed >>> 0}; Math.random = () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; })()`, ctx);
 }
 
-function testLife(hour = 12, over = {}) {
+function testLife(hour = 12, over = {}, seed = null) {
   const { LE, ctx } = load(['engine/road.js', 'engine/life.js']);
+  if (seed !== null) seedRandom(ctx, seed); // before anything is made, so the whole run repeats exactly
   const R = LE.Road;
   const line = R.plan(testHillside(R), 2.8, -0.2757);
   const road = R.finish(line, new Float32Array(line.length / 2).fill(2.3));
@@ -3730,12 +3997,25 @@ test('a rainbow comes only with rain in the air and the sun shining on it from l
 });
 
 // ---- the bird of prey that sits on the tree --------------------------------------------------------------------------
-test('the tree has a perch on the very top of its crown, grown last, and it is found on the CPU where the shader puts it', () => {
+test('the tree has places to perch on the top of its crown and round it facing the eye, grown last, found on the CPU where the shader puts them', () => {
   const { LE } = load(['engine/gl.js', 'engine/foreground.js']);
-  const T = LE.growTree(7936, [-0.8, 0, 0.6]);
+  const away = [-0.8, 0, 0.6];
+  const T = LE.growTree(7936, away);
   const snags = T.branches.filter((b) => b.snag);
-  assert.equal(snags.length, 1, 'one snag');
-  assert.equal(T.branches[T.branches.length - 1], snags[0], 'grown after everything else');
+  assert.ok(T.perches.length >= 3 && T.perches.length <= 5, T.perches.length + ' places');
+  assert.equal(snags.length, T.perches.length, 'a shoot to each');
+  assert.deepEqual(T.branches.slice(-snags.length), snags, 'grown after everything else');
+  assert.equal(T.perch, T.perches[0], 'the top one first');
+  // each a different place, apart from the others, on the eye's side of the crown or its top
+  const toEye = [-away[0], 0, -away[2]];
+  T.perches.forEach((s, i) => {
+    assert.deepEqual(Array.from(s.p), Array.from(snags[i].nodes[snags[i].nodes.length - 1].p), 'place ' + i + ' is the tip of its shoot');
+    assert.ok(Math.abs(Math.hypot(...s.out) - 1) < 1e-9, 'a way out of the crown');
+    // (the very top is seen whichever way it leans)
+    if (i > 0) assert.ok(s.out[0] * toEye[0] + s.out[2] * toEye[2] >= -0.1 * Math.hypot(toEye[0], toEye[2]), 'not behind the leaves seen from the eye');
+    assert.ok(s.p[1] > T.crownC[1], 'in the upper crown');
+    for (let j = 0; j < i; j++) assert.ok(Math.hypot(...s.p.map((x, k) => x - T.perches[j].p[k])) >= 1.2, 'places ' + j + ' and ' + i + ' are apart');
+  });
   const nodes = snags[0].nodes;
   const tip = nodes[nodes.length - 1];
   assert.deepEqual(Array.from(T.perch.p), Array.from(tip.p), 'the perch is its tip');
@@ -3757,7 +4037,7 @@ test('the tree has a perch on the very top of its crown, grown last, and it is f
   // and no leaf on the snag)
   const again = LE.growTree(7936, [-0.8, 0, 0.6]);
   assert.equal(again.leafCount, T.leafCount);
-  assert.deepEqual(Array.from(again.perch.p), Array.from(T.perch.p));
+  assert.deepEqual(again.perches.map((s) => Array.from(s.p)), T.perches.map((s) => Array.from(s.p)));
 
   // moved by the wind as the vertex shader moves it
   const move = LE.Foreground.windMoved;
@@ -3781,9 +4061,12 @@ test('the tree has a perch on the very top of its crown, grown last, and it is f
   }
 });
 
-/** Life with a tree to sit on: its perch sways a little, as the snag does in the wind. */
-function perchLife(over = {}) {
-  const h = testLife(12, { windSpeed: 6, ...over });
+/**
+ * Life with a tree to sit on: its perch sways a little, as the snag does in the wind. With `sites` > 1 it has that many
+ * places (at most 4): the top, and others on the sides of the crown that face the eye.
+ */
+function perchLife(over = {}, sites = 1, seed = null) {
+  const h = testLife(12, { windSpeed: 6, ...over }, seed);
   h.life._view = h.view;
   h.life.state = h.state;
   h.life._trafficSeeded = true;
@@ -3794,6 +4077,18 @@ function perchLife(over = {}) {
   // the tree stands 28 m off to the left, its top a little below the eye
   h.perch = () => [-0.0245 + 0.0001 * Math.sin(h.life.t * 2.1), h.view.camY - 0.0004 + 0.00003 * Math.sin(h.life.t * 3.3), 0.0135];
   h.life.perchAt = h.perch;
+  if (sites > 1) {
+    // offset from the top (km) and the way out of the crown there
+    const places = [[0, 0, 0, 0, 1, 0], [0.0015, -0.0006, 0.0008, 0.8, 0.3, 0.5], [0.0003, -0.0007, -0.0014, 0.2, 0.3, -0.9], [-0.0009, -0.0005, -0.0013, 0.4, 0.4, -0.8]].slice(0, sites);
+    h.places = places;
+    h.life.perchAt = (i = 0) => (places[i] ? h.perch().map((x, k) => x + places[i][k]) : null);
+    h.life.perchCount = () => places.length;
+    h.life.perchOut = (i = 0) => {
+      const o = places[i].slice(3);
+      const l = Math.hypot(...o);
+      return o.map((x) => x / l);
+    };
+  }
   h.run = (seconds, each) => {
     for (let t = 0; t < seconds; t += 0.05) {
       h.life.update(0.05, h.state, h.view);
@@ -3918,6 +4213,65 @@ test('the bird comes in to the tree and leaves it in one smooth movement: low, s
   assert.ok(r.fold === 0, 'and open again on the way out');
 });
 
+test('the falcon comes in from every side and leaves to every side, sits in different places, and never pops in or out of sight', () => {
+  // (the user, 2026-11-18: "its come from same direction and go to same direction it shold be random like it may come
+  // from any direction and fly to any direction seat diffrent place")
+  const seed = +(process.env.LE_FALCON_SEED || 5);
+  const h = perchLife({}, 4, seed);
+  const { w, h: H } = h.view;
+  const sector = (from, to) => Math.floor((((Math.atan2(to[0] - from[0], to[2] - from[2]) / (2 * Math.PI)) % 1) + 1) * 8) % 8;
+  const edge = (f) => f[0] < 60 || f[0] > w - 60 || f[1] < 60 || f[1] > H - 60;
+  const arrive = new Set();
+  const leave = new Set();
+  const places = [];
+  let closest = 1;
+  let closestAt = '';
+  let worst = 0;
+  let worstAt = '';
+  const pops = [];
+  for (let visit = 0; visit < 40; visit++) {
+    h.life._nextPerch = 0;
+    h.run(0.05);
+    const r = h.life.raptors.find((x) => x.sp.span < 0.001 && x.mode === 'approach');
+    assert.ok(r, 'visit ' + visit + ': a falcon sets out');
+    places.push(r.site);
+    arrive.add(sector(h.life.perchAt(r.site), r.pos));
+    let prev = r.pos.slice();
+    let pv = null;
+    let was = r.mode;
+    let shown = null; // the bird as last drawn flying: [x, y, alpha]
+    for (let k = 0; k < 12000 && !r.dead; k++) {
+      h.life.update(0.05, h.state, h.view);
+      if (r.mode === 'perched' && r.sit > 1) r.sit = 1;
+      if (r.mode === 'leave' && was !== 'leave') leave.add(sector(h.life.perchAt(r.site), r.target));
+      const eye = Math.hypot(r.pos[0], r.pos[1] - h.view.camY, r.pos[2]);
+      if (eye < closest) [closest, closestAt] = [eye, `visit ${visit}, ${r.mode}, place ${r.site}`];
+      const v = r.pos.map((x, i) => (x - prev[i]) / 0.05);
+      const jerk = pv && r.mode !== 'perched' && was !== 'perched' ? Math.hypot(...v.map((x, i) => x - pv[i])) / 0.05 : 0;
+      if (jerk > worst) [worst, worstAt] = [jerk, `visit ${visit}, ${r.mode} after ${was}`];
+      // on the picture: it comes into sight faint or at an edge of it, and goes the same way
+      const all = sprites(h.life);
+      const fly = all.find((x) => x.type === 0 && x.f[8] === r.phase);
+      const now = fly ? [fly.f[0], fly.f[1], fly.f[6]] : null;
+      if (now && !shown && was !== 'perched' && r.mode !== 'leave' && now[2] > 0.3 && !edge(now)) pops.push(`visit ${visit}: appeared at ${now.map((x) => x.toFixed(2))}`);
+      if (!now && shown && r.mode === 'leave' && shown[2] > 0.3 && !edge(shown)) pops.push(`visit ${visit}: vanished at ${shown.map((x) => x.toFixed(2))}`);
+      shown = now || (r.mode === 'perched' || r.mode === 'settle' ? shown : null);
+      pv = was === 'perched' ? null : v;
+      was = r.mode;
+      prev = r.pos.slice();
+    }
+    assert.ok(r.dead, 'visit ' + visit + ' ended: ' + r.mode);
+    h.life.raptors = h.life.raptors.filter((x) => x !== r);
+  }
+  assert.ok(arrive.size >= 6, 'came in from ' + arrive.size + ' of 8 sides: ' + [...arrive]);
+  assert.ok(leave.size >= 6, 'flew off to ' + leave.size + ' of 8 sides: ' + [...leave]);
+  assert.ok(new Set(places).size >= 3, 'sat in ' + new Set(places).size + ' places: ' + places);
+  assert.ok(places.every((p, i) => i === 0 || p !== places[i - 1]), 'never the same place twice running: ' + places);
+  assert.ok(closest >= 0.0149, 'never nearer the eye than 15 m: ' + (closest * 1000).toFixed(1) + ' m (' + closestAt + ')');
+  assert.ok(worst < 0.02, 'never a jerk: ' + (worst * 1000).toFixed(1) + ' m/s2 (' + worstAt + ')');
+  assert.deepEqual(pops, [], 'nothing pops in or out of sight');
+});
+
 test('a bird sits on the tree only in fair weather, only when one is about, one at a time, and not without a tree', () => {
   // rain: none comes in, and one that is sitting leaves at once
   const wet = perchLife();
@@ -3961,7 +4315,8 @@ test('a bird sits on the tree only in fair weather, only when one is about, one 
   bare.run(0.5);
   assert.ok(!bare.life.raptors.some((x) => x.mode === 'approach' || x.mode === 'perched'));
   // main.js gives life the perch from the tree, and the renderer draws the near bird after the tree
-  assert.ok(readSrc('main.js').includes('const p = renderer.fg && renderer.fg.perchEye();'));
+  assert.ok(readSrc('main.js').includes('const p = renderer.fg && renderer.fg.perchEye(i);'));
+  assert.ok(readSrc('main.js').includes('life.perchCount = () => (renderer.fg ? renderer.fg.perchCount() : 0);'));
   const rn = readSrc('engine/renderer.js');
   assert.ok(/this\.fg\.draw\(state\);[^}]*\}\n      this\._setClip\(clip\);\n      this\._spritePass\(state, true\);/.test(rn) && rn.includes('this.fg.draw(state);\n          this._spritePass(state, true);'), 'in both kinds of frame');
 });

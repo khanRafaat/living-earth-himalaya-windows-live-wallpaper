@@ -11,8 +11,11 @@
  *   still  no frames at all (an app is in front, locked, or paused from the tray)
  *
  * The second argument carries settings: { quality, road, traffic, birds, leaves, tree, mist, banners, demo, smoke, fires, lights, stars, planes,
- * rainbow, flags, animals, panel, corner, panelSize, place: { lat, lon, name } }.
- * They apply at once. Turning the road on or off shapes the mountains again, which takes a few minutes.
+ * rainbow, flags, animals, panel, corner, panelSize, place: { lat, lon, name }, obs, wapi }. obs is the nearest
+ * airport's last report (METAR), which the app reads every half hour when its "Airport weather" setting is on: { id,
+ * name, km, t, temp, dewp, vis, wx }. wapi is WeatherAPI.com's weather now, which the app reads every 15 minutes with the
+ * user's own key when that is the weather source chosen: { t, code, text, cloud, vis, temp, dewp, hum, wind, dir, gust,
+ * precip }. They apply at once. Turning the road on or off shapes the mountains again, which takes a few minutes.
  *
  * Does nothing unless the page was opened with ?host=1, so Lively and browser testing are unaffected.
  */
@@ -54,6 +57,8 @@
         window.leSetLocation(p);
       }
     }
+    if (window.leSetObservation) window.leSetObservation(options.obs || null);
+    if (window.leSetWeatherApi) window.leSetWeatherApi(options.wapi || null);
     if (!window.LE || !window.livelyPropertyListener) return;
     const c = LE.config;
     const q = options.quality;
