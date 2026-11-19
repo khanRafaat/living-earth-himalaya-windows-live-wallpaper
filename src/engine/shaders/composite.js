@@ -430,7 +430,7 @@ vec3 villageLight(vec4 g3, float t) {
   float fire = max(step(0.8, fract(id * 23.1)), fest);     // oil lamps / fires flicker
   float fl = 1.0 - fire * 0.25 * (0.5 + 0.5 * sin(uTime * 7.3 + id * 60.0) * sin(uTime * 3.1 + id * 21.0));
   float d = clamp(16.0 / (t * t), 0.05, 1.3);              // point source: dimmer with distance
-  return c * uLampE * g3.r * on * fl * shimmer * d * (0.6 + 0.8 * fract(id * 29.3)) * (1.0 + 0.5 * fest);
+  return c * uLampE * g3.r * on * fl * shimmer * d * (0.6 + 0.8 * fract(id * 29.3)) * (1.0 + 1.5 * fest);
 }
 
 vec3 shadeTerrain(vec3 rd, float t, vec4 g0, ivec2 ic) {

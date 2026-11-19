@@ -147,7 +147,7 @@ test('a fresh start drops the saved forecast and asks the API at once', async ()
   assert.equal(weather.current().temp, 30);
 });
 
-test('with the same weather data the sky is the same at dawn and at noon', () => {
+test('with the same weather data the sky is the same at dawn and at noon; only the valley mist burns off by day', () => {
   const record = { code: 1, cloud: 20, humidity: 80, visibility: 20000, windSpeed: 8, windDir: 270, precip: 0, temp: 20 };
   const skyAt = (iso) => {
     const { env, LE } = newEnv();
@@ -158,7 +158,9 @@ test('with the same weather data the sky is the same at dawn and at noon', () =>
   };
   const dawn = skyAt('2026-11-03T00:05:00Z'); // 06:05 in Dhaka, about sunrise
   const noon = skyAt('2026-11-03T06:30:00Z');
-  for (const k of Object.keys(noon)) assert.equal(dawn[k], noon[k], k);
+  const byDay = ['mist', 'mistTop', 'fog', 'fogTop']; // (2026-11-18, the user: "too much fog for current time")
+  for (const k of Object.keys(noon)) if (!byDay.includes(k)) assert.equal(dawn[k], noon[k], k);
+  assert.ok(noon.mist < dawn.mist * 0.3 && noon.mistTop < dawn.mistTop, `the humid air's mist at dawn ${dawn.mist}, at noon ${noon.mist}`);
 });
 
 test('clouds keep their true speed when frames are seconds apart', () => {
@@ -1655,6 +1657,7 @@ test('a calm scene is drawn a few bands at a time, and shows only when it is who
   r._draw = () => {};
   r._spritePass = () => {};
   r.fg = { draw() {} };
+  r.goats = { draw() {} };
   const state = { time: 5, treeDir: [1, 0], treeKmh: 0, windAmt: 0, weather: { rain: 0, snow: 0 } };
   r._compositePass = (s, meter, band) => {
     bands.push([band.y, band.h]);
@@ -1708,6 +1711,7 @@ test('in rain or snow the calm scene goes on, and the drops fall over every fade
   r._draw = () => {};
   r._spritePass = () => {};
   r.fg = { draw() {} };
+  r.goats = { draw() {} };
   const weather = { rain: 0, snow: 0, rainSlant: 0.1, flash: 0 };
   const state = { time: 2405, treeDir: [1, 0], treeKmh: 0, windAmt: 0, night: 0.3, weather };
   r.drawFade(0.5, state);
@@ -2034,6 +2038,45 @@ test("the weather service keeps the exe's report, and the scene fills the valley
   }
 });
 
+test("the airport's mist fills the valleys through the morning, burns off by midday and settles again at dusk; fog reported as fog stays", () => {
+  // 2026-11-18 in Dhaka (sunrise 06:12, sunset 17:12): the user wanted the fog sea at 09:12 ("today in this area also
+  // foggy") and found it too much at 12:14 ("it should not show that much fog")
+  const { merge, LE } = airport();
+  const at = (iso, over = {}, rec = null) => {
+    const now = Date.parse(iso);
+    const env = new LE.Environment(LE.config);
+    env.setWeather(rec || merge(FORECAST_1118, VGHS_1118(now, over), now), 'live');
+    env.update(new Date(now), 1, 1);
+    return env.state.weather;
+  };
+  const night = at('2026-11-17T21:00:00Z'); // 03:00
+  const morning = at('2026-11-18T03:12:00Z'); // 09:12
+  const noon = at('2026-11-18T06:15:00Z');
+  const afternoon = at('2026-11-18T09:30:00Z'); // 15:30
+  const dusk = at('2026-11-18T11:40:00Z'); // 17:40
+  for (const [name, w] of [['at night', night], ['at 09:12', morning], ['at dusk', dusk]]) {
+    assert.ok(w.fog > 0.6 && w.mist > 0.8, `${name} the valleys stand full: fog ${w.fog}, mist ${w.mist}`);
+  }
+  for (const [name, w] of [['at noon', noon], ['at 15:30', afternoon]]) {
+    assert.ok(w.fog < 0.2 && w.mist < 0.25, `${name} only a thin mist is left: fog ${w.fog}, mist ${w.mist}`);
+    assert.ok(w.fogTop < morning.fogTop - 0.3, `${name} it lies lower: ${w.fogTop} against ${morning.fogTop}`);
+    near(w.haze, morning.haze, 1e-9, `${name} the air does not turn hazy in its place`);
+    near(w.valleyHaze, morning.valleyHaze, 1e-9, `${name} nor the valleys`);
+  }
+  // it thins over hours, never all at once
+  let last = at('2026-11-18T03:30:00Z').fog;
+  for (let m = 35; m <= 6 * 60 + 30; m += 5) {
+    const f = at(new Date(Date.parse('2026-11-18T03:00:00Z') + m * 60e3).toISOString()).fog;
+    assert.ok(Math.abs(f - last) < 0.03, `fog ${last} to ${f} at 09:00 + ${m} min`);
+    last = f;
+  }
+  // fog the airport calls fog, or a forecast's fog, stays all day
+  assert.ok(at('2026-11-18T06:15:00Z', { wx: 'FG', vis: 400 }).fog >= 0.8, 'FG at noon');
+  assert.equal(at('2026-11-18T06:15:00Z', {}, { ...FORECAST_1118, code: 45 }).fog, 0.9, 'code 45 at noon');
+  const src = readFileSync(new URL('engine/environment.js', SRC), 'utf8');
+  assert.ok(src.includes('const target = weatherTargets(rec, mistLift(a, now));'));
+});
+
 test('the exe hands the report to the page, and the panel says where it came from', () => {
   const host = readFileSync(new URL('services/host.js', SRC), 'utf8');
   assert.ok(host.includes('if (window.leSetObservation) window.leSetObservation(options.obs || null);'));
@@ -2043,6 +2086,11 @@ test('the exe hands the report to the page, and the panel says where it came fro
   assert.ok(main.includes('parts.push(`airport ${ob.obs.id} '));
   const overlay = readFileSync(new URL('ui/overlay.js', SRC), 'utf8');
   assert.ok(overlay.includes("e.cond.textContent = LE.weatherLabel(weather) + (air ? ' · ' + air : '');"));
+  // the exe asks for it every 10 minutes and with every WeatherAPI fetch (it asked every 30 minutes: up to 40 late)
+  const cs = readFileSync(new URL('../host/LivingEarthHost.cs', import.meta.url), 'utf8');
+  assert.ok(cs.includes('private const int ObserveEveryMinutes = 10, ObserveRetryMinutes = 5;'));
+  const wapiTick = cs.slice(cs.indexOf('private void WeatherApiTick('), cs.indexOf('private void WeatherApiFetched('));
+  assert.ok(wapiTick.includes('if (!observing) nextObserve = DateTime.MinValue;'), 'with each weather update');
 });
 
 // ---------------------------------------------------------------- WeatherAPI.com, when chosen in the exe
@@ -2534,6 +2582,16 @@ test('with birds off a sunny noon stays empty of them, where with birds on they 
   off.life.birds = false;
   for (let i = 0; i < 30; i++) off.life.update(2, off.state, off.view);
   assert.ok(!off.life.raptors.length && !off.life.flock && !off.life.geese);
+});
+
+test("birds fly over the valley fog an airport's mist makes, and stay in when it reports fog", () => {
+  // 2026-11-18: Dhaka airport's mist at 1.4 km gave fog 0.66, which let 12 % of the birds out: none at all
+  const misty = testLife(12, { fog: 0.66 });
+  for (let i = 0; i < 30; i++) misty.life.update(2, misty.state, misty.view);
+  assert.ok(misty.life.raptors.length > 0, 'mist: raptors in the thermals over it');
+  const foggy = testLife(12, { fog: 0.9 });
+  for (let i = 0; i < 30; i++) foggy.life.update(2, foggy.state, foggy.view);
+  assert.ok(!foggy.life.raptors.length && !foggy.life.flock && !foggy.life.geese, 'fog: none');
 });
 
 test('flying leaves off clears the air at once and keeps the tree, in autumn wind and spring blossom alike', () => {
@@ -4558,7 +4616,7 @@ test('the waterfall is put on the tallest steep bare rock face in view, below th
   assert.ok(sh.includes('float cloudShadow(vec3 pos) {') && sh.includes('vec3 p = pos + L / ly * (hMid - pos.y);'));
 });
 
-test('festival nights: Tihar and Diwali by the year, every house lit with oil lamps, small fireworks over the villages', () => {
+test('festival nights: Tihar and Diwali by the year, every house lit with oil lamps, fireworks over the villages', () => {
   const { LE } = load(['engine/environment.js']);
   const fest = (y, m, d, h) => LE.Environment.festival(new Date(y, m - 1, d, h, 0, 0));
   assert.equal(fest(2026, 11, 8, 20), 1, 'the night of Laxmi Puja');
@@ -4577,7 +4635,7 @@ test('festival nights: Tihar and Diwali by the year, every house lit with oil la
   const sh = readSrc('engine/shaders/composite.js');
   assert.ok(sh.includes('float fest = uFestival > 0.001 ? step(fract(id * 9.1), uFestival) : 0.0;'), 'that share of the houses');
   assert.ok(sh.includes('float on = clamp(evening + allNight + earlyRiser + fest, 0.0, 1.0);') && sh.includes('on *= max(lit, max(allNight, fest));'), 'lit all night');
-  assert.ok(sh.includes('c = mix(c, vec3(1.0, 0.56, 0.22), fest);') && sh.includes('* (1.0 + 0.5 * fest);'), 'warmer and brighter');
+  assert.ok(sh.includes('c = mix(c, vec3(1.0, 0.56, 0.22), fest);') && sh.includes('* (1.0 + 1.5 * fest);'), 'warmer and brighter');
   assert.ok(readSrc('engine/renderer.js').includes("p.set('uFestival', this.cfg.life === false || this.cfg.lights === false ? 0 : Math.max(state.festival || 0, this.festForce || 0));"), 'part of the village lights');
   // the fireworks
   const night = (over = {}, festival = 1) => {
@@ -4593,7 +4651,7 @@ test('festival nights: Tihar and Diwali by the year, every house lit with oil la
     return seen.size;
   };
   const main = count(night());
-  assert.ok(main >= 8 && main <= 60, 'on the night itself, in 15 minutes: ' + main);
+  assert.ok(main >= 20 && main <= 90, 'on the night itself, in 15 minutes: ' + main);
   const beside = count(night({}, 0.5));
   assert.ok(beside >= 2 && beside < main, 'fewer on the evenings around it: ' + beside);
   assert.equal(count(night({}, 0)), 0, 'none on an ordinary night');
@@ -4610,7 +4668,7 @@ test('festival nights: Tihar and Diwali by the year, every house lit with oil la
   const f = h.life._newFirework();
   const home = h.life.smokeSources.reduce((a, b) => (Math.hypot(b.x - f.at[0], b.z - f.at[2]) < Math.hypot(a.x - f.at[0], a.z - f.at[2]) ? b : a));
   assert.ok(Math.hypot(home.x - f.at[0], home.z - f.at[2]) < 0.045, 'from a village');
-  assert.ok(f.height >= 0.04 && f.height <= 0.07 && f.radius >= 0.012 && f.radius <= 0.022 && f.life <= 2.2, 'a small one');
+  assert.ok(f.height >= 0.25 && f.height <= 0.4 && f.radius >= 0.15 && f.radius <= 0.2 && f.life <= 3.4, 'big enough to see its sparks from 9 to 16 km');
   const yAt = (age) => h.LE.Life.fireworkAt({ ...f, age })[1];
   near(yAt(-f.rise), f.at[1], 1e-9, 'from the ground');
   near(yAt(0), f.at[1] + f.height, 1e-9, 'to its height');
@@ -4623,18 +4681,27 @@ test('festival nights: Tihar and Diwali by the year, every house lit with oil la
   const p = h.LE.Life.fireworkAt(f);
   const dist = Math.hypot(p[0], p[1] - h.view.camY, p[2]);
   near(sp[0].f[11], f.radius / dist / h.view.pxAng, 1e-3, 'as big on the picture as a burst that size, that far off');
-  assert.ok(sp[0].f[2] >= sp[0].f[11] * 1.8, 'with room for the sparks to sink');
+  assert.ok(sp[0].f[2] >= sp[0].f[11] * 2.2, 'with room for the sparks to sink');
   const ss = readSrc('engine/shaders/sprites.js');
-  assert.ok(ss.includes('if (type == 10) {') && ss.includes('float thrown = 1.0 - exp(-age * 3.5);') && ss.includes('sp.y -= 0.15 * vC.w * age * age;'));
+  assert.ok(ss.includes('if (type == 10) {') && ss.includes('float outA = 1.0 - exp(-age * 3.0);') && ss.includes('vec2 sinkA = vec2(0.0, 0.1 * R * age * age);'));
+  assert.ok(ss.includes('vec2 back = dir * outB - sinkB;') && ss.includes('vec2 dd = vLocal - back - ab * h;'), 'each spark a streak');
   assert.ok(ss.includes('if (t > 0.0 && t < dist) discard;'), 'a nearer ridge hides it');
+  assert.ok(ss.includes('float few = clamp(R * R / 1200.0, 0.0025, 0.5);') && ss.includes('c *= fade * few * clamp(outA * outA * 2.5, 0.25, 1.0);'), 'far off it keeps its colour');
+  // from the test panel: one every few seconds, and by day it first sets the clock to the evening
+  const forced = night({}, 0);
+  forced.life.festForce = 1;
+  const many = count(forced, 120);
+  assert.ok(many >= 15, 'the test panel: many in two minutes: ' + many);
+  const panel = readSrc('ui/debugpanel.js');
+  assert.ok(panel.includes("if (!s || s.sunAltDeg > -8) this._clock({ time: '20:30' }); R.festForce = life.festForce = 1;"), 'by day the panel makes it night');
 });
 
-test('more life: black kites over the near villages, herds on the meadows by day, a monastery lamp at night, a helicopter now and then', () => {
+test('more life: black kites over a near village or the slopes below, herds on the meadows by day, a monastery lamp at night, a helicopter now and then', () => {
   // kites
   const h = hills(12);
   h.life.birds = true;
   h.life.villageSmoke = false;
-  const villageAt = { x: 0.6, y: 2.3, z: 1.9 };
+  const villageAt = { x: 0.3, y: 2.3, z: 0.9 };
   h.life.setSmokeSources([villageAt, { x: -3, y: 2.4, z: 8 }]);
   seedRandom(h.ctx, 21);
   const isKite = (r) => r.sp.span === 0.0015;
@@ -4657,7 +4724,24 @@ test('more life: black kites over the near villages, herds on the meadows by day
   far.life.villageSmoke = false;
   far.life.setSmokeSources([{ x: -3, y: 2.4, z: 8 }]);
   seedRandom(far.ctx, 21);
-  far.run(600, () => assert.equal(far.life.raptors.filter(isKite).length, 0, 'none over a village too far off to see one'));
+  // a village too far off to see a kite over it: they hang over the slopes just below the viewpoint instead, where one
+  // is five to nine pixels across (2026-11-18: with no village near, there were none, not even from the test panel)
+  let overSlopes = 0;
+  far.run(900, () => {
+    for (const k of far.life.raptors.filter(isKite)) {
+      if (k.mode !== 'circle') continue;
+      overSlopes++;
+      const d = Math.hypot(k.pos[0], k.pos[2]);
+      assert.ok(d > 0.15 && d < 0.5, 'out from the viewpoint: ' + d.toFixed(2));
+      assert.ok(k.pos[1] < far.view.camY - 0.04 && k.pos[1] > far.view.camY - 0.17, 'below the eye: ' + (k.pos[1] - far.view.camY).toFixed(3));
+      const span = 0.0015 / Math.hypot(k.pos[0], k.pos[1] - far.view.camY, k.pos[2]) / far.view.pxAng;
+      assert.ok(span > 4.5, 'big enough to see: ' + span.toFixed(1) + ' px');
+    }
+  });
+  assert.ok(overSlopes > 50, 'they come all the same: ' + overSlopes);
+  far.life.raptors = far.life.raptors.filter((r) => !isKite(r));
+  far.life.summon('kite');
+  assert.equal(far.life.raptors.filter(isKite).length, 1, 'and the test panel calls one up');
   const nightK = hills(23);
   nightK.life.birds = true;
   nightK.life.villageSmoke = false;
@@ -4820,4 +4904,176 @@ test('more life: black kites over the near villages, herds on the meadows by day
   assert.equal(load(['config.js']).LE.config.animals, true);
   assert.equal(load(['config.js'], { search: '?animals=0' }).LE.config.animals, false);
   assert.ok(readSrc('services/host.js').includes("animals: [c.animals, 'animals'],") && readSrc('main.js').includes('life.animals = cfg.animals !== false;'));
+});
+
+test('goats graze on the rock by the tree by day, stand on its top, walk off at dusk and in heavy rain, and come back from the left', () => {
+  // 2026-11-18: "grazing animals is marked but i cant see any": the near slopes are all forest and a meadow far off
+  // holds an animal under a pixel, so they graze where the eye can see them, on the rock with the tree
+  const { LE } = load(RENDER_FILES);
+  const h = testLife(12);
+  const v = h.view;
+  const a0 = (-0.672 * v.hfov) / 2;
+  const site = [Math.sin(a0) * 28, -3.6, Math.cos(a0) * 28, 1.4]; // renderer.js TREE, treeSite()
+  const al = Math.hypot(site[0], site[2]);
+  const [ax, az] = [site[0] / al, site[2] / al];
+  // a baked view of a level top at the foot of the tree, from 12 m to its left to the point, 5 m either side; beyond it
+  // far land
+  const W = Math.ceil(v.w * 0.32);
+  const H = Math.ceil(v.h * 0.5);
+  const dist = (x, y) => {
+    const a = (x - 0.5 * v.w) * v.pxAng;
+    const ty = (y - v.horizonY * v.h) * v.pxAng;
+    const len = Math.hypot(Math.sin(a), ty, Math.cos(a));
+    const T = site[1] / ty;
+    if (!(T > 0)) return 6;
+    const qx = Math.sin(a) * T - site[0];
+    const qz = Math.cos(a) * T - site[2];
+    const X = qx * az - qz * ax;
+    const D = qx * ax + qz * az;
+    if (X > -12 && X < 2.6 && D > -5 && D < 5) return (T * len) / 1000;
+    return 6;
+  };
+  const M = LE.Renderer.ledgeMap(W, H, dist, () => 0.7, v, site);
+  let seen = 0;
+  for (let c = 0; c < M.h.length; c++) {
+    if (M.h[c] !== M.h[c]) continue;
+    if (M.h[c] > -1) {
+      seen++;
+      near(M.h[c], 0, 0.02, 'the top is level at the foot of the tree');
+      near(M.grass[c], 0.7, 1e-5, 'and as grassy as it looked');
+    }
+  }
+  assert.ok(seen > 200, seen + ' cells of the top seen');
+  assert.ok(M.minX > -12.5 && M.minX < -5, 'seen from its left edge on the picture: ' + M.minX);
+
+  const life = h.life;
+  life._view = v;
+  life.state = h.state;
+  life.birds = false;
+  life.setLedge(M);
+  seedRandom(h.ctx, 4);
+  const onTop = (g) => Math.abs(g.Y) < 0.02 && life._goatGround(g.X, g.D);
+  life.update(1, h.state, v);
+  assert.ok(life.goats.length >= 2 && life.goats.length <= 4, 'a herd there at once by day: ' + life.goats.length);
+  let walked = 0;
+  let grazed = 0;
+  for (let t = 0; t < 1800; t++) {
+    life.update(1, h.state, v);
+    for (const g of life.goats) {
+      if (g.mode === 'arrive' || g.mode === 'leave') continue;
+      assert.ok(onTop(g), `on the top: ${g.X.toFixed(2)}, ${g.D.toFixed(2)}, ${g.Y.toFixed(3)} (${g.mode})`);
+      assert.ok(Math.hypot(g.X, g.D) >= 2.1, 'clear of the trunk');
+      if (g.stride > 0.5) walked++;
+      if (g.head > 0.8) grazed++;
+    }
+  }
+  assert.ok(grazed > walked * 2 && walked > 50, `mostly grazing (${grazed}), walking now and then (${walked})`);
+  // no flat sprites any more (goats.js draws them in 3D); a walking goat in view still asks for the birds' frame rate
+  life._write(h.state);
+  assert.equal(sprites(life).filter((x) => x.type === 12).length, 0, 'not drawn as sprites');
+  const g0 = life.goats[0];
+  const was = g0.stride;
+  g0.stride = 1;
+  assert.ok(life._goatsWalking() >= 1, 'a walking goat counts as moving');
+  g0.stride = was;
+  // dusk: they walk off to the left and are gone; none comes by night
+  h.state.astro.sunAltDeg = 0;
+  life.update(1, h.state, v);
+  assert.ok(life.goats.every((g) => g.mode === 'leave'), 'off at dusk');
+  for (let t = 0; t < 300; t++) life.update(1, h.state, v);
+  assert.equal(life.goats.length, 0, 'gone');
+  h.state.astro.sunAltDeg = -20;
+  for (let t = 0; t < 3600; t++) life.update(1, h.state, v);
+  assert.equal(life.goats.length, 0, 'none by night');
+  // by day again they come back, walking in from beyond the left of the picture
+  h.state.astro.sunAltDeg = 30;
+  let back = null;
+  for (let t = 0; t < 2000 && !back; t++) {
+    life.update(1, h.state, v);
+    if (life.goats.length) back = life.goats[0];
+  }
+  assert.ok(back && back.mode === 'arrive', 'back by day');
+  const pr = life._project(...life._goatWorld(back.X, back.D, back.Y));
+  assert.ok(pr.sx < 0, 'from off the picture: ' + pr.sx.toFixed(0));
+  for (let t = 0; t < 120; t++) life.update(1, h.state, v);
+  assert.ok(life.goats.some((g) => g.mode !== 'arrive'), 'and on to the grass');
+  // heavy rain sends them off; the switch takes them at once
+  h.state.weather.rain = 0.6;
+  life.update(1, h.state, v);
+  assert.ok(life.goats.every((g) => g.mode === 'leave'), 'off in the rain');
+  h.state.weather.rain = 0;
+  life.summon('goats');
+  assert.ok(life.goats.length >= 2 && life.goats.every((g) => g.mode === 'graze'), 'the test panel puts a herd there');
+  life.animals = false;
+  life.update(1, h.state, v);
+  assert.equal(life.goats.length, 0, 'Grazing animals off: none');
+  // the renderer finds the rock after the bake and hands it over; the sprite: rock in front hides it
+  const src = readSrc('engine/renderer.js');
+  assert.ok(src.includes('this._findLedge();') && src.includes('if (this.life) this.life.setLedge(this.ledge);'));
+  assert.ok(readSrc('main.js').includes('life.setLedge(renderer.ledge);'));
+  assert.ok(!readSrc('engine/shaders/sprites.js').includes('type == 12'), 'the flat goat is gone');
+});
+
+test('a goat is a lit 3D body: it stands on its hooves, grazes with its mouth at the grass, walks with each foot in turn, and kids have no horns', () => {
+  // 2026-11-18, the user on the flat goat: "goat is in 2nd mode itr should be 3d", "goat looks like cardboard"
+  const { LE } = load(['engine/gl.js', 'engine/goats.js']);
+  const FL = LE.Goats.FLOATS;
+  const base = { X: 0, D: 0, Y: 0, h: 0, head: 0, stride: 0, phase: 0, clock: 3, seed: 0.5, size: 1 };
+  const build = (g, ground = () => 0) => {
+    const out = new Float32Array(4096 * FL);
+    const lofts = [];
+    const pose = LE.goatPose({ ...base, ...g }, ground);
+    const n = LE.goatMesh(pose, out, 0, LE.goatMesh.IDENTITY, lofts);
+    return { pose, out, n, lofts };
+  };
+  const ref = build({});
+  assert.ok(ref.n > 800 && ref.n < 2000, 'a body of ' + ref.n + ' points');
+  // the same rings in every pose and for every goat, so one index list serves them all
+  for (const g of [{ head: 1 }, { stride: 1, phase: 2 }, { seed: 0.05, size: 0.6 }, { seed: 0.95 }, { clock: 77 }]) {
+    const b = build(g);
+    assert.equal(b.n, ref.n, 'same number of points: ' + JSON.stringify(g));
+    assert.deepEqual(b.lofts, ref.lofts);
+    for (let i = 0; i < b.n; i++) {
+      const o = i * FL;
+      for (let k = 0; k < 14; k++) assert.ok(Number.isFinite(b.out[o + k]), 'finite');
+      near(Math.hypot(b.out[o + 3], b.out[o + 4], b.out[o + 5]), 1, 1e-3, 'unit normals');
+    }
+  }
+  // standing: all four soles on the ground, each under its knee or hock, a grown goat about 0.7 m at the withers
+  const top = Math.max(...Array.from({ length: ref.n }, (_, i) => (ref.out[i * FL + 6] === 0 && ref.out[i * FL + 12] === 0 ? ref.out[i * FL + 1] : -1)));
+  near(top, 0.69, 0.03, 'height at the withers');
+  for (const L of ref.pose.legs) {
+    near(L.G[1], 0, 1e-6, 'sole on the ground');
+    assert.ok(L.M[1] > L.F[1] && L.T[1] > L.M[1], 'joints one above the other');
+    assert.ok(L.fore ? L.M[0] > L.F[0] - 0.03 : L.M[0] < L.F[0], 'the hock behind the foot, the knee over it');
+  }
+  // grazing its mouth is at the grass; looking up its head is high
+  const graze = build({ head: 1 }).pose;
+  assert.ok(graze.muzzle[1] < 0.09, 'mouth at the grass: ' + graze.muzzle[1].toFixed(3));
+  assert.ok(build({ head: 0 }).pose.muzzle[1] > 0.55, 'head up');
+  // walking: each foot in turn; at any moment at least two on the ground, and a lifted one clear of it
+  let minDown = 4;
+  let maxLift = 0;
+  for (let ph = 0; ph < Math.PI * 2; ph += 0.1) {
+    const legs = build({ stride: 1, phase: ph }).pose.legs;
+    minDown = Math.min(minDown, legs.filter((L) => L.G[1] < 1e-6).length);
+    maxLift = Math.max(maxLift, ...legs.map((L) => L.G[1]));
+  }
+  assert.ok(minDown >= 2 && maxLift > 0.05, `feet down ${minDown}, highest lift ${maxLift.toFixed(3)} m`);
+  // on a slope each foot stands on the rock under it
+  const slope = build({}, (x) => 0.2 * x).pose.legs;
+  for (const L of slope) near(L.G[1], 0.2 * L.G[0], 0.02, 'on the slope');
+  // a kid has no horns and no beard; a buck has long horns
+  assert.equal(build({ seed: 0.05 }).pose.hornL, 0);
+  assert.equal(build({ seed: 0.05 }).pose.beard, false);
+  assert.ok(build({ seed: 0.9 }).pose.hornL > build({ seed: 0.3 }).pose.hornL);
+  // drawn in 3D, lit as the tree is, beyond the tree before it and nearer than the tree after it, in every frame path
+  const rs = readSrc('engine/renderer.js');
+  assert.equal(rs.split('this.goats.draw(state, false);').length - 1, 2);
+  assert.equal(rs.split('this.goats.draw(state, true);').length - 1, 2);
+  assert.ok(rs.indexOf('this.goats.draw(state, false);') < rs.indexOf('this.fg.draw(state);'));
+  const gs = readSrc('engine/shaders/goat.js');
+  assert.ok(gs.includes('uTreeL[7]') && gs.includes('capsLight(') && gs.includes('discard'), "the tree's light, its own shadow, hidden by nearer rock");
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.ok(html.indexOf('src/engine/shaders/goat.js') > 0 && html.indexOf('src/engine/goats.js') > html.indexOf('src/engine/foreground.js'));
 });

@@ -243,6 +243,9 @@
         treeFlag: new Program(gl, S.treeFlagVertex(), S.treeFragment(), 'treeFlag', X),
         treeDrift: new Program(gl, S.treeDriftVertex(), S.treeDriftFragment(), 'treeDrift', X),
         treeComp: new Program(gl, S.treeCompVertex, S.treeComp(), 'treeComp', X),
+        // the goats on the rock by the tree (goats.js)
+        goat: new Program(gl, S.goatVertex(), S.goatFragment(), 'goat', X),
+        goatShadow: new Program(gl, S.treeCompVertex, S.goatShadow(), 'goatShadow', X),
       };
       // Chunks well under a screen refresh, so the desktop and the browser's own window get a turn on the GPU
       // in every refresh while the scene is prepared
@@ -272,6 +275,7 @@
       gl.bindVertexArray(this.vao);
       this.life = null;
       this.fg = new LE.Foreground(this);
+      this.goats = new LE.Goats(this);
 
       this.transLUT = createTarget(gl, TRANS_W, TRANS_H, [{ fmt: 'rgba16f', filter: gl.LINEAR }]);
       this.skyLUT = createTarget(gl, SKY_W, SKY_H, [
@@ -853,6 +857,7 @@
         this._findSmokeSources();
         this._findForestSources();
         this._findFall();
+        this._findLedge();
         this._setStatus('running');
       } else {
         // B now holds the new shadows: cross-fade A → B, then swap
@@ -1227,6 +1232,76 @@
         if (out.every((o) => Math.hypot(o.x - f.x, o.z - f.z) > 0.4)) out.push(f);
       }
       return out;
+    }
+
+    /**
+     * The top of the rock by the tree as the eye sees it, for the goats that graze there (life.js): the rock's pixels
+     * (baked distance under 0.4 km, ledge.js) turned into a map of 0.5 m cells in the rock's frame: X across the view and
+     * D away from the eye, both from the tree, as ledge.js hillFrame has them. Each cell holds the highest point seen in
+     * it (m above the tree's foot; NaN where none is seen), which is the top where the top shows, and how much of it is
+     * grass. `dist(x, y)` km and `grass(x, y)` 0 to 1 at picture pixels from the bottom left; `site` = treeSite() (m).
+     */
+    static ledgeMap(w, h, dist, grass, v, site) {
+      const cell = 0.5;
+      const x0 = -40;
+      const d0 = -25;
+      const nx = 90;
+      const nd = 100;
+      const hs = new Float32Array(nx * nd).fill(NaN);
+      const gs = new Float32Array(nx * nd);
+      const ns = new Uint16Array(nx * nd);
+      const al = Math.hypot(site[0], site[2]);
+      const ax = site[0] / al;
+      const az = site[2] / al;
+      let minX = Infinity;
+      for (let y = 0; y < h; y++) {
+        const ty = (y - v.horizonY * v.h) * v.pxAng;
+        for (let x = 0; x < w; x++) {
+          const t = dist(x, y);
+          if (!(t > 0 && t < 0.4)) continue;
+          const a = (x - 0.5 * v.w) * v.pxAng;
+          const T = (t * 1000) / Math.hypot(Math.sin(a), ty, Math.cos(a));
+          const qx = Math.sin(a) * T - site[0];
+          const qz = Math.cos(a) * T - site[2];
+          const X = qx * az - qz * ax;
+          const D = qx * ax + qz * az;
+          const i = Math.floor((X - x0) / cell);
+          const k = Math.floor((D - d0) / cell);
+          if (i < 0 || k < 0 || i >= nx || k >= nd) continue;
+          const c = k * nx + i;
+          const Y = ty * T - site[1];
+          if (!(hs[c] >= Y)) hs[c] = Y;
+          gs[c] += grass(x, y);
+          ns[c]++;
+          minX = Math.min(minX, x0 + i * cell);
+        }
+      }
+      for (let c = 0; c < nx * nd; c++) gs[c] = ns[c] ? gs[c] / ns[c] : 0;
+      return { cell, x0, d0, nx, nd, h: hs, grass: gs, site: [site[0], site[1], site[2]], ax, az, minX };
+    }
+
+    /** Once after the bake: the rock's top for the goats, from the lower left of the picture where the rock is. */
+    _findLedge() {
+      const gl = this.gl;
+      this.ledge = null;
+      try {
+        const w = Math.ceil(this.w * 0.32);
+        const h = Math.ceil(this.h * 0.5);
+        const g0 = new Float32Array(w * h * 4);
+        const g3 = new Uint8Array(w * h * 4);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.gbuf.fbo);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, g0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT3);
+        gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, g3);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        const i = (x, y) => (y * w + x) * 4;
+        this.ledge = Renderer.ledgeMap(w, h, (x, y) => g0[i(x, y) + 2], (x, y) => g3[i(x, y) + 3] / 255, this.viewInfo(), this.treeSite());
+        if (this.life) this.life.setLedge(this.ledge);
+      } catch (e) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      }
     }
 
     /**
@@ -1727,6 +1802,7 @@
       // (the birds and the traffic never go into the still copy: there they would hang in the air for as long as it lies)
       this._setClip(clip);
       this._spritePass(state);
+      this.goats.draw(state, false); // (as the birds: never in the still copy)
       this._setClip(whole ? null : clip);
       this.fg.draw(state);
       if (whole) {
@@ -1735,6 +1811,7 @@
       }
       this._setClip(clip);
       this._spritePass(state, true);
+      this.goats.draw(state, true);
       this._setClip(null);
       this._fenceFrame();
       return true;
@@ -1833,8 +1910,10 @@
         if (this._slow) this._keepPicture();
         else {
           this._spritePass(state);
+          this.goats.draw(state, false);
           this.fg.draw(state);
           this._spritePass(state, true);
+          this.goats.draw(state, true);
         }
       }
       if (timing) gl.endQuery(this.timerExt.TIME_ELAPSED_EXT);
@@ -1879,6 +1958,7 @@
       gl.deleteBuffer(this.spriteBuf);
       gl.deleteVertexArray(this.spriteVAO);
       if (this.fg) this.fg.dispose();
+      if (this.goats) this.goats.dispose();
       [this._bakePacer, this._shadowPacer, this._bgPacer].forEach((pc) => pc && pc.dispose());
       if (this._frameQuery) gl.deleteQuery(this._frameQuery);
       if (this._frameFence !== null) gl.deleteSync(this._frameFence);

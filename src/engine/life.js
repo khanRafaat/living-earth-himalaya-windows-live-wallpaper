@@ -31,6 +31,9 @@
     return t * t * (3 - 2 * t);
   };
   const rand = (a, b) => a + Math.random() * (b - a);
+  // goats: where round a spot the rock must be seen and even (m, across and away), and their coats (shaders/goat.js coat)
+  const GOAT_AROUND = [[0.7, 0], [-0.7, 0], [0, 0.5], [0, -0.5]];
+  const GOAT_COATS = [0, 0, 0, 1, 1, 2, 2, 3, 4, 4, 5];
   const G = 0.0098; // km/s²
 
   const SPECIES = {
@@ -112,9 +115,13 @@
   const PLANE_FAR = 120;
   const TRAIL_W0 = 0.01; // km, how wide a new contrail is, and how fast it spreads (km/s)
   const TRAIL_SPREAD = 0.0008;
-  const KITE_FAR = 3.2; // km: over a village further off a kite is too small to show
+  // km: over a village further off a kite (1.5 m across) is under two pixels. It was 3.2 km, where one is under a pixel,
+  // and a landscape with no village that near had none at all, not even from the test panel (user, 2026-11-18: "in debug
+  // black kite also not working")
+  const KITE_FAR = 1.2;
   // gold, red, green and silver-white: the small rockets sold for Tihar
-  const FIREWORK_COLOURS = [[1.0, 0.72, 0.3], [1.0, 0.25, 0.18], [0.35, 1.0, 0.4], [0.9, 0.92, 1.0]];
+  // gold, red, green, violet, silver: pure, so that bright as they are the night's tone curve does not wash them white
+  const FIREWORK_COLOURS = [[1.0, 0.5, 0.08], [1.0, 0.08, 0.04], [0.12, 1.0, 0.15], [0.7, 0.12, 1.0], [0.75, 0.8, 1.0]];
   const HELI_V = 0.045; // km/s, a helicopter making its way up the valley
   const TRAFFIC_MAX = 14; // on the whole road, most of which is in view
   // what rises from the hills: wood smoke from a house, mist off wet forest, smoke from a burning field
@@ -200,6 +207,11 @@
       this.pastures = []; // [{x, y, z, n}] meadows found after the bake, and the herd on each
       this.herds = [];
       this.gompa = null; // {x, y, z}: a monastery on a ridge, whose lamp burns at night
+      this.ledge = null; // the top of the rock by the tree as the eye sees it (Renderer.ledgeMap), where goats graze
+      this.goats = [];
+      this._goatsSeen = false;
+      this._goatsAway = 0;
+      this._goatStay = 0;
       this.heli = null;
       this._nextHeli = rand(900, 3600);
       this.traffic = 'normal'; // light | normal | busy
@@ -371,6 +383,12 @@
       else if (kind === 'kite') {
         const homes = this._kiteHomes();
         if (homes.length) this.raptors.push(this._newKite(homes[Math.floor(Math.random() * homes.length)], true));
+      } else if (kind === 'goats') {
+        // grazing on the rock at once (by night or in heavy rain they then walk off)
+        if (this.ledge && this.animals && this.enabled) {
+          this._goatsSeen = true;
+          this._goatHerd(false);
+        }
       } else if (kind === 'helicopter') {
         if (this.planes) this.heli = this._newHeli(true);
       }
@@ -530,7 +548,10 @@
       const w = state.weather;
       const sunAlt = a.sunAltDeg;
       const daylight = smooth(-5, 3, sunAlt);
-      const shelter = (1 - smooth(0.1, 0.4, w.rain)) * (1 - smooth(0.35, 0.75, w.fog)) * (1 - w.storm) * (1 - smooth(0.2, 0.6, w.snow));
+      // Fog grounds them, mist does not: the valley fog from a short visibility (mist, METAR "BR") stays at 0.75 or
+      // less and lies below the viewpoint, and birds fly over it; only fog reported as fog (0.8, 0.9) takes them in.
+      // Before, mist at 1.4 km at Dhaka airport (2026-11-18) left 12 % of the birds, which rounded to none.
+      const shelter = (1 - smooth(0.1, 0.4, w.rain)) * (1 - smooth(0.76, 0.88, w.fog)) * (1 - w.storm) * (1 - smooth(0.2, 0.6, w.snow));
       // Turned off: the birds go at once rather than flying away, since that is what was asked
       if (!this.birds) {
         this.raptors = [];
@@ -622,12 +643,28 @@
       this._stepPlanes(dt, state);
       this._stepFireworks(dt, state);
       this._stepHerds(dt, daylight);
+      this._stepGoats(dt, state);
       this._stepHeli(dt, state, daylight * shelter);
     }
 
     /** The villages a kite can be seen over. */
     _kiteHomes() {
-      return this.smokeSources.filter((s) => Math.hypot(s.x, s.z) < KITE_FAR);
+      const villages = this.smokeSources.filter((s) => Math.hypot(s.x, s.z) < KITE_FAR);
+      return villages.length ? villages : this._slopeHomes();
+    }
+
+    /**
+     * With no village that near, kites hang over the slopes just below the viewpoint, 0.25 to 0.45 km out and 60 to 150 m
+     * below the eye (_overVillage), seen from above against the forest: five to nine pixels across. Clear of the rock and
+     * the tree on the left.
+     */
+    _slopeHomes() {
+      const v = this._view;
+      if (!v) return [];
+      return [[-0.35, 0.28], [0.15, 0.36], [0.6, 0.32]].map(([f, d]) => {
+        const az = (f * v.hfov) / 2;
+        return { x: Math.sin(az) * d, y: v.camY - 0.2, z: Math.cos(az) * d };
+      });
     }
 
     /** Where a kite circles over a village: 50 to 140 m above its roofs. */
@@ -2169,6 +2206,262 @@
       }
     }
 
+    // ------------------------------------------------------------ goats on the rock by the tree
+    /**
+     * The top of the rock by the tree as the eye sees it (Renderer.ledgeMap): where goats can stand. A herd on a far
+     * meadow is less than a pixel from here and the near slopes are all forest (2026-11-18: the user had the switch on
+     * and saw no animal at all), so the animals one sees graze here: two to four goats, there already when the scene
+     * starts by day, now and then away for a while and walking back in from the left, and off to the left at dusk or in
+     * heavy rain or snow. Turned off, they go at once, as the birds do.
+     */
+    setLedge(ledge) {
+      this.ledge = ledge || null;
+      this.goats = [];
+      this._goatsSeen = false;
+      this._goatSpots = null;
+    }
+
+    _ledgeCellAt(X, D) {
+      const L = this.ledge;
+      const i = Math.floor((X - L.x0) / L.cell);
+      const k = Math.floor((D - L.d0) / L.cell);
+      return i < 0 || k < 0 || i >= L.nx || k >= L.nd ? -1 : k * L.nx + i;
+    }
+
+    /** The height of the rock's top at (X, D), m above the tree's foot, from the cells round it the eye sees; else NaN. */
+    _ledgeY(X, D) {
+      const L = this.ledge;
+      const fx = (X - L.x0) / L.cell - 0.5;
+      const fd = (D - L.d0) / L.cell - 0.5;
+      const i = Math.floor(fx);
+      const k = Math.floor(fd);
+      let sum = 0;
+      let wsum = 0;
+      for (let b = 0; b <= 1; b++) {
+        for (let a = 0; a <= 1; a++) {
+          const ii = i + a;
+          const kk = k + b;
+          if (ii < 0 || kk < 0 || ii >= L.nx || kk >= L.nd) continue;
+          const y = L.h[kk * L.nx + ii];
+          if (!(y === y)) continue;
+          const wgt = (a ? fx - i : 1 - fx + i) * (b ? fd - k : 1 - fd + k) + 1e-4;
+          sum += y * wgt;
+          wsum += wgt;
+        }
+      }
+      return wsum > 0 ? sum / wsum : NaN;
+    }
+
+    /**
+     * Can a goat stand at (X, D): on the top, not the face under the rim (no lower than the top's own dip), with the top
+     * seen all round it and not too uneven, clear of the trunk and of the flags' stake (foreground.js: 3.6 m to the left
+     * of the tree, 0.8 m nearer).
+     */
+    _goatGround(X, D) {
+      const y = this._ledgeY(X, D);
+      if (!(y > -0.35 - 0.015 * Math.max(-X, 0)) || y > 0.75) return false;
+      if (Math.hypot(X, D) < 2.1 || Math.hypot(X + 3.6, D + 0.8) < 0.9) return false;
+      for (const [dx, dd] of GOAT_AROUND) {
+        if (!(Math.abs(this._ledgeY(X + dx, D + dd) - y) < 0.3)) return false;
+      }
+      return true;
+    }
+
+    /** Every place on the rock a goat can stand, [X, D, grass], once for each rock map. */
+    _goatSpotsList() {
+      if (this._goatSpots) return this._goatSpots;
+      const L = this.ledge;
+      const out = [];
+      for (let k = 0; k < L.nd; k++) {
+        for (let i = 0; i < L.nx; i++) {
+          const c = k * L.nx + i;
+          if (!(L.h[c] === L.h[c])) continue;
+          const X = L.x0 + (i + 0.5) * L.cell;
+          const D = L.d0 + (k + 0.5) * L.cell;
+          if (this._goatGround(X, D)) out.push([X, D, L.grass[c]]);
+        }
+      }
+      return (this._goatSpots = out);
+    }
+
+    /** Somewhere to go: on the rock, rMin to rMax from (X, D), mostly across the view, clear of the others, grass first. */
+    _goatSpot(X, D, rMin, rMax, self) {
+      let best = null;
+      let bs = -1;
+      for (let n = 0; n < 48; n++) {
+        const r = rand(rMin, rMax);
+        const a = Math.random() < 0.7 ? rand(-0.45, 0.45) + (Math.random() < 0.5 ? 0 : Math.PI) : rand(0, TAU);
+        const x = X + Math.cos(a) * r;
+        const d = D + Math.sin(a) * r;
+        if (!this._goatGround(x, d)) continue;
+        if (this.goats.some((o) => o !== self && (Math.hypot(o.X - x, o.D - d) < 1.2 || Math.hypot(o.tx - x, o.td - d) < 1.2))) continue;
+        const c = this._ledgeCellAt(x, d);
+        const score = (c >= 0 ? this.ledge.grass[c] : 0) + Math.random() * 0.5;
+        if (score > bs) {
+          bs = score;
+          best = [x, d];
+        }
+      }
+      return best;
+    }
+
+    /** Where a goat is, in the scene's km. */
+    _goatWorld(X, D, Y) {
+      const L = this.ledge;
+      const s = L.site;
+      return [(s[0] + X * L.az + D * L.ax) / 1000, this._view.camY + (s[1] + Y) / 1000, (s[2] - X * L.ax + D * L.az) / 1000];
+    }
+
+    /** A point at depth D on the rock, off the picture on the left by a goat's length (the i-th of a file a little further). */
+    _offLeft(D, i) {
+      let X = this.ledge.minX;
+      for (let k = 0; k < 80; k++, X -= 0.5) {
+        const p = this._goatWorld(X, D, 0);
+        const pr = this._project(p[0], p[1], p[2]);
+        if (pr.sx < -1.3 / (pr.r * 1000 * this._view.pxAng)) break;
+      }
+      return [X - i * rand(1.3, 2.2), D];
+    }
+
+    _newGoat(X, D, kid) {
+      const y = this._ledgeY(X, D);
+      return {
+        X, D, Y: y === y ? y : 0,
+        h: Math.random() < 0.5 ? 0 : Math.PI, // which way it heads on the rock (0: along X, to the right)
+        mode: 'graze', wait: rand(2, 20), tx: X, td: D, speed: 0,
+        phase: rand(0, TAU), stride: 0, head: 1, headT: 1,
+        size: kid ? rand(0.55, 0.68) : rand(0.92, 1.06),
+        coat: GOAT_COATS[Math.floor(Math.random() * GOAT_COATS.length)],
+        seed: kid ? rand(0, 0.11) : rand(0.12, 1), // a kid: no horns and no beard, a bigger head; above 0.7 a buck (goats.js goatPose)
+        clock: rand(0, 100),
+      };
+    }
+
+    /** A herd: grazing there already, or walking in one after the other from the left. False if the rock has no room. */
+    _goatHerd(walkIn) {
+      const spots = this._goatSpotsList();
+      if (spots.length < 8) return false;
+      const mid = spots[Math.floor(Math.random() * spots.length)];
+      const n = Math.random() < 0.3 ? 2 : Math.random() < 0.65 ? 3 : 4;
+      this.goats = [];
+      for (let i = 0; i < n; i++) {
+        const at = this._goatSpot(mid[0], mid[1], i ? 0.8 : 0, 3.5, null) || (i ? null : mid);
+        if (!at) continue;
+        const g = this._newGoat(at[0], at[1], i > 0 && Math.random() < 0.3);
+        if (walkIn) {
+          const from = this._offLeft(at[1], i);
+          Object.assign(g, { X: from[0], D: from[1], h: 0, mode: 'arrive', speed: rand(0.5, 0.6), head: 0.1, headT: 0.1 });
+        }
+        this.goats.push(g);
+      }
+      this._goatStay = rand(2400, 7200);
+      return this.goats.length > 0;
+    }
+
+    _goatLeave(g) {
+      const off = this._offLeft(g.D, 0);
+      Object.assign(g, { mode: 'leave', tx: off[0] - rand(0, 1.5), td: g.D, speed: rand(0.5, 0.65), headT: 0.1 });
+    }
+
+    /** The middle of the herd, without this one. */
+    _goatMiddle(self) {
+      const others = this.goats.filter((o) => o !== self && o.mode !== 'leave');
+      if (!others.length) return null;
+      return [others.reduce((s, o) => s + o.X, 0) / others.length, others.reduce((s, o) => s + o.D, 0) / others.length];
+    }
+
+    _goatArrived(g) {
+      if (g.mode === 'leave') {
+        g.gone = true;
+        return;
+      }
+      Object.assign(g, { mode: 'graze', headT: rand(0.85, 1), wait: rand(8, 30), speed: 0, tx: g.X, td: g.D });
+    }
+
+    /** What it does next: a step or two with its head still down, a look round, or a walk to another patch near the others. */
+    _goatNext(g) {
+      const r = Math.random();
+      if (g.mode === 'graze' && r < 0.5) {
+        const at = this._goatSpot(g.X, g.D, 0.35, 1.2, g);
+        if (at) return Object.assign(g, { mode: 'nibble', tx: at[0], td: at[1], speed: 0.22, headT: 0.8 });
+      }
+      if (g.mode === 'graze' && r < 0.72) return Object.assign(g, { mode: 'look', headT: rand(0, 0.2), wait: rand(3, 9) });
+      const m = this._goatMiddle(g) || [g.X, g.D];
+      const at = this._goatSpot(m[0], m[1], 0.8, 3.8, g);
+      if (at && Math.hypot(at[0] - g.X, at[1] - g.D) > 0.6) return Object.assign(g, { mode: 'walk', tx: at[0], td: at[1], speed: rand(0.45, 0.6), headT: 0.12 });
+      Object.assign(g, { mode: 'graze', headT: rand(0.85, 1), wait: rand(6, 20) });
+    }
+
+    _stepGoat(g, dt) {
+      g.clock += dt;
+      g.head += (g.headT - g.head) * (1 - Math.exp(-dt / 0.7));
+      if (g.mode === 'graze' || g.mode === 'look') {
+        g.stride *= Math.exp(-dt / 0.25);
+        g.wait -= dt;
+        if (g.wait <= 0) this._goatNext(g);
+        return;
+      }
+      const dx = g.tx - g.X;
+      const dd = g.td - g.D;
+      const far = Math.hypot(dx, dd);
+      if (far < 0.03) return this._goatArrived(g);
+      const turn = ((((Math.atan2(dd, dx) - g.h) % TAU) + TAU + Math.PI) % TAU) - Math.PI;
+      g.h += clamp(turn, -1.8 * dt, 1.8 * dt);
+      const v = g.speed * smooth(0.2, 0.9, Math.cos(turn)); // it turns before it goes
+      const step = Math.min(v * dt, far);
+      g.stride += (smooth(0, 0.35, v) - g.stride) * (1 - Math.exp(-dt / 0.25));
+      g.phase = (g.phase + (step / (0.6 * g.size)) * TAU) % TAU; // a whole step, all four feet, every 0.6 m
+      const nx = g.X + Math.cos(g.h) * step;
+      const nd = g.D + Math.sin(g.h) * step;
+      // walking in and out it may cross the rock beyond the picture; on it, the rim or the trunk stops it to think again
+      if (g.mode !== 'arrive' && g.mode !== 'leave' && !this._goatGround(nx, nd)) return this._goatArrived(g);
+      g.X = nx;
+      g.D = nd;
+      const y = this._ledgeY(g.X, g.D);
+      if (y === y) g.Y += (y - g.Y) * (1 - Math.exp(-dt / 0.2));
+      if (v > 0 && step >= far - 1e-9) this._goatArrived(g);
+    }
+
+    _stepGoats(dt, state) {
+      if (!this.ledge || !this._view) return;
+      if (!(this.enabled && this.animals)) {
+        this.goats = [];
+        return;
+      }
+      const w = state.weather;
+      const here = this.goats.some((g) => g.mode !== 'leave');
+      const out = w.rain < 0.3 && w.snow < 0.35 && w.storm < 0.5 && state.astro.sunAltDeg > (here ? 1 : 4);
+      if (!this._goatsSeen) {
+        this._goatsSeen = true;
+        if (out) this._goatHerd(false);
+        else this._goatsAway = rand(120, 900);
+      } else if (here) {
+        this._goatStay -= dt;
+        if (!out || this._goatStay <= 0) for (const g of this.goats) if (g.mode !== 'leave') this._goatLeave(g);
+      } else if (!this.goats.length && out) {
+        this._goatsAway -= dt;
+        if (this._goatsAway <= 0 && !this._goatHerd(true)) this._goatsAway = 600;
+      }
+      for (const g of this.goats) this._stepGoat(g, dt);
+      const before = this.goats.length;
+      this.goats = this.goats.filter((g) => !g.gone);
+      if (before && !this.goats.length) this._goatsAway = rand(480, 1500);
+    }
+
+    /** How many goats in view are walking: their legs need the birds' frame rate. goats.js draws them. */
+    _goatsWalking() {
+      const v = this._view;
+      if (!this.ledge || !v || !this.goats.length) return 0;
+      let walking = 0;
+      for (const g of this.goats) {
+        if (!(g.stride > 0.05)) continue;
+        const p = this._goatWorld(g.X, g.D, g.Y);
+        const pr = this._project(p[0], p[1], p[2]);
+        if (this._inView(pr, 1.2 / (pr.r * 1000 * v.pxAng))) walking++;
+      }
+      return walking;
+    }
+
     /** The monastery's lamp: one warm light on its ridge from dusk to dawn, with the village lights. */
     _pushGompa(state) {
       const g = this.gompa;
@@ -2252,9 +2545,12 @@
 
     // ------------------------------------------------------------ festival fireworks
     /**
-     * On a festival night (environment.js festival) small rockets go up from the villages now and then: after dark,
-     * in dry air one can see through, mostly before midnight. One every 15 to 70 seconds on the night itself across
-     * all the villages in view, fewer on the nights around it.
+     * On a festival night (environment.js festival) rockets go up from the villages now and then: after dark, in dry
+     * air one can see through, mostly before midnight. One every 8 to 35 seconds on the night itself across all the
+     * villages in view, fewer on the nights around it; from the test panel one every few seconds. The villages here are
+     * 9 to 16 km off, where the little ones first made (2026-11-19, the user: "festival night have no effect") were a
+     * white dot of a few pixels, so these are the biggest shells of a town's show, bursting 250 to 400 m up into balls
+     * 300 to 400 m across, some 50 px on a 4K screen 11 km off: enough to see the sparks fly.
      */
     _stepFireworks(dt, state) {
       const w = state.weather;
@@ -2264,8 +2560,8 @@
         const h = state.now.getHours() + state.now.getMinutes() / 60;
         this._nextFirework -= dt * ok * (h >= 12 && h < 23.5 ? 1 : 0.15);
         if (this._nextFirework <= 0) {
-          this._nextFirework = rand(15, 70);
-          const f = this.fireworks.length < 4 ? this._newFirework() : null;
+          this._nextFirework = this.festForce ? rand(2.5, 7) : rand(8, 35);
+          const f = this.fireworks.length < (this.festForce ? 6 : 4) ? this._newFirework() : null;
           if (f) this.fireworks.push(f);
         }
       }
@@ -2273,15 +2569,15 @@
       this.fireworks = this.fireworks.filter((f) => f.age < f.life);
     }
 
-    /** A rocket from somewhere in a village: up 40 to 70 m in a second or so, then a ball of sparks 12 to 22 m across its radius. */
+    /** A shell from somewhere in a village: up 250 to 400 m in two or three seconds, then a ball of sparks 150 to 200 m across its radius. */
     _newFirework() {
       const list = this.smokeSources;
       if (!list.length) return null;
       const src = list[Math.floor(Math.random() * list.length)];
-      const rise = rand(1.0, 1.5);
+      const rise = rand(2.0, 2.8);
       return {
         at: [src.x + rand(-0.03, 0.03), src.y + 0.004, src.z + rand(-0.03, 0.03)],
-        height: rand(0.04, 0.07), rise, age: -rise, life: rand(1.4, 2.2), radius: rand(0.012, 0.022), seed: rand(0, 50),
+        height: rand(0.25, 0.4), rise, age: -rise, life: rand(2.4, 3.4), radius: rand(0.15, 0.2), seed: rand(0, 50),
         colour: FIREWORK_COLOURS[Math.floor(Math.random() * FIREWORK_COLOURS.length)],
       };
     }
@@ -2300,7 +2596,7 @@
       if (!this._inView(pr, 30)) return;
       const dist = Math.hypot(p[0], p[1] - v.camY, p[2]);
       const R = f.radius / dist / v.pxAng;
-      const half = f.age < 0 ? 4 : R * 1.8 + 4;
+      const half = f.age < 0 ? 9 : R * 2.2 + 4;
       this._push([
         pr.sx, pr.sy, half, half,
         0, 10, 1, dist,
@@ -2454,6 +2750,7 @@
       for (const p of this.aircraft) this._pushPlane(p, state);
       for (const f of this.fireworks) this._pushFirework(f);
       this._pushHerds(state);
+      const goatsWalking = this._goatsWalking();
       this._pushGompa(state);
 
       const skyFrom = this.count;
@@ -2488,7 +2785,7 @@
         this._push([p[0], p[1], 3, 3, 0, 4, 1, 0, s.bright * fade * state.starVis * 3, 0, 0, 0, 0, 0, 0, 0]);
       }
       // Things in view that move fast enough to need a higher frame rate. Smoke only drifts.
-      this.movers = birdsInView + this.count - skyFrom;
+      this.movers = birdsInView + this.count - skyFrom + goatsWalking;
       // A bird at the tree: after everything else, so the renderer can draw it over the tree. Sitting, it needs no
       // more frames than the tree does.
       this.nearFrom = this.count;

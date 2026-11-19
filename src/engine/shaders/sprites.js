@@ -402,29 +402,55 @@ void main() {
   }
 
   if (type == 10) {
-    // ---------------- a small firework over a village ----------------
+    // ---------------- a firework over a village ----------------
     // vC = (seconds since it burst, below zero while the rocket climbs; how long its sparks last; its own number; the
     // radius of the burst in px), vD = its colour
     if (t > 0.0 && t < dist) discard;
     float age = vC.x;
+    float R = vC.w;
     vec3 c = vec3(0.0);
     if (age < 0.0) {
-      c = vec3(1.0, 0.7, 0.4) * exp(-dot(vLocal, vLocal) / 0.8) * 0.4; // the rocket: a small warm spark
+      // the rocket: a small warm spark, and the short trail of fire it leaves below it
+      float trail = exp(-vLocal.x * vLocal.x / 0.35) * step(vLocal.y, 0.0) * exp(vLocal.y / 2.5);
+      c = vec3(1.0, 0.7, 0.4) * (exp(-dot(vLocal, vLocal) / 0.8) * 0.4 + trail * 0.12);
     } else {
-      float thrown = 1.0 - exp(-age * 3.5); // thrown out fast, then slowed by the air
-      float fade = 1.0 - smoothstep(0.45, 1.0, age / vC.y);
-      for (int i = 0; i < 28; i++) {
+      // A ball of sparks: each thrown out fast, slowed by the air, sinking as it burns out, and crackling at the end.
+      // Each is seen as the streak it draws in the last third of a second (as the eye sees a spark), brightest at its
+      // head, so even a burst a few km off shows as lines of sparks and not as a dot (2026-11-19, the user: "rockset
+      // blast should show spark").
+      float fade = 1.0 - smoothstep(0.5, 1.0, age / vC.y);
+      float tail = max(age - 0.3, 0.0);
+      float outA = 1.0 - exp(-age * 3.0);
+      float outB = 1.0 - exp(-tail * 3.0);
+      vec2 sinkA = vec2(0.0, 0.1 * R * age * age);
+      vec2 sinkB = vec2(0.0, 0.1 * R * tail * tail);
+      float crackle = smoothstep(0.55, 0.8, age / vC.y);
+      for (int i = 0; i < 36; i++) {
         float fi = float(i);
         float a1 = fract(sin(fi * 12.9898 + vC.z) * 43758.5453) * 6.2832;
         float z1 = fract(sin(fi * 78.233 + vC.z * 1.7) * 24634.6345) * 2.0 - 1.0;
-        // sparks all over a ball, seen from the side; they sink as they burn out
-        vec2 sp = vec2(cos(a1), sin(a1)) * sqrt(1.0 - z1 * z1) * vC.w * thrown;
-        sp.y -= 0.15 * vC.w * age * age;
-        vec2 dd = vLocal - sp;
-        c += vD.rgb * exp(-dot(dd, dd) / 0.6) * (0.6 + 0.4 * sin(uTime * 31.0 + fi * 2.4));
+        float speed = (0.75 + 0.25 * fract(sin(fi * 39.35 + vC.z * 0.7) * 15731.743)) * R;
+        // all over a ball, seen from the side
+        vec2 dir = vec2(cos(a1), sin(a1)) * sqrt(1.0 - z1 * z1) * speed;
+        vec2 head = dir * outA - sinkA;
+        vec2 back = dir * outB - sinkB;
+        vec2 ab = head - back;
+        float L2 = dot(ab, ab);
+        float h = L2 > 1e-3 ? clamp(dot(vLocal - back, ab) / L2, 0.0, 1.0) : 1.0;
+        vec2 dd = vLocal - back - ab * h;
+        float tw = mix(1.0, step(0.45, fract(uTime * 9.0 + fi * 0.37)), crackle);
+        c += vD.rgb * exp(-dot(dd, dd) / 0.5) * mix(0.08, 1.0, h * h) * tw;
       }
-      c *= fade;
-      c += vec3(1.0, 0.95, 0.85) * exp(-dot(vLocal, vLocal) / (vC.w * vC.w * 0.3)) * exp(-age * 14.0) * 0.5; // the flash
+      // Far off the sparks of a burst fall on fewer pixels: as bright in all as near, which is dimmer in each (as the
+      // square of its size), so it keeps its colour instead of burning out to white
+      float few = clamp(R * R / 1200.0, 0.0025, 0.5);
+      // and in the first moments, while they are still bunched together, each a little dimmer, so they show as sparks
+      // and not as one white ball
+      c *= fade * few * clamp(outA * outA * 2.5, 0.25, 1.0);
+      // the air round it lit in its colour for a moment (gone well inside the sprite's edge), and the flash it went off with
+      float r2 = dot(vLocal, vLocal) / (R * R);
+      c += vD.rgb * exp(-r2 * 4.0) * 0.0025 * (1.0 - smoothstep(0.0, 0.6, age));
+      c += vec3(1.0, 0.95, 0.85) * exp(-r2 * 12.0) * exp(-age * 25.0) * 0.2 * max(few, 0.1);
     }
     float Tf = exp(-dist * (0.012 + 0.003 * uMieScale));
     fragColor = vec4(gradeLamp(c * uHeadE * 9.0 * Tf) * alpha, 0.0);

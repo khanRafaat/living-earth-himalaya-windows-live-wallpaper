@@ -65,8 +65,29 @@
     return { deck, cirrus };
   }
 
-  /** Map a weather record → target visual parameters. */
-  function weatherTargets(rec) {
+  /**
+   * How far the day has burnt off the valley mist: 0 through the night and the morning, rising from 3.5 to 6 h after
+   * sunrise to 1 (in Dhaka in November, 09:40 to 12:10), and back to 0 from an hour before sunset to half an hour
+   * after it, as mist settles again. An airport in the plains reports mist (BR) at noon too, from the haze of a big
+   * town: on 2026-11-18 Dhaka gave 1 km and BR all morning, which the user wanted as a fog sea at 09:12 ("today in
+   * this area also foggy"), and 1.4 km and BR at 11:00, when the valleys still stood full of fog at noon ("too much
+   * fog for current time").
+   */
+  function mistLift(astro, now) {
+    const t = (astro && astro.times) || {};
+    if (t.sunrise && t.sunset && now) {
+      const hS = (now - t.sunrise) / 3600e3;
+      const hE = (t.sunset - now) / 3600e3;
+      return smooth(3.5, 6, hS) * smooth(-0.5, 1, hE);
+    }
+    return astro ? smooth(10, 35, astro.sunAltDeg) : 0; // no sunrise today (far north or south): by the sun's height
+  }
+
+  /**
+   * Map a weather record → target visual parameters. `lift` (mistLift) thins mist, and fog that only comes from a short
+   * visibility, by three quarters at midday; fog reported as fog (code 45/48, METAR FG) stays.
+   */
+  function weatherTargets(rec, lift = 0) {
     const c = rec.code ?? 1;
     // The volume pass draws low and mid cloud. High cloud is thin, so it only feeds the cirrus.
     const layered = rec.cloudLow != null && rec.cloudMid != null;
@@ -114,12 +135,18 @@
     // screen changes only when the data does. An airport near by that reports mist or fog (rec.obscured, weather.js
     // LE.withObservation) fills the valleys whatever the humidity says.
     const ob = rec.obscured;
-    const mist = Math.max(smooth(52, 97, hum), ob === 'mist' || ob === 'fog' ? 0.85 : 0);
+    const realFog = isFog || ob === 'fog';
+    const byDay = realFog || rec.exactFog ? 1 : 1 - 0.75 * clamp(lift, 0, 1); // (the test panel's visibility slider: as set)
+    const mist = Math.max(smooth(52, 97, hum), ob === 'mist' || ob === 'fog' ? 0.85 : 0) * byDay;
 
     // Fog in the valleys below the viewpoint, thicker and higher the shorter the visibility; it went in two steps (at
-    // 1000 and 2500 m). Haze, smoke or dust thicken the air instead (below), they are not fog.
-    let fog = isFog ? 0.9 : ob === 'haze' || ob === 'smoke' || ob === 'dust' ? 0 : 0.75 * smooth(4000, 700, vis);
-    if (ob === 'fog') fog = Math.max(fog, 0.8);
+    // 1000 and 2500 m). Haze, smoke or dust thicken the air instead (below), they are not fog. Fog only from a short
+    // visibility thins by day as the mist does, and the haze below stays as it was with the fog (night's `fogN`):
+    // the short visibility went with the mist, it does not turn into a grey haze in its place.
+    let fogN = isFog ? 0.9 : ob === 'haze' || ob === 'smoke' || ob === 'dust' ? 0 : 0.75 * smooth(4000, 700, vis);
+    if (ob === 'fog') fogN = Math.max(fogN, 0.8);
+    if (rain > 0.8) fogN = Math.max(fogN, 0.15);
+    let fog = fogN * byDay;
     if (rain > 0.8) fog = Math.max(fog, 0.15);
 
     // Smog, from the fine particles in the air when WeatherAPI.com gives them (PM2.5, µg/m³): it lies in the valleys,
@@ -127,8 +154,8 @@
     const smog = rec.pm25 != null ? smooth(12, 150, rec.pm25) : 0;
 
     // sky haze (Mie density multiplier) and the denser haze that layers the valleys
-    const haze = 1.3 + 2.2 * smooth(12000, 2500, vis) * (1 - fog) + 2.0 * wetCloud + 0.8 * smooth(70, 98, hum) + 0.6 * smog;
-    const valleyHaze = 5 + 8 * smooth(15000, 3000, vis) * (1 - fog) + 6 * wetCloud + 4 * smooth(65, 98, hum) + 6 * smog * (1 - fog);
+    const haze = 1.3 + 2.2 * smooth(12000, 2500, vis) * (1 - fogN) + 2.0 * wetCloud + 0.8 * smooth(70, 98, hum) + 0.6 * smog;
+    const valleyHaze = 5 + 8 * smooth(15000, 3000, vis) * (1 - fogN) + 6 * wetCloud + 4 * smooth(65, 98, hum) + 6 * smog * (1 - fogN);
     const winds = cloudWinds(rec);
     // Banner clouds on the high peaks (volume.js): they need moist air and a steady wind up there to carry it past the
     // summits. A closed deck, steady rain or snow, or fog hide the peaks instead.
@@ -328,7 +355,7 @@
 
       // ---------- weather ----------
       const rec = this.record || PRESETS.partly;
-      const target = weatherTargets(rec);
+      const target = weatherTargets(rec, mistLift(a, now));
       const snap = !this.w || dtSec > 30;
       if (snap) {
         this.w = Object.assign({}, target);

@@ -353,6 +353,7 @@
         life.setRoad(renderer.road);
         life.setPastures(renderer.pastures);
         life.setGompa(renderer.gompa);
+        life.setLedge(renderer.ledge);
         if (cfg.testMode && cfg.lifeTest) life.seedForTest(state, view);
       }
       life.enabled = cfg.life !== false;

@@ -12,7 +12,7 @@
  *
  * The second argument carries settings: { quality, road, traffic, birds, leaves, tree, mist, banners, demo, smoke, fires, lights, stars, planes,
  * rainbow, flags, animals, panel, corner, panelSize, place: { lat, lon, name }, obs, wapi }. obs is the nearest
- * airport's last report (METAR), which the app reads every half hour when its "Airport weather" setting is on: { id,
+ * airport's last report (METAR), which the app reads every 10 minutes when its "Airport weather" setting is on: { id,
  * name, km, t, temp, dewp, vis, wx }. wapi is WeatherAPI.com's weather now, which the app reads every 15 minutes with the
  * user's own key when that is the weather source chosen: { t, code, text, cloud, vis, temp, dewp, hum, wind, dir, gust,
  * precip }. They apply at once. Turning the road on or off shapes the mountains again, which takes a few minutes.

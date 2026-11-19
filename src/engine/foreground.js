@@ -1237,6 +1237,12 @@
       this._readLight();
     }
 
+    /** The light probe alone, for the goats on the rock when the tree is turned off (draw() runs it otherwise). */
+    probeLight(state) {
+      if (!this.tree) return;
+      if (this._collectLight()) this._probe(state);
+    }
+
     _drawDrift(state, first, count) {
       if (!count) return;
       const gl = this.gl;

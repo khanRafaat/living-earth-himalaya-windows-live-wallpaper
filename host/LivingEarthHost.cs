@@ -51,8 +51,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Khan Rafaat Abtahe")]
 [assembly: AssemblyCopyright("© 2026 Khan Rafaat Abtahe. MIT licence")]
 [assembly: AssemblyDescription("Living Earth Himalaya live wallpaper. Author: Khan Rafaat Abtahe")]
-[assembly: AssemblyVersion("2.5.0.0")]
-[assembly: AssemblyFileVersion("2.5.0.0")]
+[assembly: AssemblyVersion("2.6.0.0")]
+[assembly: AssemblyFileVersion("2.6.0.0")]
 
 namespace LivingEarth
 {
@@ -528,7 +528,7 @@ namespace LivingEarth
     /// What the nearest airport reports (its METAR): visibility, mist, fog, haze or smoke, temperature and dew point.
     /// Forecasts often miss these: on 2026-11-18 Dhaka airport reported mist and 1 km all morning while the forecast said
     /// 7 km. A web page can't read the reports (aviationweather.gov sends no CORS headers), so the exe reads them every
-    /// half hour and hands the nearest one to the page in state.js. Only a rough area is asked about: the place widened
+    /// 10 minutes and with every WeatherAPI.com fetch, and hands the nearest one to the page in state.js. Only a rough area is asked about: the place widened
     /// by 60 km and rounded out to whole half-degrees.
     /// </summary>
     public static class Observer
@@ -1266,7 +1266,7 @@ namespace LivingEarth
         private bool checkingUpdate;
 
         // The nearest airport's weather (Observer)
-        private const int ObserveEveryMinutes = 30, ObserveRetryMinutes = 10;
+        private const int ObserveEveryMinutes = 10, ObserveRetryMinutes = 5;
         private DateTime nextObserve = DateTime.MinValue;
         private bool observing, observeFailed;
         private string observedBox = ""; // the area the report is for: a new place asks again at once
@@ -2560,7 +2560,10 @@ namespace LivingEarth
             }
         }
 
-        // Once a second: read the nearest airport's report every half hour, and at once for a new place. Not with the
+        // Once a second: read the nearest airport's report every 10 minutes, with every WeatherAPI.com fetch (WeatherApiTick),
+        // and at once for a new place. An airport reports every half hour or hour and the report is on the site a few minutes
+        // later: at 30 minutes the scene got it up to 40 minutes late (user, 2026-11-18: "air port wather should also fetch
+        // with wather update so its sence change realtime like wather"). Not with the
         // setting off, not in the tests' own scenes, and not before the wallpaper runs.
         private void ObserveTick(DateTime now)
         {
@@ -2630,6 +2633,7 @@ namespace LivingEarth
             wapiFetching = true;
             wapiFor = want;
             nextWapi = now.AddMinutes(WapiEveryMinutes);
+            if (!observing) nextObserve = DateTime.MinValue; // the airport's report comes with each weather update
             ThreadPool.QueueUserWorkItem(delegate
             {
                 WeatherApi.Report r = null;

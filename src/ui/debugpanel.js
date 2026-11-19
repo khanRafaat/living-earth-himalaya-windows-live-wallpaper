@@ -33,6 +33,7 @@
     if (f.windSpeed != null || f.windDir != null) for (const k of UPPER_WINDS) delete r[k]; // the clouds follow this wind too
     if (!DECIDE_THE_WEATHER.some((k) => f[k] != null)) return r;
     r.exactCloud = true;
+    if (f.visibility != null) r.exactFog = true; // the fog that visibility gives, whatever the hour (environment.js mistLift)
     const precip = r.precip ?? 0;
     const cloud = r.cloud ?? 30;
     if (f.thunder != null ? f.thunder : base.code >= 95) r.code = 95;
@@ -346,7 +347,7 @@
               ['Shooting stars', 'shootingStars', 'Meteors and satellites. The stars stay'],
               ['Aircraft', 'planes', 'An airliner crossing high above now and then, with its contrail'],
               ['Rainbow', 'rainbow', 'A rainbow when the sun comes out on the rain, opposite the sun'],
-              ['Grazing animals', 'animals', 'Small herds on the near meadows by day, taken in at dusk'],
+              ['Grazing animals', 'animals', 'Goats grazing on the rock by the tree by day; they walk off at dusk'],
               ['Prayer flags', 'flags', 'A line of prayer flags from the tree to a stake on the rock, moved by the real wind. They go with the tree'],
               ['Village lights', 'lights', 'Lights in the houses at night'],
               ['Forest mist', 'mist', 'Mist rising off the forest when the air is humid or after rain'],
@@ -377,6 +378,7 @@
           ],
           buttons: [
             ['Raptor', () => life.summon('raptor'), 'Birds leave in rain, snow, fog and at night'],
+            ['Goats', () => life.summon('goats'), 'A few goats grazing on the rock by the tree. They walk off at dusk and in heavy rain or snow; Grazing animals off: none'],
             ['Raptor on tree', () => life.summon('perch'), 'A small falcon comes in to sit on the top of the tree for a while, then flies off. Not in rain or strong wind'],
             ['Flock', () => life.summon('flock'), 'Birds leave in rain, snow, fog and at night'],
             ['Geese', () => life.summon('geese'), 'Birds leave in rain, snow, fog and at night'],
@@ -388,8 +390,9 @@
             ['Burning field', () => life.summon('fire'), 'A field burning on a hill: a tall plume, glowing at its foot after dark'],
             ['Satellite', () => life.summon('satellite'), 'Shows in a dark sky'],
             ['Rainbow', () => { const R = renderer(); if (R) { R.bowForce = 1; clearTimeout(R._bowForceEnd); R._bowForceEnd = setTimeout(() => (R.bowForce = 0), 120000); } }, 'For two minutes, whatever the weather. It stands opposite the sun, so it shows only with the sun low and behind the view: late afternoon here'],
-            ['Festival night', () => { const R = renderer(); if (R) { R.festForce = life.festForce = 1; clearTimeout(R._festForceEnd); R._festForceEnd = setTimeout(() => (R.festForce = life.festForce = 0), 180000); life.summon('firework'); } }, 'For three minutes, as on the night of Tihar / Diwali: every house lit with oil lamps, and small fireworks over the villages. Shows after dark'],
-            ['Black kite', () => life.summon('kite'), 'Circling low over a village within 3 km, if one is in view. It belongs to the birds'],
+            // (by day it would show nothing: 2026-11-19, the user pressed it at 09:50, "festival night have no effect")
+            ['Festival night', () => { const R = renderer(); if (R) { const s = env.state.astro; if (!s || s.sunAltDeg > -8) this._clock({ time: '20:30' }); R.festForce = life.festForce = 1; clearTimeout(R._festForceEnd); R._festForceEnd = setTimeout(() => (R.festForce = life.festForce = 0), 180000); life.summon('firework'); } }, 'For three minutes, as on the night of Tihar / Diwali: every house lit with rows of oil lamps, and fireworks over the villages. It shows after dark, so by day it first sets the clock to 20:30 (reset Time of day to go back)'],
+            ['Black kite', () => life.summon('kite'), 'Circling low over a village within 1.2 km, or else over the slopes just below the viewpoint. It belongs to the birds'],
             ['Helicopter', () => life.summon('helicopter'), 'Part of the way along the valley, a few km off. It belongs to the aircraft'],
             ['Aircraft', () => life.summon('plane'), 'An airliner part of the way across the sky. Its trail is long where there is high cloud, short in dry air'],
             ['Bus', () => life.summon('bus'), 'Somewhere on the road in view, going either way'],
