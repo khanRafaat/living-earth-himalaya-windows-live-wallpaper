@@ -2000,9 +2000,55 @@ test("the report's weather groups: fog, mist, haze, smoke, dust; near by or shal
   assert.equal(wx('-RA BR', rain).code, 61);
   assert.equal(wx('-RA BR', rain).precip, 0.6);
   assert.equal(LE.weatherLabel(wx('-RA BR', rain)), 'Light rain', 'rain is named before the mist');
-  assert.equal(wx('FG', rain).code, 61, 'fog does not replace rain');
+  assert.equal(wx('-RA FG', rain).code, 61, 'fog does not replace rain');
+  assert.equal(wx('FG', rain).code, 45, 'fog and nothing falling at the airport: fog, no rain');
   assert.equal(wx('').obscured, undefined);
   assert.equal(wx(undefined).obscured, undefined);
+});
+
+test('a close airport that sees nothing falling stops the rain: 2026-11-22, 14:30 Uttara', () => {
+  const { LE, merge, targets } = airport();
+  const now = Date.now();
+  // what the wallpaper had: WeatherAPI "Patchy rain nearby" with 0.08 mm, Dhaka airport 2.3 km away haze
+  const wapi = { t: now - 18 * 60e3, code: 1063, text: 'Patchy rain nearby', cloud: 70, vis: 10000, temp: 28.6, dewp: 20.9, hum: 63, wind: 7.9, dir: 242, gust: 16.2, precip: 0.08, pm25: 14.9, pm10: 15.7, aqi: 1 };
+  const vghs = VGHS_1118(now, { t: now - 18 * 60e3, temp: 28, dewp: 22, vis: 3490, wx: 'HZ' });
+  const alone = LE.withWeatherApi(FORECAST_1118, wapi, now);
+  assert.equal(alone.precip, 0, 'a trace under 0.1 mm "nearby" is not rain here');
+  assert.equal(alone.code, 2, '70% cloud: partly cloudy');
+  assert.equal(targets(alone).rain, 0);
+  const today = merge(alone, vghs, now);
+  assert.equal(today.code, 2);
+  assert.equal(LE.weatherLabel(today), 'Haze', 'what the airport saw');
+  assert.equal(targets(today).rain, 0);
+  // the forecast's rain (or WeatherAPI's) gives way to a close, fresh report that saw none fall
+  const rain = { ...FORECAST_1118, code: 63, cloud: 100, precip: 1.2, rain: 1.2 };
+  const dry = merge(rain, vghs, now);
+  assert.equal(dry.code, 3, 'overcast, not rain');
+  assert.equal(dry.precip, 0);
+  assert.equal(dry.rain, 0);
+  assert.equal(targets(dry).rain, 0);
+  const said = merge(LE.withWeatherApi(FORECAST_1118, { ...wapi, code: 1183, text: 'Patchy light rain', precip: 0.3 }, now), { ...vghs, wx: '' }, now);
+  assert.equal(said.precip, 0);
+  assert.notEqual(LE.weatherLabel(said), 'Patchy light rain', 'its words for rain go with the rain');
+  assert.equal(merge(rain, { ...vghs, wx: 'VCSH HZ' }, now).precip, 0, 'showers in the vicinity are not here');
+  assert.equal(merge({ ...rain, code: 71, snowfall: 0.8 }, { ...vghs, wx: '' }, now).snowfall, 0, 'nor snow');
+  // it rains on where the airport says so, is far, is old, or hears thunder
+  for (const [why, o] of [
+    ['rain at the airport', { wx: '-RA' }],
+    ['drizzle', { wx: 'DZ BR' }],
+    ['showers', { wx: 'SHRA' }],
+    ['snow', { wx: '-SN' }],
+    ['16 km away', { km: 16 }],
+    ['61 minutes old', { t: now - 61 * 60e3 }],
+    ['thunder', { wx: 'TS HZ' }],
+  ]) {
+    const r = merge(rain, { ...vghs, ...o }, now);
+    assert.equal(r.code, 63, why);
+    assert.equal(r.precip, 1.2, why);
+  }
+  // more than a trace from WeatherAPI is still rain
+  assert.equal(LE.withWeatherApi(FORECAST_1118, { ...wapi, precip: 0.1 }, now).code, 61);
+  assert.equal(LE.withWeatherApi(FORECAST_1118, { ...wapi, code: 1183, precip: 0.02 }, now).precip, 0.02, 'its words say rain: even a trace');
 });
 
 test("the weather service keeps the exe's report, and the scene fills the valleys with fog below the viewpoint", async () => {
@@ -2200,7 +2246,7 @@ test('the airport report wins over WeatherAPI: its mist over their haze, and no 
   assert.equal(today.obscured, 'mist');
   assert.equal(LE.weatherLabel(today), 'Mist', "the airport's mist, not WeatherAPI's words");
   assert.equal(today.pm25, 97.6, 'the air quality stays');
-  assert.equal(LE.weatherLabel(both({ code: 1183, text: 'Patchy light rain' }, { vis: 9999, wx: '' })), 'Patchy light rain', 'its words stand when the airport saw nothing in the air');
+  assert.equal(LE.weatherLabel(both({ code: 1183, text: 'Patchy light rain' }, { vis: 9999, wx: '', km: 30 })), 'Patchy light rain', 'its words stand when the airport saw nothing in the air (30 km off: its rain too)');
   assert.equal(today.temp, 21);
   assert.equal(today.windSpeed, 7.6, "the wind stays WeatherAPI's");
   assert.equal(today.cloud, 70);

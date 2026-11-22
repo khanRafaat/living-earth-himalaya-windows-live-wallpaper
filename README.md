@@ -21,7 +21,7 @@ You do not need Lively, Wallpaper Engine, Steam, an installer, admin rights or a
 
 ## Download and set your wallpaper
 
-### **[Download LivingEarthHimalaya-2.7.0.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.7.0/LivingEarthHimalaya-2.7.0.exe)**
+### **[Download LivingEarthHimalaya-2.7.1.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.7.1/LivingEarthHimalaya-2.7.1.exe)**
 
 About 2.4 MB. For Windows 11 version 24H2 or later.
 
@@ -58,7 +58,7 @@ The mountains now sit behind your desktop icons like a normal wallpaper, with a 
 | Draw with | **Automatic** looks at your PC: a graphics card draws at full speed; graphics built into the processor (such as Intel UHD) get at most a quarter of the chip's time, so the desktop and your apps stay smooth; with no graphics chip, the processor draws. **Graphics chip (GPU)** always uses the graphics chip, with up to half its time. **Processor (CPU)** leaves the graphics chip free: the picture is softer, the clouds change more slowly, it uses at most a quarter of the processor, and the first picture takes longer after each start. |
 | Start with Windows | Starts the wallpaper when you sign in, with no window to click through. |
 | Update automatically | Twice a day it looks on GitHub for a new version. A new one is downloaded, checked against the SHA-256 that GitHub gives for it, and put in while the PC is locked, after 20 minutes without use, or at the next sign-in. It takes the place of the old exe, so Start with Windows keeps working. Turn it off to update by hand. |
-| Airport weather | Every 10 minutes, and with each weather update, the app reads what the nearest airport (within 60 km) reports: visibility, mist, fog, haze or smoke, temperature and dew point. Forecasts often miss morning fog; with this, the valleys fill with fog when the airport sees it, and the panel says "Mist" or "Fog" and names the airport. Only a rough area is asked about. |
+| Airport weather | Every 10 minutes, and with each weather update, the app reads what the nearest airport (within 60 km) reports: visibility, mist, fog, haze or smoke, temperature and dew point. Forecasts often miss morning fog; with this, the valleys fill with fog when the airport sees it, and the panel says "Mist" or "Fog" and names the airport. When an airport within 15 km saw no rain or snow in the last hour, it stays dry here too, even if the forecast says rain. Only a rough area is asked about. |
 | Show the scene in Windows Settings too | Also sets a still picture of the scene, matching the time of day, as the Windows desktop background, so Settings > Personalization shows it. Your previous background comes back when you exit. |
 
 ### What the app uses
@@ -164,7 +164,7 @@ While you work in an app, both screens hold still, so the app keeps the graphics
 ## Frequently asked questions
 
 ### How do I get a live wallpaper on Windows 11?
-On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.7.0.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
+On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.7.1.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
 
 ### Do I need Lively or Wallpaper Engine?
 No. The exe sets the wallpaper by itself on Windows 11 version 24H2 or later, with nothing else to install. Lively is only for older versions of Windows.

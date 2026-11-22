@@ -365,8 +365,13 @@
    * What an airport near by actually saw, laid over the forecast: its visibility, temperature, humidity and any mist,
    * fog, haze, smoke or dust. Forecast models miss these: on 2026-11-18 at 09:00 Dhaka airport reported mist and
    * 1 km, the forecast 7.1 km and "overcast" (all of it thin high cloud). Only a report under 100 minutes old and from
-   * within 60 km counts. Rain, snow and cloud stay with the forecast.
+   * within 60 km counts. Cloud stays with the forecast, and so do rain and snow, except where a close airport saw
+   * none fall in the last hour: then it is dry. On 2026-11-22 at 14:30 WeatherAPI said "Patchy rain nearby" for
+   * Uttara and the scene rained; Dhaka airport, 2.3 km away, saw haze and nothing falling.
    */
+  const DRY_KM = 15; // a shower that misses an airport this close most likely misses here too
+  const DRY_MINUTES = 60; // older than that, rain may have begun since
+  const FALLING = ['DZ', 'RA', 'SN', 'SG', 'IC', 'PL', 'GR', 'GS', 'UP']; // METAR's drizzle, rain, snow, ice, hail, unknown
   LE.withObservation = function (rec, obs, nowMs = Date.now()) {
     if (!rec || !obs) return rec;
     const age = nowMs - obs.t;
@@ -381,10 +386,12 @@
     // FZ freezing ...), then two-letter phenomena
     const seen = new Set();
     let thin = false;
+    let thunder = false;
     for (let g of String(obs.wx || '').toUpperCase().split(/\s+/)) {
       g = g.replace(/^[-+]/, '');
       if (!g || g.startsWith('VC')) continue;
       const d = /^(MI|BC|PR|DR|BL|SH|TS|FZ)/.exec(g);
+      if (d && d[1] === 'TS') thunder = true; // a storm over the airport, rain or not
       if (d) g = g.slice(2);
       for (let i = 0; i + 1 < g.length; i += 2) {
         const p = g.slice(i, i + 2);
@@ -392,11 +399,20 @@
         if (p === 'FG' && d && /MI|BC|PR/.test(d[1])) thin = true;
       }
     }
+    // nothing falling at a close airport just now: no rain or snow here, whatever the forecast or WeatherAPI said
+    const wasFalling = (rec.code ?? 0) >= 50 || rec.precip > 0 || rec.rain > 0 || rec.snowfall > 0;
+    if (wasFalling && obs.km <= DRY_KM && age < DRY_MINUTES * 60e3 && !thunder && !FALLING.some((p) => seen.has(p))) {
+      for (const k of ['precip', 'rain', 'snowfall']) if (out[k]) out[k] = 0;
+      if ((rec.code ?? 0) >= 50) {
+        out.code = codeFromCloud(rec.cloud);
+        delete out.wapiText; // its words said rain
+      }
+    }
     // its words for the sky give way to what the airport saw, whenever it saw something in the air or WeatherAPI did
     if (seen.size || rec.obscured || rec.code === 45 || rec.code === 48) delete out.wapiText;
     if (seen.has('FG') && !thin) {
       out.obscured = 'fog';
-      if ((rec.code ?? 0) <= 3) out.code = 45;
+      if ((out.code ?? 0) <= 3) out.code = 45;
     } else {
       // What it saw stands over what a forecast or WeatherAPI guessed: no fog there, no fog here
       if (rec.code === 45 || rec.code === 48) out.code = codeFromCloud(rec.cloud);
@@ -428,6 +444,7 @@
     1273: 95, 1276: 95, 1279: 95, 1282: 95,
   };
   LE.WAPI_CODES = WAPI_CODES;
+  const WAPI_TRACE_MM = 0.1;
 
   /**
    * WeatherAPI.com's weather at the ground, laid over the forecast: temperature, humidity, wind, rain, visibility,
@@ -447,7 +464,11 @@
     if (num(w.wind)) out.windSpeed = w.wind;
     if (num(w.dir)) out.windDir = w.dir;
     if (num(w.gust)) out.gusts = Math.max(w.gust, out.windSpeed ?? 0);
-    if (num(w.precip)) out.precip = out.rain = w.precip;
+    const m = WAPI_CODES[w.code];
+    // under 0.1 mm is a trace, less than a rain gauge measures: rain only when its own words say rain falls here
+    // (2026-11-22, Uttara: "Patchy rain nearby" with 0.08 mm, a dry hazy afternoon, drew rain)
+    const trace = num(w.precip) && w.precip < WAPI_TRACE_MM && !(typeof m === 'number' && m >= 50);
+    if (num(w.precip)) out.precip = out.rain = trace ? 0 : w.precip;
     // it gives 10 km for anything clearer, so a larger forecast value stands
     if (num(w.vis) && w.vis > 0) out.visibility = w.vis >= 10000 ? Math.max(rec?.visibility ?? 10000, 10000) : w.vis;
     if (num(w.cloud)) {
@@ -470,12 +491,11 @@
     if (num(w.aqi) && w.aqi >= 1 && w.aqi <= 6) out.aqi = Math.round(w.aqi);
     // and its own words for the sky, which say more than a weather code ("Smoky haze", "Patchy rain nearby")
     if (typeof w.text === 'string' && w.text.trim()) out.wapiText = w.text.trim().slice(0, 40);
-    const m = WAPI_CODES[w.code];
     delete out.obscured;
     if (typeof m === 'number') out.code = m;
     else {
-      // mist, haze, or "rain possible": the sky as its cloud says, light rain if some falls all the same
-      out.code = num(w.precip) && w.precip > 0.05 ? 61 : codeFromCloud(out.cloud);
+      // mist, haze, or "rain possible": the sky as its cloud says, light rain if more than a trace falls all the same
+      out.code = num(w.precip) && !trace && w.precip > 0 ? 61 : codeFromCloud(out.cloud);
       if (typeof m === 'string') out.obscured = m;
       if (m === undefined && rec && rec.code != null) out.code = rec.code; // a code it added since: the forecast's
     }

@@ -51,8 +51,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Khan Rafaat Abtahe")]
 [assembly: AssemblyCopyright("© 2026 Khan Rafaat Abtahe. MIT licence")]
 [assembly: AssemblyDescription("Living Earth Himalaya live wallpaper. Author: Khan Rafaat Abtahe")]
-[assembly: AssemblyVersion("2.7.0.0")]
-[assembly: AssemblyFileVersion("2.7.0.0")]
+[assembly: AssemblyVersion("2.7.1.0")]
+[assembly: AssemblyFileVersion("2.7.1.0")]
 
 namespace LivingEarth
 {
