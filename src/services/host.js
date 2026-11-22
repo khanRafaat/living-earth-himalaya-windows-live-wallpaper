@@ -5,10 +5,12 @@
  *
  *   live   full animation (the empty desktop is in front)
  *   rest   the scene every 2 s, fading smoothly between its pictures with the birds flying (the desktop is in front
- *          while the PC is busy, or has just been signed in to). With area: [x0, x1], an app is in front on one screen
- *          while another shows the desktop: only that part of the width (0 to 1) is drawn again, and the rest keeps its
- *          picture, so the free screen moves gently and the graphics chip does as little as it can
- *   still  no frames at all (an app is in front, locked, or paused from the tray)
+ *          while the PC is busy, or has just been signed in to). With area: [x0, x1], only that part of the width (0 to
+ *          1) is drawn again and the rest keeps its picture. From 2.3.0 to 2.6.0 the app asked for that on a free second
+ *          screen while you worked on the other; it no longer does, but the page still understands it
+ *   hold   an app is in front: no frames, on any screen, except one new picture of the scene a minute, drawn a band
+ *          at a time and shown at once, with the birds, the tree and the traffic where they were, so the light keeps up
+ *   still  no frames at all (locked, asleep, or paused from the tray)
  *
  * The second argument carries settings: { quality, road, traffic, birds, leaves, tree, mist, banners, demo, smoke, fires, lights, stars, planes,
  * rainbow, flags, animals, panel, corner, panelSize, place: { lat, lon, name }, obs, wapi }. obs is the nearest
@@ -25,6 +27,7 @@
 
   const POLL_MS = 250; // an app coming to the front stops the frames within a moment: the file is a few hundred bytes
   const SLOW_FRAME_MS = 2000;
+  const HOLD_MS = 60000; // held still while you work: a new picture this often
   const SETTLE_MS = 6000; // run at full speed first, or the first picture would hold a half-formed sky
   const QUALITY = ['auto', 'eco', 'balanced', 'high', 'ultra']; // the order livelyPropertyListener expects
   const CORNER = ['right-bottom', 'right-top', 'left-bottom', 'left-top']; // the same
@@ -107,7 +110,8 @@
     appliedArea = areaKey;
     if (window.leSetArea) window.leSetArea(wantedArea);
     window.leSetSlowFrames(applied === 'rest' ? SLOW_FRAME_MS : 0);
-    window.livelyWallpaperPlaybackChanged({ IsPaused: applied === 'still' });
+    if (window.leSetHold) window.leSetHold(applied === 'hold' ? HOLD_MS : 0);
+    window.livelyWallpaperPlaybackChanged({ IsPaused: applied === 'still' || applied === 'hold' });
   }
 
   function poll() {

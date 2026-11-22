@@ -1598,15 +1598,17 @@
      * Slow mode: the scene is drawn rarely, so each time must do more. A shadow pass advances one chunk per
      * scene, so chunks grow to keep up with the sun. Clouds update each scene and count for more against their
      * history, or they would trail behind the wind. rest = the Windows app's rest mode, far slower than a calm spell.
+     * held = held still while you work (holdBegin): a shadow refresh keeps to small chunks, as the app in front must
+     * never wait for the GPU.
      */
-    setSlowMode(on, rest = on) {
+    setSlowMode(on, rest = on, held = false) {
       this._slow = on;
       this._rest = on && rest;
       if (!on) {
         this._pictureReady = false;
         this._pictureJob = null;
       }
-      const ms = !on ? 4 : rest ? 25 : 12;
+      const ms = !on || held ? 4 : rest ? 25 : 12;
       this._bgPacer.targetMs = ms;
       this._bgPacer.maxPx = 32768 * ms;
     }
@@ -1640,16 +1642,20 @@
       this._lutAt = -1e9;
     }
 
+    _makePictures() {
+      if (this.pictureA) return;
+      const gl = this.gl;
+      const make = () => createTarget(gl, this.w, this.h, [{ fmt: 'rgba8', filter: gl.NEAREST }]);
+      this.pictureA = make();
+      this.pictureB = make();
+      this.pictureNext = make();
+    }
+
     /** Slow mode starts: keeps the scene just drawn on the screen, with nothing to fade from yet. */
     _keepPicture() {
       const gl = this.gl;
       const { w, h } = this;
-      if (!this.pictureA) {
-        const make = () => createTarget(gl, w, h, [{ fmt: 'rgba8', filter: gl.NEAREST }]);
-        this.pictureA = make();
-        this.pictureB = make();
-        this.pictureNext = make();
-      }
+      this._makePictures();
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
       gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.pictureB.fbo);
       gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
@@ -1814,6 +1820,58 @@
       this.goats.draw(state, true);
       this._setClip(null);
       this._fenceFrame();
+      return true;
+    }
+
+    /**
+     * Held still while you work (the Windows app's hold, main.js holdPicture): begins one new picture of the scene.
+     * Like a scene frame of slow mode it brings the sky tables, the clouds and the exposure up to date, and draws
+     * nothing on the screen: holdStep draws the picture. False when there is nothing to draw yet.
+     */
+    holdBegin(state, dtSec) {
+      const gl = this.gl;
+      if (!gl || gl.isContextLost() || this.status !== 'running') return false;
+      this.setSlowMode(true, true, true);
+      this.setArea(null);
+      this._makePictures();
+      // What the kept pictures hold does not matter here: holdStep shows the new one whole, without fading from them
+      this._pictureReady = true;
+      // The clouds have moved on as much as 25 s since the last picture, and each pass of the volume keeps 60 % of the
+      // one before: a few more passes, one a frame, so they don't show twice (0.6^4: 13 % of where they were)
+      this._holdVolPasses = 3;
+      return this.render(state, dtSec) && this._pictureJob !== null;
+    }
+
+    /**
+     * Held still: one more band of the new picture, off the screen, so the screen keeps the picture it has and no frame
+     * is long on the GPU; and a chunk of a shadow refresh when one is due. Once the picture is whole it goes on the
+     * screen in one frame, with the tree, the goats and the birds where they were, and this returns true.
+     */
+    holdStep(state) {
+      const gl = this.gl;
+      const job = this._pictureJob;
+      if (!gl || gl.isContextLost() || this.status !== 'running' || !job) return true;
+      if (this._holdVolPasses > 0) {
+        this._holdVolPasses--;
+        this.frame++; // the volume's jitter moves on, as from frame to frame
+        this._volumePass(job.state);
+        this._fenceFrame();
+        return false;
+      }
+      if (job.fresh || job.y < this.h) {
+        this._pictureStep();
+        if (this._shadow) this._shadowStep();
+        this._fenceFrame();
+        return false;
+      }
+      const older = this.pictureA;
+      this.pictureA = this.pictureB;
+      this.pictureB = this.pictureNext;
+      this.pictureNext = older;
+      this._pictureJob = null;
+      this.pictureAt = performance.now();
+      this._tunePictureBands();
+      this.drawFade(1, state);
       return true;
     }
 

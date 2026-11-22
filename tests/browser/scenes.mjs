@@ -573,5 +573,65 @@ if (want('area')) {
   }
 }
 
+// ---------------------------------------------------------------- held still while you work
+// An app in front holds every screen still (2026-11-22), but once a minute (here every 4 s) a new picture of the scene
+// is drawn a band at a time off the screen and shown in one frame, with the birds and the tree where they were.
+if (want('hold')) {
+  console.log('--- held still while you work, with a new picture now and then');
+  const page = await open('geo=0&time=10:30&date=2026-11-03&quality=balanced&test=1&lifetest=1&panel=0');
+  try {
+    const say = (expr) => page.evaluate(expr);
+    await say(`T.frames(4)`);
+    await say(`(() => {
+      const r = __le.renderer;
+      window.__log = [];
+      const wrap = (name, what) => { const o = r[name]; r[name] = function () { __log.push(what(arguments)); return o.apply(r, arguments); }; };
+      wrap('render', () => ['scene']);
+      wrap('drawFade', (a) => ['screen', a[0]]);
+      wrap('_compositePass', (a) => [a[2] && !a[2].grass ? 'band' : a[1] ? 'meter' : 'whole']);
+      const d = r.drawFade;
+      r.drawFade = function () { const out = d.apply(r, arguments); const gl = r.gl, px = new Uint8Array(4 * 64);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.readPixels(0, r.h >> 1, 64, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        window.__shown = Array.from(px); return out; };
+    })()`);
+    const look = `({ time: __le.sceneClock.t, birds: __le.renderer.life.raptors.map((b) => b.pos.join()), log: __log.splice(0) })`;
+    await say(`(leSetHold(4000), livelyWallpaperPlaybackChanged({ IsPaused: true }))`);
+    const before = await say(look);
+    await sleep(2500);
+    const quiet = await say(look);
+    check(quiet.log.length === 0, `nothing drawn in the seconds before the next picture (${quiet.log.length} calls)`);
+    let held = null;
+    const t0 = Date.now();
+    while (Date.now() - t0 < 120000) {
+      await sleep(500);
+      const s = await say(look);
+      quiet.log.push(...s.log);
+      if (s.log.some((c) => c[0] === 'screen')) { held = s; break; }
+    }
+    const log = quiet.log;
+    check(!!held, 'a new picture came');
+    const screens = log.filter((c) => c[0] === 'screen');
+    check(screens.length === 1 && screens[0][1] === 1, `shown in one frame, whole (${JSON.stringify(screens)})`);
+    check(log.filter((c) => c[0] === 'scene').length === 1 && !log.some((c) => c[0] === 'whole'), 'one scene begun, never drawn whole in one go');
+    const bands = log.filter((c) => c[0] === 'band').length;
+    check(bands >= 4 && log.findIndex((c) => c[0] === 'screen') > log.map((c) => c[0]).lastIndexOf('band'), `${bands} bands first, then the screen`);
+    const shown = await say(`window.__shown`);
+    const mean = shown.reduce((s, v, i) => s + (i % 4 < 3 ? v : 0), 0) / (shown.length * 0.75);
+    check(mean > 20, `the scene on the screen, not black (mean ${mean.toFixed(0)})`);
+    if (held) {
+      check(Math.abs(held.time - before.time) < 1e-9, 'the scene\'s own time stood still');
+      check(held.birds.join('|') === before.birds.join('|'), `the birds stayed where they were (${before.birds.length})`);
+    }
+    // back on the desktop: frames again
+    await say(`(leSetHold(0), livelyWallpaperPlaybackChanged({ IsPaused: false }))`);
+    await say(`T.frames(2)`);
+    const after = await say(look);
+    check(after.log.some((c) => c[0] === 'scene'), 'and it moves again when you come back');
+    noErrors(page);
+  } finally {
+    await page.close();
+  }
+}
+
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nall checks passed');
 process.exitCode = failures ? 1 : 0;

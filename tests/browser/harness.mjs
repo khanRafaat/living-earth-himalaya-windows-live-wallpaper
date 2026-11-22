@@ -79,7 +79,7 @@ export async function openWallpaper({ query = '', profile, beforeLoad = '' }) {
   );
   const wsUrl = await new Promise((resolve, reject) => {
     let buf = '';
-    const to = setTimeout(() => reject(new Error('Edge did not start: ' + buf)), 30000);
+    const to = setTimeout(() => reject(new Error('Edge did not start: ' + buf)), +process.env.LE_EDGE_START_MS || 30000); // more on a PC short of memory
     edge.stderr.on('data', (d) => {
       buf += d;
       const m = /DevTools listening on (ws:\S+)/.exec(buf);

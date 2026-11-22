@@ -14,9 +14,9 @@
 //      straight to the wallpaper with the saved settings.
 //   2. Starts Edge on index.html with its own profile, at below-normal priority.
 //   3. Moves the Edge window behind the desktop icons.
-//   4. Tells the page its pace and settings through host/state.js, so the graphics chip draws nothing for the
-//      wallpaper while you work in an app (with two screens, the other one moves gently if it shows the desktop), and
-//      setting changes apply without a restart.
+//   4. Tells the page its pace and settings through host/state.js, so the wallpaper holds still on every screen while
+//      you work in an app (one new picture a minute, drawn a little at a time, keeps the light right), and setting
+//      changes apply without a restart.
 //   5. Keeps Edge in a job object, so Edge can never outlive this app.
 //   6. Sets the Windows desktop background to a still of the scene for the part of the day, so Settings >
 //      Personalization shows this wallpaper too, and puts the old background back on Exit.
@@ -51,8 +51,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Khan Rafaat Abtahe")]
 [assembly: AssemblyCopyright("© 2026 Khan Rafaat Abtahe. MIT licence")]
 [assembly: AssemblyDescription("Living Earth Himalaya live wallpaper. Author: Khan Rafaat Abtahe")]
-[assembly: AssemblyVersion("2.6.0.0")]
-[assembly: AssemblyFileVersion("2.6.0.0")]
+[assembly: AssemblyVersion("2.7.0.0")]
+[assembly: AssemblyFileVersion("2.7.0.0")]
 
 namespace LivingEarth
 {
@@ -1203,7 +1203,7 @@ namespace LivingEarth
         private const int MaxQuickDeaths = 3;      // ...and this many in a row stops the trying, so the screen can't keep flashing
 
         // The pace the page understands: see src/services/host.js
-        private const string Live = "live", Rest = "rest", Still = "still";
+        private const string Live = "live", Rest = "rest", Hold = "hold", Still = "still";
 
         internal static readonly Icon AppIcon = DrawIcon();
 
@@ -1247,9 +1247,6 @@ namespace LivingEarth
         private int busyFor;
         private DateTime busyUntil = DateTime.MinValue;
         private string written;
-        private bool heldForWork; // the picture holds still because an app is in front (the tray says so)
-        private double[] area;    // rest while you work: only this part of the width moves, the screens that show the desktop
-        private Rectangle workScreen; // the screen with the app you work in
         private IntPtr foregroundHook;
         private Native.WinEventProc onForeground;
 
@@ -1673,9 +1670,8 @@ namespace LivingEarth
         {
             string pace = DecidePace(now);
             WriteState(pace);
-            string status = !attached ? "Starting..." : pace == Live ? "Animating" :
-                pace == Rest ? (area != null ? "Moving gently on the free screen" : "Slow updates") :
-                heldForWork ? "Still while you work" : "Paused";
+            string status = !attached ? "Starting..." : pace == Live ? "Animating" : pace == Rest ? "Slow updates" :
+                pace == Hold ? "Still while you work" : "Paused";
             if (statusItem.Text != "Living Earth Himalaya: " + status) statusItem.Text = "Living Earth Himalaya: " + status;
         }
 
@@ -1688,78 +1684,88 @@ namespace LivingEarth
             if (mode == RestMode.Maximized) work = ForegroundCoversScreen();
             else if (mode == RestMode.Desktop)
             {
-                bool? inFront = DesktopInFront();
-                if (inFront.HasValue) desktopInFront = inFront.Value;
+                bool? app = AppInFront();
+                if (app.HasValue) desktopInFront = !app.Value;
                 work = !desktopInFront;
             }
-            area = work && !held && !slow && mode != RestMode.Paused && mode != RestMode.Always ? FreeArea() : null;
-            string pace = Pace(mode, held, work, slow, area != null);
-            if (pace != Rest) area = null;
-            heldForWork = pace == Still && work && mode != RestMode.Paused && !held;
-            return pace;
+            return Pace(mode, held, work, slow);
         }
 
         /**
          * held: locked, or going to sleep or just woken. work: what you are working in is in front (for the mode).
-         * slow: the PC is busy, or has just been signed in to. otherFree: another screen shows the desktop.
+         * slow: the PC is busy, or has just been signed in to.
          * An app in front gets the graphics chip to itself: drawing even a gentle scene behind it made moving windows,
          * scrolling and typing stutter on a chip built into the processor, and only no frames at all was as smooth as
-         * Pause. But a whole screen of desktop standing still beside the app looked wrong: that screen moves gently,
-         * and only its part of the scene is drawn again (FreeArea).
+         * Pause. From 2.3.0 to 2.6.0 a second screen showing the desktop kept moving gently; the user chose to have every
+         * screen hold still while an app is in front (2026-11-22), so the wallpaper never weighs on the work. Held for
+         * work (Hold), the page draws one new picture a minute, a band at a time, so the light keeps up with the sky.
          */
-        internal static string Pace(RestMode mode, bool held, bool work, bool slow, bool otherFree)
+        internal static string Pace(RestMode mode, bool held, bool work, bool slow)
         {
             if (mode == RestMode.Always) return Live;
             if (mode == RestMode.Paused || held) return Still;
-            if (work) return otherFree && !slow ? Rest : Still;
+            if (work) return Hold;
             return slow ? Rest : Live;
         }
 
-        // ------------------------------------------------------------------ which screens show the desktop
-        private const double FreeShare = 0.25; // a screen with at least this much of it uncovered shows the desktop
-
-        // The part of the wallpaper's width over the screens that show the desktop while you work on another, or null
-        private double[] FreeArea()
-        {
-            if (wallpaper == IntPtr.Zero || !attached) return null;
-            Screen[] all = Screen.AllScreens;
-            if (all.Length < 2) return null;
-            Native.RECT wr;
-            if (!Native.GetWindowRect(wallpaper, out wr)) return null;
-            // the screen you work on: the one with the window in front (the taskbar or this app's own windows keep the last)
-            IntPtr fg = Native.GetForegroundWindow();
-            if (fg != IntPtr.Zero && PidOf(fg) != ownPid && !IsShell(ClassOf(fg))) workScreen = Screen.FromHandle(fg).Bounds;
-            var bounds = new Rectangle[all.Length];
-            var free = new Rectangle[all.Length];
-            int at = -1;
-            for (int i = 0; i < all.Length; i++)
-            {
-                bounds[i] = all[i].Bounds;
-                free[i] = all[i].WorkingArea; // without the taskbar
-                if (bounds[i] == workScreen) at = i;
-            }
-            if (at < 0) return null;
-            return FreeArea(Rectangle.FromLTRB(wr.Left, wr.Top, wr.Right, wr.Bottom), bounds, free, at, CoveringWindows());
-        }
+        // ------------------------------------------------------------------ is the desktop what you look at
+        private const double DesktopShare = 0.5; // a screen with at least this much of it under no window shows the desktop
+        private const int MinAppArea = 200 * 100; // a window smaller than this on the screens is a bar or a badge, not work
 
         /**
-         * [x0, x1], from 0 to 1 across the wallpaper: the screens other than the one you work on (index work) that show
-         * the desktop, that is with at least FreeShare of their working area under no window. Null when there are none.
+         * For "Animate while you look at the desktop": true while you work in an app, false on the desktop, null for
+         * this app's own windows and for a moment with no window in front, which keep the last answer.
+         * The taskbar, the Start menu and the rest of Windows' own interface, and a window nobody works in (minimized
+         * but still in front, off every screen, or a tool bar), say nothing about what you look at: then it is the
+         * desktop when a screen shows it, and an app when none does. Keeping the last answer there left the picture
+         * frozen with nothing in front of it, after an app was minimized from the taskbar, or at sign-in with Avro
+         * Keyboard's hidden window in front, until a click on the desktop (the user: "screen sometimes freezes, when I
+         * click refresh it's working again", 2026-11-22).
          */
-        internal static double[] FreeArea(Rectangle wall, Rectangle[] bounds, Rectangle[] workingAreas, int work, List<Rectangle> windows)
+        private bool? AppInFront()
         {
-            if (wall.Width <= 0) return null;
-            int x0 = int.MaxValue, x1 = int.MinValue;
-            for (int i = 0; i < bounds.Length; i++)
-            {
-                if (i == work) continue;
-                Rectangle on = Rectangle.Intersect(bounds[i], wall);
-                if (on.Width <= 0 || on.Height <= 0 || VisibleShare(workingAreas[i], windows) < FreeShare) continue;
-                x0 = Math.Min(x0, on.Left);
-                x1 = Math.Max(x1, on.Right);
-            }
-            if (x0 >= x1) return null;
-            return new[] { (double)(x0 - wall.Left) / wall.Width, (double)(x1 - wall.Left) / wall.Width };
+            IntPtr fg = Native.GetForegroundWindow();
+            if (fg == IntPtr.Zero || PidOf(fg) == ownPid) return null;
+            string cls = ClassOf(fg);
+            if (cls == "Progman" || cls == "WorkerW") return false;
+            if (!IsShell(cls) && Workable(fg)) return true;
+            return !DesktopShows();
+        }
+
+        /** A window you can work in: shown and not minimized or cloaked, not a tool bar, and of some size on the screens. */
+        private static bool Workable(IntPtr h)
+        {
+            if (!Native.IsWindowVisible(h) || Native.IsIconic(h)) return false;
+            int cloaked;
+            if (Native.DwmGetWindowAttribute(h, Native.DWMWA_CLOAKED, out cloaked, 4) == 0 && cloaked != 0) return false;
+            int ex = Native.GetWindowLong(h, Native.GWL_EXSTYLE);
+            if ((ex & Native.WS_EX_TOOLWINDOW) != 0 && (ex & Native.WS_EX_APPWINDOW) == 0) return false;
+            Native.RECT r;
+            if (!Native.GetWindowRect(h, out r)) return false;
+            return OnScreens(Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom), SystemInformation.VirtualScreen) >= MinAppArea;
+        }
+
+        /** How many pixels of the window are on the screens' rectangle. */
+        internal static long OnScreens(Rectangle window, Rectangle screens)
+        {
+            Rectangle on = Rectangle.Intersect(window, screens);
+            return on.Width <= 0 || on.Height <= 0 ? 0 : (long)on.Width * on.Height;
+        }
+
+        /** Does some screen show the desktop: at least DesktopShare of its working area under no window? */
+        private bool DesktopShows()
+        {
+            Screen[] all = Screen.AllScreens;
+            var areas = new Rectangle[all.Length];
+            for (int i = 0; i < all.Length; i++) areas[i] = all[i].WorkingArea; // without the taskbar
+            return DesktopShows(areas, CoveringWindows());
+        }
+
+        internal static bool DesktopShows(Rectangle[] workingAreas, List<Rectangle> windows)
+        {
+            foreach (Rectangle a in workingAreas)
+                if (VisibleShare(a, windows) >= DesktopShare) return true;
+            return false;
         }
 
         /** How much of area no window covers, from 0 to 1. */
@@ -1857,27 +1863,6 @@ namespace LivingEarth
             return total > 0 ? (int)(100 * busy / total) : 0;
         }
 
-        // null means the taskbar or system UI has focus, which shouldn't change the decision.
-        private bool? DesktopInFront()
-        {
-            IntPtr fg = Native.GetForegroundWindow();
-            if (fg == IntPtr.Zero || PidOf(fg) == ownPid) return null;
-            switch (ClassOf(fg))
-            {
-                case "Progman":
-                case "WorkerW":
-                    return true;
-                case "Shell_TrayWnd":
-                case "Shell_SecondaryTrayWnd":
-                case "NotifyIconOverflowWindow":
-                case "TopLevelWindowForOverflowXamlIsland":
-                case "XamlExplorerHostIslandWindow":
-                    return null;
-                default:
-                    return false;
-            }
-        }
-
         private bool ForegroundCoversScreen()
         {
             IntPtr fg = Native.GetForegroundWindow();
@@ -1916,8 +1901,6 @@ namespace LivingEarth
                 js.Append(", panel: ").Append(settings.Panel ? "true" : "false");
                 js.Append(", corner: ").Append(Js(settings.Corner));
                 js.Append(", panelSize: ").Append(Js(settings.PanelSize));
-                if (pace == Rest && area != null)
-                    js.Append(", area: [").Append(Locator.F(area[0])).Append(", ").Append(Locator.F(area[1])).Append(']');
                 Place p = settings.Current;
                 if (p != null)
                     js.Append(", place: { lat: ").Append(Locator.F(p.Lat)).Append(", lon: ").Append(Locator.F(p.Lon))
@@ -3048,9 +3031,9 @@ namespace LivingEarth
             my += 24;
             pausedRadio = Radio(modes, "Paused: keep a still picture", Pad, my);
             my += 26;
-            Note(modes, "When it doesn't animate, the picture holds still and draws nothing, so your apps have the graphics " +
-                        "chip to themselves. It moves on with the real sky when you come back. A second screen that shows the " +
-                        "desktop keeps moving gently.", Pad, my, W - 2 * Pad, 34); // two lines at most: measured 30 px
+            Note(modes, "While you work in an app, every screen holds still, so your apps have the graphics chip to " +
+                        "themselves. The light is redrawn once a minute, and it moves on with the real sky when you come back.",
+                        Pad, my, W - 2 * Pad, 34); // two lines at most: measured 30 px
             my += 36;
             modes.Height = my;
             Controls.Add(modes);
@@ -3831,7 +3814,7 @@ namespace LivingEarth
         public const int WS_POPUP = unchecked((int)0x80000000), WS_CHILD = 0x40000000, WS_MINIMIZE = 0x20000000, WS_VISIBLE = 0x10000000;
         public const int WS_MAXIMIZE = 0x01000000, WS_CAPTION = 0x00C00000, WS_SYSMENU = 0x00080000, WS_THICKFRAME = 0x00040000;
         public const int WS_MINIMIZEBOX = 0x00020000, WS_MAXIMIZEBOX = 0x00010000;
-        public const int WS_EX_APPWINDOW = 0x00040000, WS_EX_LAYERED = 0x00080000, WS_EX_NOACTIVATE = 0x08000000;
+        public const int WS_EX_APPWINDOW = 0x00040000, WS_EX_LAYERED = 0x00080000, WS_EX_NOACTIVATE = 0x08000000, WS_EX_TOOLWINDOW = 0x80;
         public const uint LWA_ALPHA = 2, GW_HWNDNEXT = 2;
         public const uint SWP_NOSIZE = 1, SWP_NOMOVE = 2, SWP_NOACTIVATE = 0x10, SWP_FRAMECHANGED = 0x20, SWP_SHOWWINDOW = 0x40;
         public const uint RDW_INVALIDATE = 1, RDW_ERASE = 4, RDW_ALLCHILDREN = 0x80, RDW_UPDATENOW = 0x100;

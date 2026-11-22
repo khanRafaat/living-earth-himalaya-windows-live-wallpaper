@@ -1846,19 +1846,23 @@
         if (s) s.fading = true;
       }
 
-      // ---- a field burning on a hill: now and then, more in the dry months, never in rain
+      // ---- a field burning on a hill: now and then, more in the dry months, never in rain or snow or on soaked ground.
+      // The chance had a floor of a quarter whatever the weather, and only rain over 0.3 put a fire out, so in drizzle
+      // (0.12 to 0.3) a field could catch and burn on (the user saw one, 2026-11-22).
       const dryMonths = 0.5 + 0.5 * Math.cos((2 * Math.PI * (a.dayOfYear - 60)) / 365);
       const dry = dryMonths * (1 - smooth(0.4, 0.9, w.mist || 0)) * (1 - (w.wet || 0)) * (1 - smooth(0.02, 0.2, w.rain));
+      const wetNow = w.rain > 0.01 || (w.snow || 0) > 0.01 || (w.wet || 0) > 0.3;
       this._nextFire -= dt;
       if (this._nextFire <= 0) {
         this._nextFire = rand(2400, 9000);
         const burning = this.smoke.some((s) => s.kind === SMOKE.fire);
-        if (this._smokeOn(SMOKE.fire) && !burning && h > 9 && h < 19.5 && Math.random() < 0.25 + 0.75 * dry) {
+        if (this._smokeOn(SMOKE.fire) && !burning && !wetNow && h > 9 && h < 19.5 && Math.random() < 0.25 + 0.75 * dry) {
           const s = this._newPlume(SMOKE.fire);
           if (s) this.smoke.push(s);
         }
       }
-      for (const s of this.smoke) if (s.kind === SMOKE.fire && w.rain > 0.3) s.fading = true; // put out by the rain
+      // put out by any rain or snow, drizzle too
+      for (const s of this.smoke) if (s.kind === SMOKE.fire && (w.rain > 0.05 || (w.snow || 0) > 0.05)) s.fading = true;
 
       // ---- each one grows, lives its time, and dissolves
       for (const s of this.smoke) {

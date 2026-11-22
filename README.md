@@ -21,7 +21,7 @@ You do not need Lively, Wallpaper Engine, Steam, an installer, admin rights or a
 
 ## Download and set your wallpaper
 
-### **[Download LivingEarthHimalaya-2.6.0.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.6.0/LivingEarthHimalaya-2.6.0.exe)**
+### **[Download LivingEarthHimalaya-2.7.0.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.7.0/LivingEarthHimalaya-2.7.0.exe)**
 
 About 2.4 MB. For Windows 11 version 24H2 or later.
 
@@ -50,7 +50,7 @@ The mountains now sit behind your desktop icons like a normal wallpaper, with a 
 | Setting | What it does |
 |---|---|
 | Location | Found automatically, or choose a place by name or by latitude and longitude. It sets the sun, moon and weather. |
-| Wallpaper mode | **Animate while you look at the desktop** is the lightest. **Animate unless a window is maximized or full screen** moves more often. **Paused** keeps a still picture. When it doesn't animate, the picture holds still and draws nothing, so your apps have the graphics chip to themselves; it moves on with the real sky when you come back. With two screens, while you work in an app on one, the other keeps moving gently if it shows the desktop, and only that screen's scene is drawn again. |
+| Wallpaper mode | **Animate while you look at the desktop** is the lightest. **Animate unless a window is maximized or full screen** moves more often. **Paused** keeps a still picture. When it doesn't animate, the picture holds still on every screen, so your apps have the graphics chip to themselves. The light is redrawn once a minute, a little at a time, and the scene moves on with the real sky when you come back. |
 | In the scene | Turn each part on or off: the road and its traffic (light, normal or busy), the tree on the rock, flying leaves, birds, shooting stars, aircraft, rainbows, prayer flags, grazing animals, village lights, forest mist, clouds on the peaks, village smoke and burning fields. Changing the road shapes the mountains again, which takes a few minutes. |
 | Clock and weather panel | Show it or hide it, and choose its corner and size. |
 | Weather from | **Open-Meteo** (free, no key) or **WeatherAPI.com**. WeatherAPI.com needs a free key of your own from [weatherapi.com](https://www.weatherapi.com/); paste it in the box beside it. It then gives the weather at the ground (temperature, humidity, wind, rain, visibility, the sky in its own words such as "Smoky haze", and how much cloud) and the air quality: dirty air lies as grey-brown smog in the valleys, and the panel says how the air is. Open-Meteo still gives the height of the clouds and the winds up high. The key stays on your PC, encrypted for your Windows account. |
@@ -108,7 +108,7 @@ All versions are listed on the [releases page](https://github.com/khanRafaat/liv
 
 In Windows **Display settings**, choose **Extend these displays**, put the monitors in the same order as on your desk, line up their top edges, and give both the same scale. The app then spans both screens by itself, and turns the view a little so that the gap between the monitors falls on a low ridge instead of the middle of a great peak.
 
-While you work in an app on one screen, the other screen keeps moving gently as long as it shows the desktop, and only its part of the scene is drawn again. The screen with your app holds still, so the app keeps the graphics chip.
+While you work in an app, both screens hold still, so the app keeps the graphics chip. Once a minute the light is redrawn, a little at a time, so the sky stays true to the hour. The scene moves again when you click the desktop or minimize your apps.
 
 ## System requirements
 
@@ -134,7 +134,7 @@ While you work in an app on one screen, the other screen keeps moving gently as 
 - **Weather changes play out naturally.** Clouds build first and then the rain starts. Rain stops before the sky clears. A change arrives from the side the wind is coming from.
 - **Wind in the trees.** Gusts travel across the forest and meadows in the real wind direction, at the real gust speed, and the outlines of the nearer trees move with them. A tree rhododendron on the cliff edge moves with the live wind speed and direction, gets wet in rain, turns white in snow, changes colour with the season and flowers red in spring. Its fallen leaves drift past on the wind. A line of prayer flags runs from its trunk to a stake on the rock: the wind lifts them to its lee side and the waves run through the cloth downwind. Now and then by day a falcon comes in from any side, sits for a while on the top of the tree or on one of its upper branches, and flies off again in any direction. Where it really snows, snow settles on the tree, the rock and the hills within a quarter of an hour. Snow only falls when the weather at your location says so: in a warm country such as Bangladesh it never does, while the highest summits keep their snow all year, as the real Himalaya does.
 - **A mountain road with traffic.** Buses, jeeps and motorcycles wind along a road through the forest. They slow for hairpins, overtake when the road ahead is clear, and stop for passengers. At night their dipped headlights light the road ahead, with red tail lights that brighten when they brake. Lorries grind up the hill, now and then an army column passes with its hazard lights on, and when an ambulance comes with its roof light flashing, everyone pulls to the edge to let it by. After rain the road is dark and glints towards the sun.
-- **Mist and smoke in 3D.** After rain or on humid mornings, mist lifts off the forest in soft patches and drifts with the real wind. Wood smoke rises from villages all across the valley, near and far, and drifts downwind as a thin blue-grey haze. Each village keeps its own hours: fires are lit one after another around breakfast and supper, die down slowly, and some keep a fire in all day. On a calm morning the smoke lies in flat layers; in the afternoon sun it climbs and thins out. Now and then a field burns on a hill, its smoke glowing from below at night.
+- **Mist and smoke in 3D.** After rain or on humid mornings, mist lifts off the forest in soft patches and drifts with the real wind. Wood smoke rises from villages all across the valley, near and far, and drifts downwind as a thin blue-grey haze. Each village keeps its own hours: fires are lit one after another around breakfast and supper, die down slowly, and some keep a fire in all day. On a calm morning the smoke lies in flat layers; in the afternoon sun it climbs and thins out. Now and then, in dry weather, a field burns on a hill, its smoke glowing from below at night; rain or drizzle puts it out.
 - **Wildlife and village life,** following the real clock, season and weather:
   - Vultures and eagles circle in thermals on sunny, calm middays.
   - Flocks of mountain choughs swoop past the ridge after sunrise and before sunset.
@@ -164,7 +164,7 @@ While you work in an app on one screen, the other screen keeps moving gently as 
 ## Frequently asked questions
 
 ### How do I get a live wallpaper on Windows 11?
-On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.6.0.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
+On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.7.0.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
 
 ### Do I need Lively or Wallpaper Engine?
 No. The exe sets the wallpaper by itself on Windows 11 version 24H2 or later, with nothing else to install. Lively is only for older versions of Windows.

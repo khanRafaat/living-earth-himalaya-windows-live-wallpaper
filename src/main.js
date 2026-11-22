@@ -196,6 +196,9 @@
   let slowMs = 0; // slow mode: milliseconds between scenes (0 = off)
   let restMs = 0; // what the Windows app asked for, when the PC is busy with other work
   let restArea = null; // ...and while you work on another screen, the part of the width that shows the desktop
+  let holdMs = 0; // held still while you work (the Windows app's hold): a new picture this often, 0 when not held
+  let holdTimer = 0;
+  let holdRaf = 0;
   let slowTimer = 0;
   let fadeRaf = 0;
   let fadeTimer = 0;
@@ -487,7 +490,9 @@
       clearTimeout(slowTimer);
       stopFade();
       pausedPanelTimer = setInterval(updateIfPaused, 5000);
+      planHold();
     } else {
+      stopHold();
       clearInterval(pausedPanelTimer);
       lastReal = performance.now();
       // the birds and leaves go on from where the held picture shows them; the sun and moon from where they are now
@@ -507,6 +512,51 @@
     pausedByVisibility = document.hidden;
     applyPause();
   });
+
+  // Held still while you work: no frames, but every holdMs one new picture of the scene, so the light and the weather
+  // keep up with the sky. It is drawn a band at a time off the screen, each a few milliseconds on the GPU so the app in
+  // front never waits, and then shown in one frame. The birds, the tree and the traffic stay where they were: the
+  // scene's own time stands still, as in any pause, and goes on from there when you come back.
+  function planHold() {
+    clearTimeout(holdTimer);
+    holdTimer = paused && holdMs ? setTimeout(holdPicture, holdMs) : 0;
+  }
+  function stopHold() {
+    clearTimeout(holdTimer);
+    cancelAnimationFrame(holdRaf);
+    holdTimer = holdRaf = 0;
+  }
+  function holdPicture() {
+    holdTimer = 0;
+    if (!paused || !holdMs) return;
+    if (pausedByVisibility || !renderer || renderer.status !== 'running' || !lastState || demo.on) return planHold();
+    const nowReal = performance.now();
+    // Environment.update makes the weather jump after a gap over 30 s: the same cap as slow mode
+    const dt = Math.min((nowReal - lastReal) / 1000, 25);
+    lastReal = nowReal;
+    sceneClock.resume(nowReal);
+    env.refreshSky();
+    const state = env.update(LE.clock.now(), dt, sceneClock.t);
+    state.weather.flash = 0; // a lightning flash would stay on screen for the minute
+    lastState = state;
+    renderer.refreshSky();
+    renderer.forgetFrame();
+    if (!renderer.holdBegin(state, dt)) return planHold();
+    holdRaf = requestAnimationFrame(holdBand);
+  }
+  function holdBand() {
+    holdRaf = 0;
+    if (!paused || !holdMs) return;
+    if (renderer.frameDone() && renderer.holdStep(lastState)) return planHold();
+    holdRaf = requestAnimationFrame(holdBand);
+  }
+  // Used by src/services/host.js: hold still with a new picture every `ms` milliseconds while paused, or 0 for none
+  window.leSetHold = function (ms) {
+    if (ms === holdMs) return;
+    holdMs = ms;
+    stopHold();
+    planHold();
+  };
 
   // Area rest draws only the free screen. WebGL keeps nothing of a frame where it was not drawn (that part would
   // come out black), so the part behind your work is shown by a still copy of it, laid over the scene: one piece to

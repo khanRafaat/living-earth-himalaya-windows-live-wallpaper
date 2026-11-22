@@ -2879,6 +2879,37 @@ test('now and then a field burns on a hill: a tall plume, glowing by night, and 
   assert.ok(!h.life.smoke.some((s) => s.kind === 2), 'rain puts it out');
 });
 
+// The chance of a fire had a floor of a quarter in any weather, and only rain over 0.3 put one out: in drizzle a field
+// caught and burned on (the user: "during rain forest fire should not trigger", 2026-11-22).
+test('no field catches fire in drizzle, rain or snow, or on soaked ground, and drizzle puts a burning one out', () => {
+  for (const [what, weather] of [
+    ['light drizzle', { rain: 0.12 }],
+    ['drizzle', { rain: 0.3 }],
+    ['rain', { rain: 0.6 }],
+    ['snow', { snow: 0.4 }],
+    ['ground soaked after rain', { wet: 0.8 }],
+  ]) {
+    const h = hills(14, { mist: 0.1, wet: 0, ...weather });
+    seedRandom(h.ctx, 11);
+    for (let tries = 0; tries < 60; tries++) {
+      h.life._nextFire = 1;
+      h.run(3);
+    }
+    assert.ok(!h.life.smoke.some((s) => s.kind === 2), what + ': none in 60 chances');
+  }
+  // the same chances in dry weather do bring one, so the check above can fail
+  const dry = hills(14, { mist: 0.1, wet: 0 });
+  seedRandom(dry.ctx, 11);
+  for (let tries = 0; tries < 60 && !dry.life.smoke.some((s) => s.kind === 2); tries++) {
+    dry.life._nextFire = 1;
+    dry.run(3);
+  }
+  assert.ok(dry.life.smoke.some((s) => s.kind === 2), 'dry: a fire starts');
+  dry.state.weather.rain = 0.12;
+  dry.run(600);
+  assert.ok(!dry.life.smoke.some((s) => s.kind === 2), 'light drizzle puts it out');
+});
+
 test('mist off the forest is drawn in 3D: low patches for the volume pass, nearest first, carried downwind, no pictures', () => {
   const h = hills(8, { mist: 0.9, wet: 0.6 });
   h.life._nextFire = 1e9;
@@ -4441,8 +4472,9 @@ test('the page moves birds and leaves on the motion clock, and a pause resumes i
 });
 
 // Two screens, an app in front on one: the other screen stood still too, and a whole screen of desktop not moving
-// beside the app looked wrong (2026-11-10). Now it moves gently, and only its part of the scene is drawn again.
-test('while you work on one screen, rest draws the scene again only where another screen shows the desktop', () => {
+// beside the app looked wrong (2026-11-10), so from 2.3.0 to 2.6.0 it moved gently, drawn again on its own. Since
+// 2026-11-22 the app holds every screen still instead (the next tests); the page still draws a part of the width when asked.
+test('rest with a part of the width draws the scene again only there', () => {
   const { r, gl } = newRendererWithFence();
   const calls = [];
   Object.assign(gl, {
@@ -4500,7 +4532,7 @@ test('while you work on one screen, rest draws the scene again only where anothe
   assert.equal(r._pictureJob, null);
 });
 
-test('the app tells the page which part of the width keeps moving while you work on another screen', () => {
+test('the page takes the part of the width to draw again in rest, and nothing else', () => {
   const h = load(['config.js', 'services/host.js'], { search: '?host=1' });
   h.ctx.document.createElement = () => ({ remove() {} });
   h.ctx.document.head = { appendChild: (s) => s.onload() };
@@ -4529,6 +4561,88 @@ test('the app tells the page which part of the width keeps moving while you work
     say('rest', { area: [0.25, 0.75] });
     assert.deepEqual(say('rest', { area: bad })[0], ['area', null], JSON.stringify(bad));
   }
+});
+
+// The free second screen moving gently while you worked looked like the wallpaper never stopped (the user, 2026-11-22:
+// "when screen one is blocked the other monitor keeps going"). They chose every screen still while an app is in front,
+// with the light redrawn once a minute.
+test('an app in front holds every screen still, with a new picture once a minute; locked or paused, none at all', () => {
+  const h = load(['config.js', 'services/host.js'], { search: '?host=1' });
+  h.ctx.document.createElement = () => ({ remove() {} });
+  h.ctx.document.head = { appendChild: (s) => s.onload() };
+  let now = 1;
+  h.ctx.performance = { now: () => now };
+  const got = [];
+  h.ctx.leSetArea = (a) => got.push(['area', a && [...a]]);
+  h.ctx.leSetSlowFrames = (ms) => got.push(['slow', ms]);
+  h.ctx.leSetHold = (ms) => got.push(['hold', ms]);
+  h.ctx.livelyWallpaperPlaybackChanged = (p) => got.push(['paused', p.IsPaused]);
+  h.ctx.__leReady = true;
+  h.tick();
+  now = 7000;
+  const say = (pace) => {
+    got.length = 0;
+    h.ctx.leHostState(pace, {});
+    h.tick();
+    return got;
+  };
+  assert.deepEqual(say('hold'), [['area', null], ['slow', 0], ['hold', 60000], ['paused', true]], 'an app in front');
+  assert.deepEqual(say('still'), [['area', null], ['slow', 0], ['hold', 0], ['paused', true]], 'locked or paused: no new pictures');
+  assert.deepEqual(say('live'), [['area', null], ['slow', 0], ['hold', 0], ['paused', false]], 'back on the desktop');
+  assert.deepEqual(say('rest'), [['area', null], ['slow', 2000], ['hold', 0], ['paused', false]], 'busy PC, desktop in front');
+  // the page: pausing starts the minute, coming back stops it, and the picture is begun and drawn by the renderer
+  const main = readSrc('main.js');
+  assert.ok(/pausedPanelTimer = setInterval\(updateIfPaused, 5000\);\s*planHold\(\);/.test(main), 'a pause plans the next picture');
+  assert.ok(/\} else \{\s*stopHold\(\);/.test(main), 'a resume stops it');
+  assert.ok(/sceneClock\.resume\(nowReal\);\s*env\.refreshSky\(\);\s*const state = env\.update\(LE\.clock\.now\(\), dt, sceneClock\.t\);/.test(main),
+    'the light and weather now, the scene\'s own time standing');
+  assert.ok(main.includes('if (!renderer.holdBegin(state, dt)) return planHold();') && main.includes('renderer.frameDone() && renderer.holdStep(lastState)'),
+    'one band a frame, each after the GPU has finished the last');
+  // the app's side: an app in front is "hold", never the old gentle rest on a free screen
+  const cs = readFileSync(new URL('../host/LivingEarthHost.cs', import.meta.url), 'utf8');
+  assert.ok(/if \(work\) return Hold;/.test(cs) && !cs.includes('FreeArea') && !cs.includes('area: ['), 'the app asks for hold, with no free screen');
+});
+
+test('held still, the new picture is drawn a band at a time off the screen and shown in one frame', () => {
+  const { r, gl, advance, signal } = newRendererWithFence();
+  const draws = [];
+  r.status = 'running';
+  r.w = 3840;
+  r.h = 1080;
+  r.pictureBands = 8;
+  r.pictureA = { fbo: 'A', tex: ['a'] };
+  r.pictureB = { fbo: 'B', tex: ['b'] };
+  r.pictureNext = { fbo: 'N', tex: ['n'] };
+  r._compositePass = (s, meter, band) => draws.push(['band', band && band.y, band && band.h]);
+  r.drawFade = (f) => draws.push(['screen', f, r.pictureB.fbo]);
+  r._volumePass = () => draws.push(['volume']);
+  r._shadow = { y: 0 };
+  let shadowSteps = 0;
+  r._shadowStep = () => shadowSteps++;
+  r._pictureJob = { state: { time: 5 }, time: 5, y: 0, fresh: true };
+  r._holdVolPasses = 3; // as holdBegin leaves it
+  let frames = 0;
+  while (!r.holdStep({ time: 5 })) {
+    frames++;
+    assert.ok(frames < 40, 'it ends');
+    assert.ok(!draws.some((d) => d[0] === 'screen'), 'nothing on the screen while the bands are drawn');
+  }
+  const bands = draws.filter((d) => d[0] === 'band');
+  assert.deepEqual(draws.slice(0, 3).map((d) => d[0]), ['volume', 'volume', 'volume'], 'first the clouds catch up, one pass a frame');
+  assert.equal(draws.filter((d) => d[0] === 'volume').length, 3, 'three of them');
+  assert.equal(bands.reduce((s, b) => s + b[2], 0), 1080, 'the bands cover the whole height');
+  assert.ok(bands.every((b) => b[2] <= 1080 / 8 + 1), 'each an eighth of it at most');
+  assert.deepEqual(draws[draws.length - 1], ['screen', 1, 'N'], 'then the new picture goes on the screen whole, at once');
+  assert.equal(draws.filter((d) => d[0] === 'screen').length, 1, 'in one frame');
+  assert.ok(shadowSteps >= bands.length, 'a shadow refresh moves on with the bands');
+  assert.equal(r._pictureJob, null);
+  assert.ok(r.holdStep({ time: 5 }), 'nothing more to draw');
+  // a shadow chunk while held is a small one, as on the desktop: the app in front must never wait
+  r._bgPacer = { targetMs: 0, maxPx: 0 };
+  r.setSlowMode(true, true, true);
+  assert.equal(r._bgPacer.targetMs, 4);
+  r.setSlowMode(true, true);
+  assert.equal(r._bgPacer.targetMs, 25, 'rest keeps its bigger chunks');
 });
 
 test('a long step keeps the falling leaves going instead of starting them over', () => {
