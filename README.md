@@ -21,7 +21,7 @@ You do not need Lively, Wallpaper Engine, Steam, an installer, admin rights or a
 
 ## Download and set your wallpaper
 
-### **[Download LivingEarthHimalaya-2.7.1.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.7.1/LivingEarthHimalaya-2.7.1.exe)**
+### **[Download LivingEarthHimalaya-2.8.0.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.8.0/LivingEarthHimalaya-2.8.0.exe)**
 
 About 2.4 MB. For Windows 11 version 24H2 or later.
 
@@ -58,8 +58,8 @@ The mountains now sit behind your desktop icons like a normal wallpaper, with a 
 | Draw with | **Automatic** looks at your PC: a graphics card draws at full speed; graphics built into the processor (such as Intel UHD) get at most a quarter of the chip's time, so the desktop and your apps stay smooth; with no graphics chip, the processor draws. **Graphics chip (GPU)** always uses the graphics chip, with up to half its time. **Processor (CPU)** leaves the graphics chip free: the picture is softer, the clouds change more slowly, it uses at most a quarter of the processor, and the first picture takes longer after each start. |
 | Start with Windows | Starts the wallpaper when you sign in, with no window to click through. |
 | Update automatically | Twice a day it looks on GitHub for a new version. A new one is downloaded, checked against the SHA-256 that GitHub gives for it, and put in while the PC is locked, after 20 minutes without use, or at the next sign-in. It takes the place of the old exe, so Start with Windows keeps working. Turn it off to update by hand. |
-| Airport weather | Every 10 minutes, and with each weather update, the app reads what the nearest airport (within 60 km) reports: visibility, mist, fog, haze or smoke, temperature and dew point. Forecasts often miss morning fog; with this, the valleys fill with fog when the airport sees it, and the panel says "Mist" or "Fog" and names the airport. When an airport within 15 km saw no rain or snow in the last hour, it stays dry here too, even if the forecast says rain. Only a rough area is asked about. |
-| Show the scene in Windows Settings too | Also sets a still picture of the scene, matching the time of day, as the Windows desktop background, so Settings > Personalization shows it. Your previous background comes back when you exit. |
+| Airport weather | Every 10 minutes, and with each weather update, the app reads what the nearest airport (within 60 km) reports: visibility, mist, fog, haze or smoke, temperature and dew point. Forecasts often miss morning fog; with this, the valleys fill with fog when the airport sees it, and the panel says "Mist" or "Fog" and names the airport. An airport within 15 km with a report under an hour old also decides how much cloud there is and how high (its FEW, SCT, BKN and OVC layers), and when it saw no rain or snow, it stays dry here too, even if the forecast says rain. Only a rough area is asked about. |
+| Show the scene in Windows Settings too | Also sets a still picture of the scene, matching the time of day, as the Windows desktop background, so Settings > Personalization shows it. While the live scene is up, a new still waits until no screen shows the desktop, so the change never flashes in front of it. Your previous background comes back when you exit. |
 
 ### What the app uses
 
@@ -127,7 +127,7 @@ While you work in an app, both screens hold still, so the app keeps the graphics
 ![Living Earth Himalaya live wallpaper for Windows: snow peaks of the Himalaya at sunrise across two monitors, with a clock and weather panel](docs/images/sunrise.jpg)
 
 - **Light follows the real sky.** The sun and moon are calculated for your location and your PC clock, so sunrise, golden hour, sunset, blue hour and night happen at the true times. The moon shows its real phase, and the stars turn around the pole through the night.
-- **Real positions only.** The sun and moon are drawn exactly where they really are. When they are out of view you still see their light, such as pink alpenglow or moonlit snow, but nothing is faked into view.
+- **Real positions, and a moon you can see.** The sun is drawn exactly where it really is. When it is out of view you still see its light, such as pink alpenglow, but it is never faked into view. The panorama's sky reaches only about 22 degrees up, so the moon would be out of sight most of the night: while it is low in view it is exactly where it is, and higher up its disk stays just under the top of the picture. Once it has passed out of the picture it waits at the side it left by until it sets, and it keeps clear of the information panel. Its light on the snow and in the clouds always comes from where it really is, and its phase is the real one.
 - **Weather follows your location.** Live data from [Open-Meteo](https://open-meteo.com/) (free, no key) sets the mood of the mountain sky: cloud cover, rain, storms, fog, mist and wind. In the Windows app you can take the weather at the ground from [WeatherAPI.com](https://www.weatherapi.com/) instead, with a free key of your own. The app also reads the nearest airport's report, so real morning fog and mist show even when the forecast misses them: the valleys and the forest below fill with fog while the viewpoint and the peaks stay clear above it. The panel always names the place, so it is not presented as Himalayan weather.
 - **Clouds move with the real wind.** Low, middle and high cloud each follow the live wind at their own height and at true speed.
 - **Banner clouds on the peaks.** On humid, windy days a cloud streams from the top of the highest summits, the way real "cloud factories" form in the lee of a peak. Each streams downwind with the real wind at that height, forms and fades on its own rhythm, and is lit by the sun like the rest of the sky.
@@ -142,7 +142,7 @@ While you work in an app, both screens hold still, so the app keeps the graphics
   - Birds shelter in rain, fog, snow and storms, and roost at night.
   - Hill villages have terraced fields, with wood smoke at breakfast and dinner time and lights that come on one by one at dusk, and go off and on again through the night.
   - Shooting stars follow the real meteor-shower calendar, and satellites glide across the sky in twilight.
-  - Airliners cross high above the peaks, some across the picture and some up or down it. Their trails are short stubs when the air up there is dry and long, spreading lines when it is moist, and they drift with the real wind at that height. A helicopter makes its way along the valley now and then on a fair day.
+  - Airliners cross high above the peaks every 5 to 15 minutes (fewer in the small hours), some across the picture and some up or down it, and they keep flying while the picture holds still as you work. Their trails are short stubs when the air up there is dry and long, spreading lines when it is moist, and they drift with the real wind at that height. A helicopter makes its way along the valley now and then on a fair day.
   - Black kites circle low over a near village, or over the slopes just below the viewpoint; goats graze and wander on the rock by the tree by day (3D animals, lit by the same sun and sky as the tree, each with its own coat, horns and shadow); and a lamp burns at a monastery on a ridge at night.
   - On the nights of Tihar and Diwali every house is lit with oil lamps, and fireworks burst in sparks of gold, red, green and violet over the villages. The test panel's Festival night button shows it at any hour (by day it first sets the clock to the evening).
 - **A rainbow when there really is one.** Only with rain still in the air and the sun out and low enough: as a shower clears, or in a sun shower. It stands where the sun puts it, opposite the sun, so with this view it is mostly an afternoon sight; with a high sun only its feet show.
@@ -164,7 +164,7 @@ While you work in an app, both screens hold still, so the app keeps the graphics
 ## Frequently asked questions
 
 ### How do I get a live wallpaper on Windows 11?
-On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.7.1.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
+On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.8.0.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
 
 ### Do I need Lively or Wallpaper Engine?
 No. The exe sets the wallpaper by itself on Windows 11 version 24H2 or later, with nothing else to install. Lively is only for older versions of Windows.
@@ -213,7 +213,7 @@ The wallpaper needs a rough location for the sun, moon and weather. You can choo
 | Long "Preparing the renderer…" | Normal on the very first start and after a graphics-driver or Edge update. The shaders are being compiled. Later starts are quick. |
 | Panel says "Offline" | There is no internet, so it is using the saved forecast. It updates by itself when you are back online. |
 | No birds | Normal at night, in rain, fog or storms, and between visits. Flocks come and go every few minutes. |
-| No sun or moon on screen | Normal when they are below the horizon or in a part of the sky that isn't in view. They are never faked. |
+| No sun on screen | Normal when it is below the horizon or in a part of the sky that isn't in view. It is never faked. The moon shows whenever it is up (see [Features](#features)). |
 
 Something else? [Open an issue](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/issues).
 

@@ -156,6 +156,8 @@ uniform vec2 uVolRes;
 uniform float uShadowMix;
 uniform vec3 uSunDir;
 uniform vec3 uMoonDir;
+uniform vec3 uMoonShowDir; // where the moon's disk is drawn, in the picture's sky (Environment.moonShown)
+uniform vec3 uMoonShowSun; // the sun as seen from there: the disk's phase and lit side
 uniform vec3 uKeyDir;
 uniform float uKeyIsSun;
 uniform vec3 uSunE;
@@ -264,14 +266,15 @@ vec3 starField(vec3 rd) {
   return acc;
 }
 
+// The disk is drawn where the picture's sky can show it (uMoonShowDir), its light dimmed by the air as at its true height
 vec3 moonDisk(vec3 rd) {
-  float cm = dot(rd, uMoonDir);
+  float cm = dot(rd, uMoonShowDir);
   if (cm < 0.9995) return vec3(0.0);
   const float R = 0.0047;
-  vec3 up = abs(uMoonDir.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-  vec3 mx = normalize(cross(up, uMoonDir));
-  vec3 my = cross(uMoonDir, mx);
-  vec3 off = rd - uMoonDir * cm;
+  vec3 up = abs(uMoonShowDir.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+  vec3 mx = normalize(cross(up, uMoonShowDir));
+  vec3 my = cross(uMoonShowDir, mx);
+  vec3 off = rd - uMoonShowDir * cm;
   vec2 q = vec2(dot(off, mx), dot(off, my)) / R;
   float rr = dot(q, q);
   vec3 Tm = transmittance(uCamPos.y, uMoonDir.y);
@@ -279,8 +282,8 @@ vec3 moonDisk(vec3 rd) {
   vec3 col = vec3(0.8, 0.85, 1.0) * glow * uMoonDiskE * min(uMieScale, 3.0) * 0.35;
   if (rr < 1.15) {
     float edge = 1.0 - smoothstep(0.93, 1.03, sqrt(rr));
-    vec3 n = normalize(mx * q.x + my * q.y - uMoonDir * sqrt(max(0.0, 1.0 - min(rr, 1.0))));
-    float lit = smoothstep(-0.02, 0.12, dot(n, uSunDir)) * max(dot(n, uSunDir), 0.0) ;
+    vec3 n = normalize(mx * q.x + my * q.y - uMoonShowDir * sqrt(max(0.0, 1.0 - min(rr, 1.0))));
+    float lit = smoothstep(-0.02, 0.12, dot(n, uMoonShowSun)) * max(dot(n, uMoonShowSun), 0.0);
     float m = texture(uNoise2D, q * 0.32 + 0.5).r * 0.7 + texture(uNoise2D, q * 0.9 + 0.2).a * 0.3;
     float maria = mix(0.62, 1.0, smoothstep(0.38, 0.62, m));
     col += vec3(1.0, 0.97, 0.92) * uMoonDiskE * (lit * 1.6 + 0.012) * maria * edge;
@@ -424,7 +427,7 @@ vec3 villageLight(vec4 g3, float t) {
   float amp = 0.1 + 0.22 * smoothstep(2.0, 14.0, t);
   float shimmer = 1.0 + amp * sin(uTime * 2.3 + id * 47.0) * sin(uTime * 3.7 + id * 19.0);
   vec3 warm = vec3(1.0, 0.62, 0.30);
-  vec3 led = vec3(0.92, 0.95, 1.0);
+  vec3 led = vec3(0.92, 0.95, 1.0) * 0.6; // a white LED no brighter than a warm bulb: close by it was a glaring white blob
   vec3 c = mix(warm, led, step(0.86, fract(id * 17.9)));
   c = mix(c, vec3(1.0, 0.56, 0.22), fest);                 // the deeper orange of oil flames
   float fire = max(step(0.8, fract(id * 23.1)), fest);     // oil lamps / fires flicker
@@ -588,7 +591,7 @@ vec3 aerial(vec3 col, vec3 rd, float t, float sunlit) {
   float TM = exp(-(MIE_S + MIE_A) * odM);
   float hazeAlt = clamp(y0 + rd.y * t * 0.5, 0.5, 6.0);
   float cosS = dot(rd, uSunDir);
-  float cosM = dot(rd, uMoonDir);
+  float cosM = dot(rd, uMoonShowDir); // the glow round the moon in the haze is round its disk
   float lowSun = 1.0 - smoothstep(0.2, 0.55, uSunDir.y);
   // Golden haze belongs where the sun's rays are: looking towards the sun, and in front of land it lights.
   // Everywhere else the air shows no sunlight, so it is a neutral blue-grey, not the sky's orange horizon.

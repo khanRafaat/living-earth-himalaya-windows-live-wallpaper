@@ -290,7 +290,8 @@
 
     /**
      * The nearest airport's report, handed over by the Windows app (host.js), or null. Returns whether it changed.
-     * { id, name, km, t (ms), temp, dewp (°C), vis (m), wx (METAR weather, e.g. "BR" or "-RA BR") }
+     * { id, name, km, t (ms), temp, dewp (°C), vis (m), wx (METAR weather, e.g. "BR" or "-RA BR"), sky (its sky groups,
+     *   e.g. "FEW015 SCT100") }
      */
     setObservation(obs) {
       const ok = obs && typeof obs === 'object' && typeof obs.t === 'number' && typeof obs.km === 'number' && isFinite(obs.t + obs.km);
@@ -365,12 +366,14 @@
    * What an airport near by actually saw, laid over the forecast: its visibility, temperature, humidity and any mist,
    * fog, haze, smoke or dust. Forecast models miss these: on 2026-11-18 at 09:00 Dhaka airport reported mist and
    * 1 km, the forecast 7.1 km and "overcast" (all of it thin high cloud). Only a report under 100 minutes old and from
-   * within 60 km counts. Cloud stays with the forecast, and so do rain and snow, except where a close airport saw
-   * none fall in the last hour: then it is dry. On 2026-11-22 at 14:30 WeatherAPI said "Patchy rain nearby" for
-   * Uttara and the scene rained; Dhaka airport, 2.3 km away, saw haze and nothing falling.
+   * within 60 km counts. Rain and snow stay with the forecast, except where a close airport saw none fall in the last
+   * hour: then it is dry. On 2026-11-22 at 14:30 WeatherAPI said "Patchy rain nearby" for Uttara and the scene rained;
+   * Dhaka airport, 2.3 km away, saw haze and nothing falling. The cloud is what a close airport's sky groups say
+   * (LE.skyFromMetar), the forecast's elsewhere: that evening WeatherAPI gave 74 % cloud, Open-Meteo 6 %, Google
+   * "Clear", and the airport FEW015 SCT100.
    */
-  const DRY_KM = 15; // a shower that misses an airport this close most likely misses here too
-  const DRY_MINUTES = 60; // older than that, rain may have begun since
+  const CLOSE_KM = 15; // a shower that misses an airport this close most likely misses here too, and its sky is ours
+  const FRESH_MINUTES = 60; // older than that, rain may have begun since
   const FALLING = ['DZ', 'RA', 'SN', 'SG', 'IC', 'PL', 'GR', 'GS', 'UP']; // METAR's drizzle, rain, snow, ice, hail, unknown
   LE.withObservation = function (rec, obs, nowMs = Date.now()) {
     if (!rec || !obs) return rec;
@@ -401,12 +404,23 @@
     }
     // nothing falling at a close airport just now: no rain or snow here, whatever the forecast or WeatherAPI said
     const wasFalling = (rec.code ?? 0) >= 50 || rec.precip > 0 || rec.rain > 0 || rec.snowfall > 0;
-    if (wasFalling && obs.km <= DRY_KM && age < DRY_MINUTES * 60e3 && !thunder && !FALLING.some((p) => seen.has(p))) {
+    const close = obs.km <= CLOSE_KM && age < FRESH_MINUTES * 60e3;
+    if (wasFalling && close && !thunder && !FALLING.some((p) => seen.has(p))) {
       for (const k of ['precip', 'rain', 'snowfall']) if (out[k]) out[k] = 0;
       if ((rec.code ?? 0) >= 50) {
         out.code = codeFromCloud(rec.cloud);
         delete out.wapiText; // its words said rain
       }
+    }
+    // the cloud the close airport sees, in place of the forecast's or WeatherAPI's guess
+    const sky = close ? LE.skyFromMetar(obs.sky, out) : null;
+    if (sky) {
+      out.cloudLow = sky.low;
+      out.cloudMid = sky.mid;
+      out.cloudHigh = sky.high;
+      out.cloud = sky.cloud;
+      if ((out.code ?? 0) <= 3) out.code = codeFromCloud(out.cloud);
+      delete out.wapiText; // its words were about its own cloud
     }
     // its words for the sky give way to what the airport saw, whenever it saw something in the air or WeatherAPI did
     if (seen.size || rec.obscured || rec.code === 45 || rec.code === 48) delete out.wapiText;
@@ -415,7 +429,7 @@
       if ((out.code ?? 0) <= 3) out.code = 45;
     } else {
       // What it saw stands over what a forecast or WeatherAPI guessed: no fog there, no fog here
-      if (rec.code === 45 || rec.code === 48) out.code = codeFromCloud(rec.cloud);
+      if (rec.code === 45 || rec.code === 48) out.code = codeFromCloud(out.cloud);
       if (seen.has('FG') || seen.has('BR')) out.obscured = 'mist';
       else if (seen.has('FU')) out.obscured = 'smoke';
       else if (seen.has('HZ')) out.obscured = 'haze';
@@ -423,7 +437,59 @@
       else delete out.obscured;
     }
     out.obs = { id: String(obs.id || '').slice(0, 8), t: obs.t };
+    if (sky) out.obs.sky = String(obs.sky).slice(0, 60);
     return out;
+  };
+
+  /**
+   * The low, middle and high cloud (%) and the total from a METAR's sky groups ("FEW015 SCT100", "BKN008CB", "SKC" ...),
+   * laid over `rec`'s: null when they say nothing about the cloud (none given, or the sky hidden by fog, VV, which the
+   * fog stays with). Each layer counts as a share of the sky: FEW 1-2 eighths, SCT 3-4, BKN 5-7, OVC all of it. It is low
+   * under 6,500 ft, high above 20,000 ft and middle between. A METAR's amounts count everything at and below a layer, so a
+   * height's own cloud is what it adds to the sky over what is below it. Low and middle cloud come from the report, none
+   * where it lists none; high cloud only when it lists a layer that high (cirrus is missed at night, and an automatic
+   * station sees only up to about 12,000 ft), the forecast's otherwise. SKC: no cloud at all. CLR and NCD: none up to the
+   * middle. NSC and CAVOK: no low cloud; the middle and high cloud as the forecast says.
+   */
+  const SKY_SHARE = { FEW: 0.19, SCT: 0.44, BKN: 0.75, OVC: 1 };
+  LE.skyFromMetar = function (sky, rec = {}) {
+    const groups = String(sky || '').toUpperCase().split(/\s+/).filter(Boolean);
+    if (!groups.length || groups.some((g) => /^VV/.test(g))) return null;
+    const num = (v) => typeof v === 'number' && isFinite(v);
+    const pct = (v) => (num(v) ? Math.min(Math.max(v, 0), 100) / 100 : null);
+    let low = 0;
+    let mid = 0;
+    let high = pct(rec.cloudHigh);
+    if (groups.includes('SKC')) high = 0;
+    else if (groups.some((g) => g === 'NSC' || g === 'CAVOK')) {
+      mid = pct(rec.cloudMid) ?? 0;
+    } else if (!groups.some((g) => g === 'CLR' || g === 'NCD')) {
+      const layers = [];
+      for (const g of groups) {
+        const m = /^(FEW|SCT|BKN|OVC)(\d{3})/.exec(g);
+        if (m) layers.push({ share: SKY_SHARE[m[1]], ft: Number(m[2]) * 100 });
+      }
+      if (!layers.length) return null;
+      layers.sort((a, b) => a.ft - b.ft);
+      // the sky covered at and below the top of each height (low, middle, high), from the ground up
+      const upTo = [0, 0, 0];
+      const any = [false, false, false];
+      for (const l of layers) {
+        const k = l.ft < 6500 ? 0 : l.ft <= 20000 ? 1 : 2;
+        any[k] = true;
+        for (let j = k; j < 3; j++) upTo[j] = Math.max(upTo[j], l.share);
+      }
+      const own = (k) => {
+        const below = k ? upTo[k - 1] : 0;
+        return below >= 0.999 ? 0 : Math.max(0, 1 - (1 - upTo[k]) / (1 - below));
+      };
+      low = own(0);
+      mid = own(1);
+      if (any[2]) high = own(2);
+    }
+    const cloud = 100 * (1 - (1 - low) * (1 - mid) * (1 - (high ?? 0)));
+    const r = (v) => Math.round(v * 10) / 10;
+    return { low: r(low * 100), mid: r(mid * 100), high: high == null ? null : r(high * 100), cloud: r(cloud) };
   };
 
   /** The weather code for a sky with this much cloud (%) and nothing falling. */

@@ -633,5 +633,43 @@ if (want('hold')) {
   }
 }
 
+// ---------------------------------------------------------------- the moon in the picture's sky
+if (want('moon')) {
+  // 2026-11-22, Uttara: "outside is dark and i can see the moon now", 50 degrees up, where the picture's sky (22 degrees)
+  // never reached. It is drawn high on the right screen, beside the panel in the right-top corner, not under it.
+  console.log('--- the moon at 19:00 on 2026-11-22 at Uttara, in a clear sky');
+  const page = await open('geo=0&lat=23.867&lon=90.4&time=19:00&date=2026-11-22&weather=clear&quality=balanced&life=0&test=1&corner=right-top&panelsize=small');
+  try {
+    const say = (expr) => page.evaluate(expr);
+    await say(`T.frames(3)`);
+    const at = await say(`(() => {
+      const s = __le.env.state, v = __le.renderer.viewInfo(), d = s.moonShowDir;
+      const p = document.getElementById('panel').getBoundingClientRect(), c = document.getElementById('scene').getBoundingClientRect();
+      return { x: v.w / 2 + Math.atan2(d[0], d[2]) / v.pxAng, y: v.horizonY * v.h + d[1] / Math.hypot(d[0], d[2]) / v.pxAng, w: v.w, h: v.h,
+        alt: s.astro.moonAltDeg, vis: s.moonVis, panel: [(p.left - c.left) / c.width, (p.top - c.top) / c.height, (p.right - c.left) / c.width, (p.bottom - c.top) / c.height] };
+    })()`);
+    check(at.alt > 45 && at.vis > 0.99, `the moon is up, ${at.alt.toFixed(1)} degrees`);
+    check(at.x > at.w / 2 && at.x < at.w && at.y > at.h * 0.85 && at.y < at.h - 4, `drawn high on the right screen (${at.x.toFixed(0)}, ${at.y.toFixed(0)} of ${at.w}×${at.h})`);
+    const fx = at.x / at.w;
+    const fy = 1 - at.y / at.h;
+    const [x0, y0, x1, y1] = at.panel;
+    check(x1 > x0 && !(fx > x0 - 0.005 && fx < x1 + 0.005 && fy > y0 - 0.01 && fy < y1 + 0.01), `not under the panel (${at.panel.map((v) => v.toFixed(3)).join(' ')})`);
+    const X = Math.round(at.x);
+    const disk = await say(`T.grab(${Math.round(at.y) - 6}, 13).then((f) => {
+      const L = T.lum(f); let peak = 0; const sky = [];
+      for (let r = 0; r < f.h; r++) for (let c = 0; c < f.w; c++) {
+        const v = L[r * f.w + c];
+        if (Math.abs(c - ${X}) <= 5) peak = Math.max(peak, v); else if (Math.abs(c - ${X}) > 40 && Math.abs(c - ${X}) < 200) sky.push(v);
+      }
+      sky.sort((a, b) => a - b);
+      return { peak, sky: sky[sky.length >> 1] };
+    })`);
+    check(disk.peak > disk.sky + 60, `a bright disk there (peak ${disk.peak.toFixed(0)} against the sky's ${disk.sky.toFixed(0)})`);
+    noErrors(page);
+  } finally {
+    await page.close();
+  }
+}
+
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nall checks passed');
 process.exitCode = failures ? 1 : 0;

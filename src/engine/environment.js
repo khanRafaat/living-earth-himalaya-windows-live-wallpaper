@@ -279,6 +279,8 @@
         time: 0,
         sunDir: new Float32Array(3),
         moonDir: new Float32Array(3),
+        moonShowDir: new Float32Array(3), // where the moon's disk is drawn (Environment.moonShown); its light stays on moonDir
+        moonShowSun: new Float32Array(3), // the sun as seen from the drawn disk, so its phase and lit side stay true
         keyDir: new Float32Array(3),
         lightMarchDir: new Float32Array(3),
         keyIsSun: 1,
@@ -324,6 +326,22 @@
     setLocation(loc) {
       this.loc = loc;
       this._astroAt = -1e9;
+      this._moonPath = null;
+    }
+
+    /**
+     * The picture the moon is drawn into: the renderer's viewInfo() ({ w, h, hfov, pxAng, horizonY }), and the info
+     * panel as fractions of the canvas from its top left ({ x0, y0, x1, y1 }), or null with no panel. main.js sets it on
+     * start, on a resize and when the panel moves or changes size.
+     */
+    setMoonView(view, keepOut = null) {
+      const v = view ? { w: view.w, h: view.h, hfov: view.hfov, pxAng: view.pxAng, horizonY: view.horizonY } : null;
+      const k = keepOut ? { x0: keepOut.x0, y0: keepOut.y0, x1: keepOut.x1, y1: keepOut.y1 } : null;
+      const same = (a, b) => (!a && !b) || (!!a && !!b && Object.keys(b).every((n) => Math.abs(a[n] - b[n]) < 1e-6));
+      if (same(this._moonView, v) && same(this._moonKeepOut, k)) return; // looked at every second: mostly unchanged
+      this._moonView = v;
+      this._moonKeepOut = k;
+      this._astroAt = -1e9;
     }
 
     /** The sun and moon worked out afresh at the next update: after a pause the scene's time has hardly moved on. */
@@ -336,8 +354,14 @@
       this.recordSource = source;
     }
 
-    /** dtSec: real seconds since last update. */
-    update(now, dtSec, timeSec) {
+    /**
+     * dtSec: real seconds since last update. weatherDt: how far the weather itself eases towards the data, when that is
+     * more than dtSec: held still while you work, the page draws one picture a minute with dtSec kept at 25 s (so the
+     * clouds' shapes do not jump), and the weather took 2.4 times as long as real weather to arrive, so one 15-minute
+     * update was often not on the screen before the next (2026-11-22). It is eased in steps of at most 20 s, so even
+     * ten minutes of it never counts as a gap that snaps.
+     */
+    update(now, dtSec, timeSec, weatherDt = dtSec) {
       const s = this.state;
       const cfg = this.cfg;
       const heading = cfg.render.heading;
@@ -355,42 +379,48 @@
 
       // ---------- weather ----------
       const rec = this.record || PRESETS.partly;
-      const target = weatherTargets(rec, mistLift(a, now));
+      const goal = weatherTargets(rec, mistLift(a, now));
       const snap = !this.w || dtSec > 30;
       if (snap) {
-        this.w = Object.assign({}, target);
-        this.wLead = Object.assign({}, target);
+        this.w = Object.assign({}, goal);
+        this.wLead = Object.assign({}, goal);
       }
       const w = this.w;
       const lead = this.wLead;
       const trans = Math.max(5, cfg.atmosphere.transitionSeconds);
-      const pace = trans * weatherPace(target, Math.hypot(w.deckE, w.deckN));
-      sequenceWeather(target, w);
-      // Two smoothing stages give each change a gentle start and finish, not a sudden one
-      const stage = (k, tau) => {
-        const f = snap ? 1 : 1 - Math.exp((-2 * dtSec) / tau);
-        lead[k] += (target[k] - lead[k]) * f;
-        w[k] += (lead[k] - w[k]) * f;
-      };
-      for (const k in PACE) stage(k, PACE[k][target[k] > lead[k] ? 0 : 1] * pace);
-      // winds are smoothed as vectors, so a change of direction takes the short way round
-      for (const k of WIND_KEYS) stage(k, trans);
-      // wind direction: rotate along the shortest arc
-      let dd = ((target.windDir - w.windDir + 540) % 360) - 180;
-      w.windDir = (w.windDir + dd * (snap ? 1 : 1 - Math.exp(-dtSec / trans)) + 360) % 360;
+      const ease = snap ? 0 : Math.max(dtSec, Math.min(weatherDt, 600)) || 0;
+      const steps = snap ? 1 : Math.max(1, Math.ceil(ease / 20));
+      const h = ease / steps;
+      for (let i = 0; i < steps; i++) {
+        const target = Object.assign({}, goal); // sequenceWeather changes it to suit where the weather is now
+        const pace = trans * weatherPace(target, Math.hypot(w.deckE, w.deckN));
+        sequenceWeather(target, w);
+        // Two smoothing stages give each change a gentle start and finish, not a sudden one
+        const stage = (k, tau) => {
+          const f = snap ? 1 : 1 - Math.exp((-2 * h) / tau);
+          lead[k] += (target[k] - lead[k]) * f;
+          w[k] += (lead[k] - w[k]) * f;
+        };
+        for (const k in PACE) stage(k, PACE[k][target[k] > lead[k] ? 0 : 1] * pace);
+        // winds are smoothed as vectors, so a change of direction takes the short way round
+        for (const k of WIND_KEYS) stage(k, trans);
+        // wind direction: rotate along the shortest arc
+        const dd = ((target.windDir - w.windDir + 540) % 360) - 180;
+        w.windDir = (w.windDir + dd * (snap ? 1 : 1 - Math.exp(-h / trans)) + 360) % 360;
 
-      // wetness: quick to soak, slow to dry
-      const wetT = w.rain > 0.05 ? 1 : 0;
-      const wetTau = (wetT > this.wet ? 150 : 2400) / this.pace;
-      this.wet += (wetT - this.wet) * (snap ? (wetT ? 1 : 0) : 1 - Math.exp(-dtSec / wetTau));
-      // rain in the air, for the rainbow: there within half a minute of the rain, gone about five minutes after it
-      const bowTau = (w.rain > this.bowRain ? 30 : 300) / this.pace;
-      this.bowRain += (w.rain - this.bowRain) * (snap ? 1 : 1 - Math.exp(-dtSec / bowTau));
-      // fresh snow lowers the snow line in a quarter of an hour or so (snow settles on the tree and the rock while it
-      // falls), and melts back over several hours
-      const fsT = w.snow > 0.05 ? 1 : 0;
-      const fsTau = (fsT > this.freshSnow ? 900 : 14400) / this.pace;
-      this.freshSnow += (fsT - this.freshSnow) * (snap ? fsT : 1 - Math.exp(-dtSec / fsTau));
+        // wetness: quick to soak, slow to dry
+        const wetT = w.rain > 0.05 ? 1 : 0;
+        const wetTau = (wetT > this.wet ? 150 : 2400) / this.pace;
+        this.wet += (wetT - this.wet) * (snap ? (wetT ? 1 : 0) : 1 - Math.exp(-h / wetTau));
+        // rain in the air, for the rainbow: there within half a minute of the rain, gone about five minutes after it
+        const bowTau = (w.rain > this.bowRain ? 30 : 300) / this.pace;
+        this.bowRain += (w.rain - this.bowRain) * (snap ? 1 : 1 - Math.exp(-h / bowTau));
+        // fresh snow lowers the snow line in a quarter of an hour or so (snow settles on the tree and the rock while it
+        // falls), and melts back over several hours
+        const fsT = w.snow > 0.05 ? 1 : 0;
+        const fsTau = (fsT > this.freshSnow ? 900 : 14400) / this.pace;
+        this.freshSnow += (fsT - this.freshSnow) * (snap ? fsT : 1 - Math.exp(-h / fsTau));
+      }
 
       // wind → drift (km): each layer moves with the real wind at its height. cloudSpeed 1 is real
       // speed; higher values are a time-lapse.
@@ -603,6 +633,7 @@
       };
       toScene(sun.azimuthDeg, sun.altitude, s.sunDir);
       toScene(moon.azimuthDeg, moon.altitude, s.moonDir);
+      this._placeMoon(now, heading, moon);
 
       const sunAltDeg = sun.altitude / D2R;
       const moonAltDeg = moon.altitude / D2R;
@@ -719,10 +750,172 @@
       this.flash = f * storm;
     }
 
+    /**
+     * Where the moon's disk is drawn: s.moonShowDir, and s.moonShowSun, the sun's direction turned with it (the
+     * rotation that takes moonDir to moonShowDir), so its phase and its lit side are as they are in the sky.
+     */
+    _placeMoon(now, heading, moon) {
+      const s = this.state;
+      const view = this._moonView;
+      let rel = wrapPi((moon.azimuthDeg - heading) * D2R);
+      let alt = moon.altitude;
+      if (view) {
+        rel = this._moonBearing(now, heading, view.hfov / 2 - MOON_EDGE);
+        [rel, alt] = Environment.moonShown(rel, alt, view, 0, this._moonKeepOut);
+      }
+      const c = Math.cos(alt);
+      const d = s.moonShowDir;
+      d[0] = Math.sin(rel) * c;
+      d[1] = Math.sin(alt);
+      d[2] = Math.cos(rel) * c;
+      rotateLike(s.moonDir, d, s.sunDir, s.moonShowSun);
+    }
+
+    /**
+     * The bearing the moon's disk is drawn at, from the middle of the picture (radians). Along its path, ten minutes at
+     * a time: its own bearing while it is in the picture (`band` either side of the middle); out of it, the edge it left
+     * by, or the side it rose on if it was never in it since rising; and below the horizon, where it set or where it
+     * will rise, whichever is nearer. Then that is averaged over the two hours either side of now. A path that is
+     * straight across the picture is where it is; but a moon passing near the zenith, whose bearing turns half way
+     * round in half an hour (at Dhaka several nights a month), crosses the picture in some three hours instead of
+     * racing across it, and it slows into an edge rather than stopping there. The path is worked out again every ten
+     * minutes.
+     */
+    _moonBearing(now, heading, band) {
+      const t = now.getTime();
+      const g0 = Math.floor(t / MOON_STEP) * MOON_STEP - MOON_BACK;
+      let c = this._moonPath;
+      if (!c || c.g0 !== g0 || c.heading !== heading || c.band !== band) {
+        const A = LE.astronomy;
+        const { lat, lon } = this.loc;
+        const n = Math.round((MOON_BACK + MOON_STEP + MOON_SPAN) / MOON_STEP) + 1;
+        const held = new Float64Array(n);
+        const rel = new Float64Array(n);
+        const up = new Uint8Array(n);
+        for (let i = 0; i < n; i++) {
+          const m = A.moonPosition(new Date(g0 + i * MOON_STEP), lat, lon);
+          rel[i] = wrapPi((m.azimuthDeg - heading) * D2R);
+          up[i] = m.altitude >= -D2R ? 1 : 0;
+        }
+        let side = 0; // the edge it is held at: -1 left, 1 right
+        for (let i = 0; i < n; i++) {
+          if (!up[i] || Math.abs(rel[i]) <= band) {
+            held[i] = clamp(rel[i], -band, band);
+            side = 0;
+          } else {
+            side = side || Math.sign(rel[i]) || 1;
+            held[i] = side * band;
+          }
+        }
+        // below the horizon, where it was or will be when last or next up
+        const last = new Int32Array(n).fill(-1);
+        for (let i = 0, j = -1; i < n; i++) last[i] = up[i] ? (j = i) : j;
+        for (let i = n - 1, j = -1; i >= 0; i--) {
+          if (up[i]) j = i;
+          else if (j >= 0 || last[i] >= 0) held[i] = held[j < 0 || (last[i] >= 0 && i - last[i] <= j - i) ? last[i] : j];
+        }
+        c = this._moonPath = { g0, heading, band, held };
+      }
+      let sum = 0;
+      let weight = 0;
+      for (let i = 0; i < c.held.length; i++) {
+        const w = 1 - Math.abs(c.g0 + i * MOON_STEP - t) / MOON_SPAN;
+        if (w <= 0) continue;
+        sum += w * c.held[i];
+        weight += w;
+      }
+      return weight > 0 ? sum / weight : 0;
+    }
+
+    /**
+     * Where the moon's disk is drawn, for a moon at bearing `relAz` from the middle of the picture and altitude `alt`
+     * (radians): [bearing, altitude]. Only the disk moves; its light on the land and the clouds, the shadows and when it
+     * shows stay where it really is. The picture's sky reaches only 22 degrees up (2026-11-22, the user: "outside is dark
+     * and i can see the moon now", and the wallpaper had none), so
+     *   - up to 12 degrees it is where it is, and higher it rises ever more slowly towards 3 degrees under the top edge;
+     *   - across, it is where it is while in the picture, at least 4 degrees in from its sides; out of the picture it
+     *     stays at the side it left by (`side`, -1 left, 1 right) until it sets, so it never jumps across as it passes
+     *     behind the viewer;
+     *   - it keeps out from under the info panel (`keepOut`, fractions of the canvas from the top left): the sky between
+     *     the panel and the far side is squeezed into the stretch beside it, at the panel's height and less so below it,
+     *     so the moon slows down there rather than jumping round the panel.
+     * `view` is the renderer's viewInfo().
+     */
+    static moonShown(relAz, alt, view, side = 0, keepOut = null) {
+      const top = Math.atan((1 - view.horizonY) * view.h * view.pxAng);
+      const a0 = MOON_TRUE_UP;
+      const room = Math.max(top - MOON_UNDER_TOP - a0, 0.01);
+      const up = alt > a0 ? a0 + room * (1 - Math.exp(-(alt - a0) / room)) : alt;
+      const band = view.hfov / 2 - MOON_EDGE;
+      let rel = Math.abs(relAz) > band ? (side || Math.sign(relAz) || 1) * band : relAz;
+      if (keepOut && keepOut.x1 > keepOut.x0 && keepOut.y1 > keepOut.y0) {
+        const W = view.w;
+        const H = view.h;
+        const r = MOON_ROOM / view.pxAng; // the disk and its glow, in pixels
+        const x = W / 2 + rel / view.pxAng;
+        const y = H - (view.horizonY * H + Math.tan(Math.max(up, -0.2)) / view.pxAng); // from the top
+        const y0 = keepOut.y0 * H - r;
+        const y1 = keepOut.y1 * H + r;
+        const ramp = 10 * r; // (a setting moon comes out from beside the panel over half an hour or so)
+        const k = y < y0 ? smooth(y0 - ramp, y0, y) : y > y1 ? 1 - smooth(y1, y1 + ramp, y) : 1;
+        if (k > 0) {
+          const right = keepOut.x0 + keepOut.x1 > 1; // the panel is on the right half: squeezed towards the left
+          const dir = right ? 1 : -1;
+          const edge = right ? keepOut.x0 * W - r : keepOut.x1 * W + r; // where the free sky ends beside the panel
+          const far = W / 2 + (dir * band) / view.pxAng; // as far out as the disk goes
+          const from = edge - dir * Math.max(Math.abs(far - edge), r) * 2; // where the squeezed stretch begins
+          const t = (x - from) / (far - from);
+          if (t > 0 && (far - edge) * dir > 0) {
+            const xs = from + (edge - from) * Math.min(t, 1);
+            rel = (x + (xs - x) * k - W / 2) * view.pxAng;
+          }
+        }
+      }
+      return [rel, up];
+    }
+
     static presets() {
       return PRESETS;
     }
   }
+
+  // The moon's disk (Environment.moonShown): its true height up to 12 degrees; at most 3 degrees under the picture's
+  // top edge; 4 degrees in from its sides; and room round it for its glow
+  const MOON_TRUE_UP = 12 * D2R;
+  const MOON_UNDER_TOP = 3 * D2R;
+  const MOON_EDGE = 4 * D2R;
+  const MOON_ROOM = 0.9 * D2R;
+  const MOON_STEP = 600e3; // its path ten minutes at a time,
+  const MOON_SPAN = 7200e3; // averaged over the two hours either side of now,
+  const MOON_BACK = 16 * 3600e3; // looking back far enough to see where it rose
+  const wrapPi = (a) => a - 2 * Math.PI * Math.floor((a + Math.PI) / (2 * Math.PI));
+
+  /** v turned by the rotation that takes the unit vector a to the unit vector b (Rodrigues), into out. */
+  function rotateLike(a, b, v, out) {
+    const kx = a[1] * b[2] - a[2] * b[1];
+    const ky = a[2] * b[0] - a[0] * b[2];
+    const kz = a[0] * b[1] - a[1] * b[0];
+    const sn = Math.hypot(kx, ky, kz);
+    const cs = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const v0 = v[0];
+    const v1 = v[1];
+    const v2 = v[2];
+    if (sn < 1e-9) {
+      out[0] = v0;
+      out[1] = v1;
+      out[2] = v2;
+      return out;
+    }
+    const x = kx / sn;
+    const y = ky / sn;
+    const z = kz / sn;
+    const dot = (x * v0 + y * v1 + z * v2) * (1 - cs);
+    out[0] = v0 * cs + (y * v2 - z * v1) * sn + x * dot;
+    out[1] = v1 * cs + (z * v0 - x * v2) * sn + y * dot;
+    out[2] = v2 * cs + (x * v1 - y * v0) * sn + z * dot;
+    return out;
+  }
+  LE.rotateLike = rotateLike;
 
   /**
    * How strong a rainbow is, 0 to 1: rain in the air (0 to 1), direct sun on it (little cloud left: a clearing shower

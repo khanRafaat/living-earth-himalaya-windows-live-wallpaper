@@ -51,8 +51,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Khan Rafaat Abtahe")]
 [assembly: AssemblyCopyright("© 2026 Khan Rafaat Abtahe. MIT licence")]
 [assembly: AssemblyDescription("Living Earth Himalaya live wallpaper. Author: Khan Rafaat Abtahe")]
-[assembly: AssemblyVersion("2.7.1.0")]
-[assembly: AssemblyFileVersion("2.7.1.0")]
+[assembly: AssemblyVersion("2.8.0.0")]
+[assembly: AssemblyFileVersion("2.8.0.0")]
 
 namespace LivingEarth
 {
@@ -541,15 +541,16 @@ namespace LivingEarth
         public sealed class Report
         {
             public string Id = "", Name = "", Wx = "";
+            public string Sky = ""; // the sky groups as METAR writes them: "FEW015 SCT100", "BKN008CB", "VV002", "CAVOK", ...
             public double Km, Temp = double.NaN, Dewp = double.NaN, Vis = double.NaN; // Vis in metres, 9999 for 10 km or more
             public long Time; // when it was observed, ms since 1970 (UTC)
 
-            /// <summary>For state.js: { id, name, km, t, temp, dewp, vis, wx }.</summary>
+            /// <summary>For state.js: { id, name, km, t, temp, dewp, vis, wx, sky }.</summary>
             public string Js()
             {
                 return "{ id: " + Q(Id) + ", name: " + Q(Name) + ", km: " + Locator.F(Math.Round(Km, 1)) +
                        ", t: " + Time.ToString(CultureInfo.InvariantCulture) + ", temp: " + Num(Temp) + ", dewp: " + Num(Dewp) +
-                       ", vis: " + Num(Vis) + ", wx: " + Q(Wx) + " }";
+                       ", vis: " + Num(Vis) + ", wx: " + Q(Wx) + ", sky: " + Q(Sky) + " }";
             }
 
             public string Text
@@ -559,7 +560,8 @@ namespace LivingEarth
                     return Id + " " + Km.ToString("0.#", CultureInfo.InvariantCulture) + " km, " +
                            new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(Time).ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture) +
                            ", visibility " + (double.IsNaN(Vis) ? "?" : Vis >= 9999 ? "10 km or more" : Vis.ToString("0", CultureInfo.InvariantCulture) + " m") +
-                           (Wx.Length > 0 ? ", " + Wx : "") + (double.IsNaN(Temp) ? "" : ", " + Temp.ToString("0", CultureInfo.InvariantCulture) + " °C");
+                           (Wx.Length > 0 ? ", " + Wx : "") + (Sky.Length > 0 ? ", " + Sky : "") +
+                           (double.IsNaN(Temp) ? "" : ", " + Temp.ToString("0", CultureInfo.InvariantCulture) + " °C");
                 }
             }
 
@@ -637,9 +639,60 @@ namespace LivingEarth
                     Dewp = Num(d, "dewp"),
                     Vis = Visibility(d),
                     Wx = Clip(Str(d, "wxString"), 40),
+                    Sky = Clip(SkyOf(d), 60),
                 };
             }
             return best;
+        }
+
+        private static readonly Regex SkyGroup = new Regex(@"^(?:(FEW|SCT|BKN|OVC)(\d{3})(CB|TCU)?(?:///)?|VV(\d{3})|(SKC|CLR|NCD|NSC|CAVOK))$");
+        private static readonly Regex Trend = new Regex(@"^(?:TEMPO|BECMG|NOSIG|RMK|PROB\d\d)$");
+
+        /// <summary>
+        /// The sky groups of a report as METAR writes them, from the ground up: "FEW015 SCT100", "BKN008CB", "VV002", or
+        /// one of SKC, CLR, NCD, NSC and CAVOK; "" when it gives none. Read from the report's own text up to its trend
+        /// (TEMPO, BECMG, NOSIG, RMK), because the site's JSON leaves out CB and TCU and gives NSC and NCD as CLR; from the
+        /// JSON's clouds when there is no text. A layer whose height is not known (BKN///) is left out.
+        /// </summary>
+        public static string SkyOf(Dictionary<string, object> d)
+        {
+            var groups = new List<string>();
+            string raw = d == null ? "" : Str(d, "rawOb");
+            if (raw.Length > 0)
+            {
+                foreach (string tok in raw.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (Trend.IsMatch(tok)) break;
+                    Match m = SkyGroup.Match(tok);
+                    if (!m.Success) continue;
+                    if (m.Groups[1].Success) groups.Add(m.Groups[1].Value + m.Groups[2].Value + m.Groups[3].Value);
+                    else if (m.Groups[4].Success) groups.Add("VV" + m.Groups[4].Value);
+                    else groups.Add(m.Groups[5].Value);
+                }
+                return string.Join(" ", groups);
+            }
+            object o;
+            var clouds = d != null && d.TryGetValue("clouds", out o) ? o as object[] : null;
+            if (clouds != null)
+            {
+                foreach (object c in clouds)
+                {
+                    var l = c as Dictionary<string, object>;
+                    if (l == null) continue;
+                    string cover = Str(l, "cover").ToUpperInvariant();
+                    double ft = Num(l, "base");
+                    if (double.IsNaN(ft) || ft < 0 || ft > 99900) continue;
+                    string h = ((int)Math.Round(ft / 100)).ToString("000", CultureInfo.InvariantCulture);
+                    if (cover == "FEW" || cover == "SCT" || cover == "BKN" || cover == "OVC") groups.Add(cover + h);
+                    else if (cover == "OVX") groups.Add("VV" + h);
+                }
+            }
+            if (groups.Count == 0 && d != null)
+            {
+                string cover = Str(d, "cover").ToUpperInvariant();
+                if (cover == "CAVOK" || cover == "CLR" || cover == "SKC") groups.Add(cover);
+            }
+            return string.Join(" ", groups);
         }
 
         /// <summary>
@@ -1242,6 +1295,7 @@ namespace LivingEarth
         private int placeTick, quickDeaths, reorders, placeEvery;
         private readonly WindowsBackground background; // null in tests, which must never change the real one
         private DateTime nextBackground = DateTime.MinValue;
+        private string backgroundWaiting; // a still that waits until nobody can see the desktop (UpdateBackground)
 
         private long lastIdle, lastKernel, lastUser;
         private int busyFor;
@@ -1595,6 +1649,11 @@ namespace LivingEarth
 
         // Windows' own background: the still for where the sun is now, checked every minute. Setting it makes Explorer
         // put a new layer in front of this wallpaper, so the window goes back on top every second for a while after.
+        // That layer fades from the old still to the new one in front of the live scene, and the call waits for the fade:
+        // for half a second the desktop showed the day still, the "morning" look, at golden hour and again at dusk
+        // (2026-11-22, the user: "golden hour wallpaper become morning for half sec then again back to golden hour").
+        // So while the live scene is up, a new still waits until no screen shows the desktop; while it isn't, the still
+        // is what shows, and it changes at once.
         private void UpdateBackground(DateTime now)
         {
             nextBackground = now.AddMinutes(1);
@@ -1602,6 +1661,13 @@ namespace LivingEarth
             Place p = settings.Current;
             // with no place yet, the page's default: Dhaka
             string still = WindowsBackground.StillFor(now, p != null ? p.Lat : 23.7104, p != null ? p.Lon : 90.4074);
+            if (attached && !background.Shows(still) && !DesktopHidden())
+            {
+                if (backgroundWaiting != still) Log("Windows background: the " + still + " still is waiting until the desktop is covered");
+                backgroundWaiting = still;
+                return;
+            }
+            backgroundWaiting = null;
             if (background.Show(still, SystemInformation.MonitorCount > 1)) PlaceSoon();
         }
 
@@ -1710,6 +1776,7 @@ namespace LivingEarth
 
         // ------------------------------------------------------------------ is the desktop what you look at
         private const double DesktopShare = 0.5; // a screen with at least this much of it under no window shows the desktop
+        private const double HiddenShare = 0.01; // ...and with no more than this, it hides it (UpdateBackground)
         private const int MinAppArea = 200 * 100; // a window smaller than this on the screens is a bar or a badge, not work
 
         /**
@@ -1766,6 +1833,25 @@ namespace LivingEarth
             foreach (Rectangle a in workingAreas)
                 if (VisibleShare(a, windows) >= DesktopShare) return true;
             return false;
+        }
+
+        internal Func<bool> HiddenTest = null; // tests answer DesktopHidden() themselves, so they never depend on the real screens
+
+        /** Can nobody see the desktop: are all the screens' working areas under windows, but for a sliver (HiddenShare)? */
+        private bool DesktopHidden()
+        {
+            if (HiddenTest != null) return HiddenTest();
+            Screen[] all = Screen.AllScreens;
+            var areas = new Rectangle[all.Length];
+            for (int i = 0; i < all.Length; i++) areas[i] = all[i].WorkingArea;
+            return DesktopHidden(areas, CoveringWindows());
+        }
+
+        internal static bool DesktopHidden(Rectangle[] workingAreas, List<Rectangle> windows)
+        {
+            foreach (Rectangle a in workingAreas)
+                if (VisibleShare(a, windows) > HiddenShare) return false;
+            return true;
         }
 
         /** How much of area no window covers, from 0 to 1. */
@@ -2064,6 +2150,8 @@ namespace LivingEarth
 
         private void StartEdge(DateTime now)
         {
+            // The still shows until the scene is up: one that waited for the desktop to be covered goes up now
+            if (!attached && backgroundWaiting != null) UpdateBackground(now);
             string edge = FindEdge();
             if (edge == null)
             {
@@ -3651,6 +3739,14 @@ namespace LivingEarth
             double az = Math.Atan2(Math.Sin(H), Math.Cos(H) * Math.Sin(phi) - Math.Tan(dec) * Math.Cos(phi));
             altDeg = alt / rad;
             azDeg = ((az / rad + 180) % 360 + 360) % 360;
+        }
+
+        /// <summary>Is this still up already (or is there none of that name to put up)?</summary>
+        public bool Shows(string name)
+        {
+            if (!File.Exists(Path.Combine(stillsDir, name + ".jpg"))) return true;
+            string shown;
+            return IsOurs(Read()[0]) && Load().TryGetValue("shown", out shown) && shown == name;
         }
 
         /// <summary>Puts this still up, unless it is up already. Returns true if it changed the background.</summary>

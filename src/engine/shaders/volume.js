@@ -74,6 +74,7 @@ uniform float uFrame;
 uniform float uBlend;
 uniform vec3 uSunDir;
 uniform vec3 uMoonDir;
+uniform vec3 uMoonShowDir; // where the moon's disk is drawn: the clouds' bright edges are round it
 uniform vec3 uSunE;
 uniform vec3 uMoonE;
 uniform vec3 uLightMarchDir;
@@ -335,7 +336,7 @@ void main() {
   // under an overcast deck the horizon is grey, not sky-blue
   skyHor = mix(skyHor, vec3(dot(skyHor, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.93, 0.96, 1.0), uOvercast * 0.92);
   float cosS = dot(rd, uSunDir);
-  float cosM = dot(rd, uMoonDir);
+  float cosM = dot(rd, uMoonShowDir);
   // light that filters through an overcast deck: diffuse and grey, not sky-blue
   float lz = dot(skyZen, vec3(0.2126, 0.7152, 0.0722));
   vec3 greyAmb = (uSunE * transmittance(uCloudTop, uSunDir.y) * clamp(uSunDir.y + 0.08, 0.0, 1.0) * 0.16

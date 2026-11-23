@@ -529,7 +529,34 @@
       return { birds, lead, dir, speed: 0.017, age: 0, maxAge: (2 * 1.6 + 0.6) / 0.017 };
     }
 
+    /**
+     * How much the weather lets birds (and the helicopter) fly, 0 to 1. Fog grounds them, mist does not: the valley fog
+     * from a short visibility (mist, METAR "BR") stays at 0.75 or less and lies below the viewpoint, and birds fly over
+     * it; only fog reported as fog (0.8, 0.9) takes them in. Before, mist at 1.4 km at Dhaka airport (2026-11-18) left
+     * 12 % of the birds, which rounded to none.
+     */
+    static shelter(w) {
+      return (1 - smooth(0.1, 0.4, w.rain)) * (1 - smooth(0.76, 0.88, w.fog)) * (1 - w.storm) * (1 - smooth(0.2, 0.6, w.snow));
+    }
+
     // ------------------------------------------------------------ update
+    /**
+     * Held still while you work (main.js holdPicture) the scene's own time stands still, so the birds, the tree, the
+     * traffic and the goats stay where they were; but aircraft go on in real time, `dt` being the real seconds since the
+     * last held picture. Before, they counted only the minutes the desktop was in sight, and with an app in front most
+     * of the day no flight was ever seen (2026-11-22, the user: "no single plane flown in wallpaper"). Now each minute's
+     * picture has the flight further along, and new ones come at their own rate.
+     */
+    catchUpAir(dt, state, view) {
+      this._view = view;
+      this.state = state;
+      if (dt > 0) {
+        this._stepPlanes(dt, state);
+        this._stepHeli(dt, state, smooth(-5, 3, state.astro.sunAltDeg) * Life.shelter(state.weather));
+      }
+      this._write(state);
+    }
+
     update(dt, state, view) {
       this._view = view;
       this.state = state;
@@ -548,10 +575,7 @@
       const w = state.weather;
       const sunAlt = a.sunAltDeg;
       const daylight = smooth(-5, 3, sunAlt);
-      // Fog grounds them, mist does not: the valley fog from a short visibility (mist, METAR "BR") stays at 0.75 or
-      // less and lies below the viewpoint, and birds fly over it; only fog reported as fog (0.8, 0.9) takes them in.
-      // Before, mist at 1.4 km at Dhaka airport (2026-11-18) left 12 % of the birds, which rounded to none.
-      const shelter = (1 - smooth(0.1, 0.4, w.rain)) * (1 - smooth(0.76, 0.88, w.fog)) * (1 - w.storm) * (1 - smooth(0.2, 0.6, w.snow));
+      const shelter = Life.shelter(w);
       // Turned off: the birds go at once rather than flying away, since that is what was asked
       if (!this.birds) {
         this.raptors = [];
@@ -1647,8 +1671,9 @@
       // a flash of the main beam shows by day as well
       const flashing = c.flash > 0.85 || (c.flash > 0.25 && c.flash < 0.6) ? 1 : 0;
       const lampOn = Math.max(lights, flashing * 0.6);
-      const lamp = lampOn * R.headlight(facing);
       const beam = Math.max(c.beam, flashing);
+      const head = Life.headGlow(dist, facing, c.beam, flashing);
+      const lamp = lampOn * R.headlight(facing) * head.fall;
       // tail lights: on whenever the headlights are, and brighter when braking, by day as well
       const rear = R.taillight(facing);
       const tail = rear * Math.max(lights * 0.5, c.brake * (0.3 + 0.7 * lights)); // by day a brake light is a small red point
@@ -1660,8 +1685,9 @@
       let qy = Math.abs(ay) + Math.abs(by) + halfH + 1.5;
       // room for the whole glow, so it fades out before the edge of the patch it is drawn on
       if (lamp > 0.003) {
-        qx = Math.max(qx, Math.abs(ax) + Math.abs(bx) + 12 + 8 * beam);
-        qy = Math.max(qy, Math.abs(ay) + Math.abs(by) + halfH + 12 + 8 * beam);
+        const room = Math.max((12 + 8 * head.glare) * head.near, 3);
+        qx = Math.max(qx, Math.abs(ax) + Math.abs(bx) + room);
+        qy = Math.max(qy, Math.abs(ay) + Math.abs(by) + halfH + room);
       }
       if (tail > 0.003 || blinkLit) {
         qx = Math.max(qx, Math.abs(ax) + Math.abs(bx) + 12);
@@ -1686,7 +1712,7 @@
         0, 6, 1, dist,
         ax, ay, bx, by,
         halfH, c.paint, lamp, c.code,
-        tail, beam, blinkLit + beacon, braking,
+        tail, head.glare, blinkLit + beacon, braking,
       ]);
     }
 
@@ -2076,15 +2102,23 @@
         this.aircraft = [];
         return;
       }
-      this._nextPlane -= dt;
-      if (this._nextPlane <= 0) {
-        // one every 10 to 30 minutes, and far fewer in the small hours
-        const h = state.now.getHours() + state.now.getMinutes() / 60;
-        this._nextPlane = rand(600, 1800) * (h < 5 || h >= 23.5 ? 3 : 1);
-        if (this.aircraft.length < 2) this.aircraft.push(this._newPlane(state, false));
-      }
       for (const p of this.aircraft) p.t += dt;
       this.aircraft = this.aircraft.filter((p) => p.t < p.cross + p.life);
+      // One every 5 to 15 minutes, and a third as many in the small hours. (Every 10 to 30 before 2.8.0, which with the
+      // desktop mostly covered was hardly ever.) One that was due part of the way through a long step, as a minute held
+      // still, is already as far along as it would be had it set off then.
+      this._nextPlane -= dt;
+      for (let n = 0; this._nextPlane <= 0 && n < 12; n++) {
+        const late = -this._nextPlane;
+        const h = state.now.getHours() + state.now.getMinutes() / 60;
+        this._nextPlane += rand(300, 900) * (h < 5 || h >= 23.5 ? 3 : 1);
+        if (this.aircraft.length < 2) {
+          const p = this._newPlane(state, false);
+          p.t = late;
+          if (p.t < p.cross + p.life) this.aircraft.push(p);
+        }
+      }
+      if (this._nextPlane <= 0) this._nextPlane = rand(300, 900);
     }
 
     /** Where the air an aircraft passed through `age` seconds ago is now: on the picture, and how far off (km). */
@@ -2797,6 +2831,22 @@
       this.movers += near.filter((r) => r.mode !== 'perched').length ? this.count - this.nearFrom : 0;
     }
   }
+
+  /**
+   * A headlight's glow as the eye sees it from `dist` km off (2026-11-22, the user: "there is big light in village": a
+   * car several km off on the dark slope, on main beam, had the same 28-pixel dazzle as one close by):
+   *   - fall, how bright: a point of light dims with distance as the village lamps do, full within 2 km, a seventh of it
+   *     5 km and more away, where it is a small warm-white point;
+   *   - near, how wide its halo: full within 1.5 km, a quarter 6 km and more away (sprites.js works out the same from
+   *     the distance);
+   *   - glare, the dazzle of a main beam (`beam`, 0 dipped to 1): only when it points almost straight at the eye, and
+   *     always while it flashes (`flashing`).
+   */
+  Life.headGlow = (dist, facing, beam, flashing = 0) => ({
+    fall: clamp((2 / Math.max(dist, 1e-3)) ** 2, 0.15, 1),
+    near: clamp(1.5 / Math.max(dist, 1e-3), 0.25, 1),
+    glare: Math.max(beam * smooth(0.9, 0.98, facing), flashing),
+  });
 
   LE.Life = Life;
   LE.Life.MAX = MAX;

@@ -2120,7 +2120,7 @@ test("the airport's mist fills the valleys through the morning, burns off by mid
   assert.ok(at('2026-11-18T06:15:00Z', { wx: 'FG', vis: 400 }).fog >= 0.8, 'FG at noon');
   assert.equal(at('2026-11-18T06:15:00Z', {}, { ...FORECAST_1118, code: 45 }).fog, 0.9, 'code 45 at noon');
   const src = readFileSync(new URL('engine/environment.js', SRC), 'utf8');
-  assert.ok(src.includes('const target = weatherTargets(rec, mistLift(a, now));'));
+  assert.ok(src.includes('const goal = weatherTargets(rec, mistLift(a, now));'));
 });
 
 test('the exe hands the report to the page, and the panel says where it came from', () => {
@@ -2509,7 +2509,7 @@ test('headlights show only towards the viewer, for every kind of vehicle, and ar
   assert.equal(R.taillight(0.8), 0, 'from the front');
   // one rule: nothing in the vehicle's own data decides it
   const life = readFileSync(new URL('engine/life.js', SRC), 'utf8');
-  assert.ok(life.includes('const lamp = lampOn * R.headlight(facing);'), 'the same call for all kinds');
+  assert.ok(life.includes('const lamp = lampOn * R.headlight(facing) * head.fall;'), 'the same call for all kinds, dimmed only by the distance');
   assert.equal((life.match(/headlight\(/g) || []).length, 1, 'and only that one');
 });
 
@@ -2543,7 +2543,8 @@ test('vehicles pushed to the picture carry the headlight by the way they face', 
       assert.ok(v, kind + ' is in view');
       return v;
     };
-    assert.ok(at(toward, 1).f[14] > 0.5, kind + ' heading towards the viewer shows its light');
+    const lit = at(toward, 1);
+    assert.ok(lit.f[14] > 0.5 * life.constructor.headGlow(lit.f[7], 1, 0).fall, kind + ' heading towards the viewer shows its light');
     assert.equal(at(toward, -1).f[14], 0, kind + ' driving away shows none');
     assert.equal(at(across, 1).f[14], 0, kind + ' going across the view shows none');
     assert.ok(at(toward, -1).f[16] > 0.3, kind + ' driving away shows its tail lights');
@@ -3964,7 +3965,8 @@ test('an airliner crosses high and far off, straight and level, at an airliner\'
   }
   assert.ok(radials >= 8 && radials <= 26, 'about two in five fly up or down the picture: ' + radials + ' of 40');
   assert.ok(climbing >= 2 && radials - climbing >= 2, 'some up it, some down: ' + climbing + ' up of ' + radials);
-  // they come by themselves, one every 10 to 30 minutes by day and far fewer in the small hours; never more than two
+  // they come by themselves, one every 5 to 15 minutes by day and a third as many in the small hours; never more
+  // than two
   const day = skyLife(12, 0.5);
   seedRandom(day.ctx, 6);
   let seen = 0;
@@ -3974,13 +3976,70 @@ test('an airliner crosses high and far off, straight and level, at an airliner\'
     assert.ok(day.life.aircraft.length <= 2);
     for (const p of day.life.aircraft) if (!known.has(p)) { known.add(p); seen++; }
   }
-  assert.ok(seen >= 3 && seen <= 12, 'in two hours of day: ' + seen);
-  const night = skyLife(2, 0.5);
-  seedRandom(night.ctx, 6);
-  night.life._nextPlane = 0;
-  night.life.update(0.5, night.state, night.view);
-  assert.ok(night.life._nextPlane >= 1800, 'the next one is a long way off at 2 in the morning');
+  assert.ok(seen >= 7 && seen <= 24, 'in two hours of day: ' + seen);
+  const waits = (hour) => {
+    const n = skyLife(hour, 0.5);
+    seedRandom(n.ctx, 6);
+    let sum = 0;
+    for (let k = 0; k < 40; k++) {
+      n.life._nextPlane = 0;
+      n.life._stepPlanes(0.001, n.state);
+      sum += n.life._nextPlane;
+    }
+    return sum / 40;
+  };
+  const dayWait = waits(12);
+  const nightWait = waits(2);
+  assert.ok(dayWait > 450 && dayWait < 750, 'by day one comes about every ten minutes: ' + dayWait.toFixed(0) + ' s');
+  assert.ok(nightWait > 1350 && nightWait < 2250, 'at 2 in the morning a third as often: ' + nightWait.toFixed(0) + ' s');
   assert.equal(day.life.movers, 0, 'and it does not ask for more frames');
+});
+
+test('held still while you work, aircraft keep real time: a picture a minute later has the flight further on, and new ones come', () => {
+  // (2026-11-22, the user: "no single plane flown in wallpaper": with an app in front the scene's own time stood still,
+  // and the planes counted only that)
+  const h = skyLife(12, 0.2);
+  seedRandom(h.ctx, 11);
+  const p = h.life._newPlane(h.state, false);
+  p.t = p.cross * 0.3;
+  h.life.aircraft = [p];
+  h.life._nextPlane = 1e9;
+  h.life._write(h.state);
+  const a = h.craft()[0];
+  const birdsBefore = h.life.t;
+  h.life.catchUpAir(60, h.state, h.view);
+  const b = h.craft()[0];
+  near(p.t, p.cross * 0.3 + 60, 1e-9, 'a minute further along');
+  assert.ok(a && b && Math.hypot(b.f[0] - a.f[0], b.f[1] - a.f[1]) > 5, 'and that far across the picture');
+  assert.equal(h.life.t, birdsBefore, 'the rest of the scene keeps its own time');
+  // one that was due part of the way through the minute is as far along as if it had set off then
+  h.life.aircraft = [];
+  h.life._nextPlane = 20;
+  h.life.catchUpAir(60, h.state, h.view);
+  assert.equal(h.life.aircraft.length, 1, 'a new one starts');
+  near(h.life.aircraft[0].t, 40, 1e-9, 'forty seconds on');
+  assert.ok(h.life._nextPlane >= 300 - 40 && h.life._nextPlane <= 900 - 40, 'and the next is counted from when it set off');
+  // an hour held, one picture a minute, has flights in sight; a long gap is caught up in one go
+  for (const seed of [1, 2, 3]) {
+    const m = skyLife(12, 0.2);
+    seedRandom(m.ctx, seed);
+    let pictures = 0;
+    let shown = 0;
+    for (let k = 0; k < 60; k++) {
+      m.life.catchUpAir(60, m.state, m.view);
+      pictures++;
+      if (m.craft().length) shown++;
+    }
+    assert.ok(shown >= 15, `seed ${seed}: an aircraft in ${shown} of ${pictures} pictures in an hour held`);
+  }
+  const g = skyLife(12, 0.2);
+  g.life.catchUpAir(1800, g.state, g.view);
+  assert.ok(g.life.aircraft.every((x) => x.t < x.cross + x.life) && g.life._nextPlane > 0, 'half an hour in one step');
+  // switched off, none
+  g.life.planes = false;
+  g.life.catchUpAir(600, g.state, g.view);
+  assert.equal(g.life.aircraft.length, 0);
+  assert.equal(g.life.heli, null);
 });
 
 test('a contrail is a stub in dry air and long where there is high cloud, grows from the aircraft, widens with age and drifts with the wind up there', () => {
@@ -4640,7 +4699,7 @@ test('an app in front holds every screen still, with a new picture once a minute
   const main = readSrc('main.js');
   assert.ok(/pausedPanelTimer = setInterval\(updateIfPaused, 5000\);\s*planHold\(\);/.test(main), 'a pause plans the next picture');
   assert.ok(/\} else \{\s*stopHold\(\);/.test(main), 'a resume stops it');
-  assert.ok(/sceneClock\.resume\(nowReal\);\s*env\.refreshSky\(\);\s*const state = env\.update\(LE\.clock\.now\(\), dt, sceneClock\.t\);/.test(main),
+  assert.ok(/sceneClock\.resume\(nowReal\);\s*env\.refreshSky\(\);\s*updateMoonView\(\);\s*const state = env\.update\(LE\.clock\.now\(\), dt, sceneClock\.t, Math\.min\(gap, 600\)\);/.test(main),
     'the light and weather now, the scene\'s own time standing');
   assert.ok(main.includes('if (!renderer.holdBegin(state, dt)) return planHold();') && main.includes('renderer.frameDone() && renderer.holdStep(lastState)'),
     'one band a frame, each after the GPU has finished the last');
@@ -5236,4 +5295,323 @@ test('a goat is a lit 3D body: it stands on its hooves, grazes with its mouth at
   assert.ok(gs.includes('uTreeL[7]') && gs.includes('capsLight(') && gs.includes('discard'), "the tree's light, its own shadow, hidden by nearer rock");
   const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   assert.ok(html.indexOf('src/engine/shaders/goat.js') > 0 && html.indexOf('src/engine/goats.js') > html.indexOf('src/engine/foreground.js'));
+});
+
+// ---- 2026-11-22 evening: the moon in view, the airport's cloud, weather while held, fresh data, the still, headlights --
+// (the user, Uttara: "outside is dark and i can see the moon now", "no single plane flown in wallpaper", "golden hour
+// wallpaper become morning for half sec", "make sure every 15 min fetch weather data they make impact on scenario",
+// "weather cache should reset old data every new fetch", "there is big light in village")
+const MOON_VIEW = (() => {
+  const hfov = (140 * Math.PI) / 180;
+  return { w: 3840, h: 1080, hfov, pxAng: hfov / 3840, horizonY: 0.4, camY: 2.8 };
+})();
+const PANEL_RT = { x0: 3531 / 3840, y0: 40 / 1080, x1: 3796 / 3840, y1: 275 / 1080 }; // right-top, small, on 3840×1080
+const DEG = Math.PI / 180;
+function moonEnv(keep = PANEL_RT) {
+  const h = newEnv();
+  h.cfg.render.heading = 50;
+  h.env.setLocation({ lat: 23.867, lon: 90.4, name: 'Uttara' });
+  h.env.setMoonView(MOON_VIEW, keep);
+  return h;
+}
+/** Where the moon's disk is on the picture: x, and y from the top, in pixels. */
+const moonPx = (s, v = MOON_VIEW) => {
+  const d = s.moonShowDir;
+  return [v.w / 2 + Math.atan2(d[0], d[2]) / v.pxAng, v.h - (v.horizonY * v.h + d[1] / Math.hypot(d[0], d[2]) / v.pxAng)];
+};
+const TOP_EDGE = Math.atan((1 - MOON_VIEW.horizonY) * MOON_VIEW.h * MOON_VIEW.pxAng);
+
+test('the moon is drawn where the picture can show it: as it is low down in view, squeezed under the top edge higher up', () => {
+  const { LE } = newEnv();
+  const show = (rel, alt, side = 0, keep = null) => [...LE.Environment.moonShown(rel * DEG, alt * DEG, MOON_VIEW, side, keep)].map((x) => x / DEG);
+  const same = (a, b, msg) => a.forEach((x, i) => near(x, b[i], 1e-9, msg));
+  same(show(20, 5), [20, 5], 'in the picture and low: where it is');
+  same(show(-60, 11.9), [-60, 11.9]);
+  near(TOP_EDGE / DEG, 22.4, 0.1, 'the sky reaches 22.4 degrees up');
+  let was = 12;
+  for (const alt of [13, 20, 30, 50, 70, 89]) {
+    const up = show(0, alt)[1];
+    assert.ok(up > was && up < TOP_EDGE / DEG - 3 + 1e-9, `${alt} degrees up is drawn at ${up.toFixed(2)}`);
+    was = up;
+  }
+  near(show(0, 12.001)[1], 12.001, 1e-3, 'no kink where the squeeze begins');
+  // out of the picture, at the side it left by
+  near(show(100, 30, 1)[0], 66, 1e-9, 'held 4 degrees in from the right edge');
+  near(show(-170, 30, 1)[0], 66, 1e-9, 'behind the viewer it stays at the side it left by');
+  near(show(100, 30, -1)[0], -66, 1e-9);
+  // the panel: kept out from under it
+  const [rel, alt] = show(64, 40, 0, PANEL_RT);
+  const x = MOON_VIEW.w / 2 + (rel * DEG) / MOON_VIEW.pxAng;
+  assert.ok(x < PANEL_RT.x0 * MOON_VIEW.w - 20, 'beside the panel, not under it: ' + x.toFixed(0));
+  near(show(64, 2, 0, PANEL_RT)[0], 64, 1e-9, 'well under the panel it is where it is');
+  assert.ok(show(64, 5, 0, PANEL_RT)[0] < 64 && show(64, 5, 0, PANEL_RT)[0] > show(64, 9, 0, PANEL_RT)[0], 'and eased aside as it rises towards it');
+  near(alt, show(64, 40)[1], 1e-9, 'its height is not changed');
+});
+
+test('2026-11-22 19:00 at Uttara the moon is on the right screen, at its true bearing, high under the top edge; its light stays true', () => {
+  const { env } = moonEnv();
+  const s = env.update(new Date('2026-11-22T13:00:00Z'), 0.5, 1);
+  near(s.astro.moonAzDeg, 93.3, 0.3, 'its bearing');
+  near(s.astro.moonAltDeg, 50.4, 0.3, 'and height');
+  const d = s.moonShowDir;
+  near((Math.atan2(d[0], d[2]) / DEG + 50), 93.3, 1.5, 'drawn at its bearing');
+  const up = Math.asin(d[1]) / DEG;
+  assert.ok(up > 12 && up < TOP_EDGE / DEG - 2.9, 'under the top edge, above 12 degrees: ' + up.toFixed(2));
+  const [x, y] = moonPx(s);
+  assert.ok(x > 1920 && x < PANEL_RT.x0 * 3840 && y > 60 && y < 200, `on the right screen at ${x.toFixed(0)}, ${y.toFixed(0)}`);
+  near(Math.asin(s.moonDir[1]) / DEG, 50.4, 0.3, 'the light comes from where it really is');
+  assert.ok(s.moonVis > 0.99);
+  // the sun as seen from the drawn disk is turned with it: the same phase and lit side
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  near(dot(s.moonShowSun, s.moonShowDir), dot(s.sunDir, s.moonDir), 1e-5, 'the lit fraction is kept');
+  near(Math.hypot(...s.moonShowSun), 1, 1e-5);
+  // with no view yet (the renderer not running) it is drawn where it is
+  const bare = newEnv();
+  bare.env.setLocation({ lat: 23.867, lon: 90.4, name: 'Uttara' });
+  const b = bare.env.update(new Date('2026-11-22T13:00:00Z'), 0.5, 1);
+  for (let i = 0; i < 3; i++) near(b.moonShowDir[i], b.moonDir[i], 1e-6);
+});
+
+test('after leaving the picture the moon stays at that edge until it sets, never jumping across behind the viewer', () => {
+  // 2026-11-22: it passes south of the zenith and leaves over the right edge at about 21:00
+  const { env } = moonEnv(null);
+  let held = 0;
+  for (let m = 0; m <= 330; m += 10) {
+    const s = env.update(new Date(Date.parse('2026-11-22T17:00:00Z') + m * 60e3), 0.5, m + 1); // 23:00 to 04:30
+    if (s.astro.moonAltDeg < 0.5) break;
+    const [x] = moonPx(s);
+    near(x, 1920 + (66 * DEG) / MOON_VIEW.pxAng, 2, 'at the right edge at ' + m);
+    held++;
+  }
+  assert.ok(held > 25, 'all night: ' + held);
+  // 2026-11-26 after midnight it passes just north of the zenith (its declination over the latitude) and goes down
+  // in the north-west: it leaves over the left edge, and stays there
+  const north = moonEnv(null);
+  let seen = 0;
+  for (let m = 0; m <= 300; m += 10) {
+    const s = north.env.update(new Date(Date.parse('2026-11-25T21:30:00Z') + m * 60e3), 0.5, m + 1);
+    if (s.astro.moonAltDeg < 0.5) break;
+    assert.ok(moonPx(s)[0] < 120, 'held at the left edge: ' + moonPx(s)[0].toFixed(0));
+    seen++;
+  }
+  assert.ok(seen > 10, 'until it sets: ' + seen);
+});
+
+test('night after night the drawn moon glides: never more than 30 px in a minute, never under the panel', () => {
+  for (const start of ['2026-11-22T09:00:00Z', '2026-11-25T09:00:00Z', '2026-06-14T21:00:00Z']) {
+    const { env } = moonEnv();
+    let prev = null;
+    let worst = 0;
+    let up = 0;
+    for (let m = 0; m < 22 * 60; m++) {
+      const s = env.update(new Date(Date.parse(start) + m * 60e3), 0.5, m + 1);
+      if (s.moonVis <= 0) {
+        prev = null;
+        continue;
+      }
+      up++;
+      const [x, y] = moonPx(s);
+      if (prev) worst = Math.max(worst, Math.hypot(x - prev[0], y - prev[1]));
+      prev = [x, y];
+      const under = x + 10 > PANEL_RT.x0 * 3840 && x - 10 < PANEL_RT.x1 * 3840 && y + 10 > PANEL_RT.y0 * 1080 && y - 10 < PANEL_RT.y1 * 1080;
+      assert.ok(!under, `${start}: under the panel at minute ${m} (${x.toFixed(0)}, ${y.toFixed(0)})`);
+      assert.ok(y > 60, `${start}: clear of the top edge at minute ${m}`);
+    }
+    assert.ok(up > 300, `${start}: the moon was up ${up} minutes`);
+    assert.ok(worst <= 30, `${start}: at most ${worst.toFixed(1)} px in a minute`);
+  }
+  // the renderer is told: both programs that draw it get the drawn direction and the sun as seen from it
+  const r = readSrc('engine/renderer.js');
+  assert.ok(r.includes("p.set('uMoonShowDir', state.moonShowDir);") && r.includes("p.set('uMoonShowSun', state.moonShowSun);"));
+  const comp = readSrc('engine/shaders/composite.js');
+  assert.ok(comp.includes('float cm = dot(rd, uMoonShowDir);') && comp.includes('vec3 Tm = transmittance(uCamPos.y, uMoonDir.y);'), 'drawn there, as bright as its true height lets it be');
+  assert.ok(comp.includes('dot(n, uMoonShowSun)'), 'lit as in the sky');
+  assert.ok(readSrc('engine/shaders/volume.js').includes('float cosM = dot(rd, uMoonShowDir);'), "the clouds' bright edges round it");
+  assert.ok(readSrc('main.js').includes('env.setMoonView(renderer.viewInfo(), keep);'), 'main.js gives the view and the panel');
+});
+
+test("the close airport's sky groups decide the cloud: 2026-11-22 evening, FEW015 SCT100 over WeatherAPI's 74 %", () => {
+  const { LE, merge, targets } = airport();
+  const now = Date.now();
+  const forecast = { code: 0, cloud: 6, cloudLow: 4, cloudMid: 4, cloudHigh: 0, humidity: 74, visibility: 7300, windSpeed: 5, windDir: 240, precip: 0, temp: 26.5, source: 'live' };
+  const wapi = { t: now - 15 * 60e3, code: 1063, text: 'Patchy rain nearby', cloud: 74, vis: 10000, temp: 27, dewp: 22, hum: 74, wind: 5, dir: 240, precip: 0.07 };
+  const vghs = { id: 'VGHS', name: 'Dhaka', km: 2.3, t: now - 20 * 60e3, temp: 27, dewp: 22, vis: 3500, wx: 'HZ', sky: 'FEW015 SCT100' };
+  const before = merge(LE.withWeatherApi(forecast, wapi, now), { ...vghs, sky: '' }, now);
+  near(before.cloud, 74, 0.01, "without the sky groups, WeatherAPI's cloud");
+  const r = merge(LE.withWeatherApi(forecast, wapi, now), vghs, now);
+  near(r.cloudLow, 19, 0.5, 'FEW at 1,500 ft: low');
+  near(r.cloudMid, 31, 0.5, "SCT at 10,000 ft: middle, what it adds over the FEW below it");
+  near(r.cloudHigh, 0, 1e-9, 'no high cloud: as the forecast had');
+  near(r.cloud, 44, 0.5);
+  assert.equal(r.code, 1);
+  assert.equal(LE.weatherLabel(r), 'Haze');
+  assert.equal(r.wapiText, undefined, "WeatherAPI's words were about its own cloud");
+  assert.equal(r.obs.sky, 'FEW015 SCT100');
+  assert.ok(targets(r).coverage < targets(before).coverage, 'less cloud drawn');
+  // SKC: none at all; CLR and NCD: none up to the middle, the forecast's cirrus stays; NSC and CAVOK: no low cloud
+  const cirrus = { ...forecast, cloud: 70, cloudLow: 50, cloudMid: 30, cloudHigh: 40 };
+  const skc = merge(cirrus, { ...vghs, wx: '', sky: 'SKC' }, now);
+  assert.deepEqual([skc.cloudLow, skc.cloudMid, skc.cloudHigh, skc.cloud, skc.code], [0, 0, 0, 0, 0]);
+  const clr = merge(cirrus, { ...vghs, wx: '', sky: 'NCD' }, now);
+  assert.deepEqual([clr.cloudLow, clr.cloudMid, clr.cloudHigh, clr.cloud], [0, 0, 40, 40]);
+  for (const sky of ['NSC', 'CAVOK']) {
+    const n = merge(cirrus, { ...vghs, wx: '', sky }, now);
+    assert.deepEqual([n.cloudLow, n.cloudMid, n.cloudHigh], [0, 30, 40], sky + ' keeps the middle and high cloud');
+  }
+  // overcast low down over a forecast of 5 %; a high layer listed replaces the forecast's
+  const ovc = merge({ ...forecast, cloud: 5, cloudLow: 5, cloudMid: 0, cloudHigh: 0 }, { ...vghs, wx: '', sky: 'OVC008' }, now);
+  assert.equal(ovc.code, 3);
+  assert.equal(ovc.cloud, 100);
+  assert.equal(LE.weatherLabel(ovc), 'Overcast');
+  const high = merge(cirrus, { ...vghs, wx: '', sky: 'FEW030CB BKN250' }, now);
+  near(high.cloudLow, 19, 0.5);
+  assert.equal(high.cloudMid, 0, 'none listed in the middle');
+  near(high.cloudHigh, 69, 0.5, 'BKN over FEW: what it adds');
+  // a report too far off, too old, or with the sky hidden (VV, which the fog has) leaves the cloud alone
+  assert.equal(merge(cirrus, { ...vghs, km: 30 }, now).cloud, 70, '30 km off');
+  assert.equal(merge(cirrus, { ...vghs, t: now - 70 * 60e3 }, now).cloud, 70, '70 minutes old');
+  const fog = merge(cirrus, { ...vghs, wx: 'FG', vis: 200, sky: 'VV002' }, now);
+  assert.equal(fog.cloud, 70);
+  assert.equal(fog.code, 45);
+  // and rain stays as it was decided: a close airport seeing rain under OVC keeps the rain code
+  const rain = merge({ ...forecast, code: 63, precip: 2, rain: 2, cloud: 90 }, { ...vghs, wx: '-RA', sky: 'BKN012 OVC080' }, now);
+  assert.equal(rain.code, 63);
+  assert.equal(rain.cloud, 100);
+  // the Windows app sends the groups: read from the report's text up to its trend, CB and TCU kept
+  const cs = readFileSync(new URL('../host/LivingEarthHost.cs', import.meta.url), 'utf8');
+  assert.ok(cs.includes('", wx: " + Q(Wx) + ", sky: " + Q(Sky) + " }"') && cs.includes('Sky = Clip(SkyOf(d), 60),'));
+});
+
+test('held still while you work, the weather comes in at the pace it would with the desktop in sight', () => {
+  const GOAL = { ...CLEAR, code: 3, cloud: 80, cloudLow: 80 };
+  const goal = settledOn(GOAL).env.state.weather.coverage;
+  assert.ok(goal > 0.5);
+  const when = new Date('2026-11-03T06:00:00Z');
+  // seconds until the cover is 90 % of the way there: frames every half second, or one picture a minute (dt 25 s, as
+  // main.js holdPicture caps it, and the real minute for the weather)
+  const timeTo = (held, weatherDt = 60) => {
+    const { env } = settledOn(CLEAR);
+    env.setWeather(GOAL, 'live');
+    let t = 10;
+    for (let sec = 0; sec < 3600; ) {
+      if (held) {
+        sec += weatherDt;
+        t += 25;
+        env.update(when, 25, t, weatherDt);
+      } else {
+        sec += 0.5;
+        t += 0.5;
+        env.update(when, 0.5, t);
+      }
+      if (env.state.weather.coverage >= 0.9 * goal) return sec;
+    }
+    return Infinity;
+  };
+  const live = timeTo(false);
+  const held = timeTo(true);
+  assert.ok(live < 15 * 60, 'in sight it comes in within the quarter of an hour: ' + live + ' s');
+  assert.ok(Math.abs(held - live) <= 90, `held, as fast as in sight: ${held} s against ${live} s`);
+  assert.ok(held < 15 * 60, 'each 15-minute fetch is on the screen before the next');
+  // the old way, the weather eased only by the 25 s each picture: 2.4 times slower
+  assert.ok(timeTo(true, 25) * (60 / 25) > live * 1.8, 'before');
+  // a long gap is eased through in steps: no snap, and where it would be in that much real time
+  for (const gap of [120, 600]) {
+    const { env } = settledOn(CLEAR);
+    env.setWeather(GOAL, 'live');
+    env.update(when, 25, 40, gap);
+    const once = env.state.weather.coverage;
+    const step = settledOn(CLEAR);
+    step.env.setWeather(GOAL, 'live');
+    let t = 10;
+    for (let i = 0; i < gap * 2; i++) step.env.update(when, 0.5, (t += 0.5));
+    near(once, step.env.state.weather.coverage, 0.06, `${gap} s of weather in one picture, as ${gap} s in sight`);
+    if (gap === 120) assert.ok(once < goal * 0.8 && once > 0.02, 'two minutes: part of the way, not snapped: ' + once.toFixed(3));
+  }
+  // the page passes the real gap, up to ten minutes; the clouds' drift keeps to dt
+  const main = readSrc('main.js');
+  assert.ok(main.includes('const state = env.update(LE.clock.now(), dt, sceneClock.t, Math.min(gap, 600));'));
+});
+
+test('each fetch replaces what the last one gave, in memory and in storage; only a failed fetch keeps old data', async () => {
+  let n = 0;
+  const answers = [
+    { cloud_cover_low: 10, cloud_cover_mid: 33, visibility: 9000, temperature_2m: 20 },
+    { cloud_cover_low: 20, temperature_2m: 21 }, // no middle cloud or visibility this time
+  ];
+  const { weather, store } = newWeather(async () => ok(answers[Math.min(n++, 1)]), { refreshMinutes: 100 });
+  let told = 0;
+  weather.onUpdate(() => told++);
+  weather.start(23.7, 90.4);
+  await sleep(30);
+  assert.equal(weather.current().cloudMid, 33);
+  const afterFirst = told;
+  weather.refreshNow();
+  await sleep(30);
+  weather.stop();
+  assert.equal(n, 2);
+  const r = weather.current();
+  assert.equal(r.cloudLow, 20);
+  assert.equal(r.temp, 21);
+  assert.notEqual(r.cloudMid, 33, "the old middle cloud is gone (the same answer's hourly row stands in)");
+  assert.notEqual(r.visibility, 9000, 'and the old visibility');
+  assert.ok(told > afterFirst, 'the scene is told after each fetch');
+  const saved = JSON.parse(store.get('le3840.weather.v2'));
+  assert.equal(saved.current.cloudLow, 20, 'the saved copy is the new one');
+  assert.notEqual(saved.current.visibility, 9000);
+  // WeatherAPI turned off in the app: nothing of it stays
+  const w = newWeather(async () => ok({ cloud_cover_low: 5 }), { refreshMinutes: 100 }).weather;
+  w.setWeatherApi(WAPI_1118(Date.now()));
+  w.start(23.7, 90.4);
+  await sleep(30);
+  w.stop();
+  assert.equal(w.current().wapiText, 'Smoky haze');
+  assert.equal(w.setWeatherApi(null), true);
+  const gone = w.current();
+  assert.equal(gone.wapi, undefined);
+  assert.equal(gone.wapiText, undefined);
+  assert.equal(gone.cloudLow, 5);
+  assert.equal(gone.pm25, undefined);
+  assert.ok(readSrc('services/weather.js').includes("const res = await fetch(this.url(), { signal: ctrl.signal, cache: 'no-store' });"), 'never an old copy from the browser cache');
+});
+
+test("the still under a resized or reset scene is the one for the sun now, as the Windows app's", () => {
+  const h = load(['services/astronomy.js']);
+  const A = h.LE.astronomy;
+  // Dhaka, 2026-11-22 (UTC+6): the bands of WindowsBackground.StillFor in host/LivingEarthHost.cs
+  const at = (hm) => A.stillFor(new Date(`2026-11-22T${hm}:00+06:00`), 23.7104, 90.4074);
+  assert.equal(at('03:00'), 'night');
+  assert.equal(at('06:00'), 'dawn');
+  assert.equal(at('07:00'), 'morning');
+  assert.equal(at('12:00'), 'day');
+  assert.equal(at('16:00'), 'golden');
+  assert.equal(at('17:30'), 'dusk');
+  assert.equal(at('19:00'), 'night');
+  const main = readSrc('main.js');
+  assert.ok(main.includes('const still = LE.astronomy.stillFor(LE.clock.now(), location.lat, location.lon);'), 'the veil shows it');
+  // and the app changes the Windows background only while nobody can see the desktop
+  const cs = readFileSync(new URL('../host/LivingEarthHost.cs', import.meta.url), 'utf8');
+  assert.ok(cs.includes('if (attached && !background.Shows(still) && !DesktopHidden())'), 'it waits while the scene is up and the desktop shows');
+  assert.ok(cs.includes('if (!attached && backgroundWaiting != null) UpdateBackground(now);'), 'and goes up before the scene starts again');
+});
+
+test('a far car is a small point of light, not a flare: the glow and its patch shrink with distance', () => {
+  const { LE } = testLife(22);
+  const G = LE.Life.headGlow;
+  const at1 = G(1, 1, 1);
+  const at3 = G(3, 1, 1);
+  const at8 = G(8, 1, 1);
+  assert.ok(at1.fall === 1 && at3.fall < at1.fall && at8.fall < at3.fall && at8.fall >= 0.15, 'dimmer further off');
+  assert.ok(at1.near === 1 && at3.near < 1 && at8.near === 0.25, 'and smaller');
+  // the patch a glow needs, as _pushVehicle makes it room: main beam at 8 km is no bigger than dipped at 1 km
+  const room = (g) => Math.max((12 + 8 * g.glare) * g.near, 3);
+  assert.ok(room(G(8, 1, 1)) <= room(G(1, 1, 0)), 'main beam 8 km off against dipped 1 km off');
+  assert.ok(room(G(1, 1, 1)) > room(G(3, 1, 1)) && room(G(3, 1, 1)) > room(G(8, 1, 1)));
+  // the dazzle of main beam only when it points almost straight at the eye; a flash always
+  assert.equal(G(1, 0.8, 1).glare, 0);
+  assert.equal(G(1, 0.99, 1).glare, 1);
+  assert.equal(G(1, 0.8, 1, 1).glare, 1);
+  // in the shader the halo shrinks the same way
+  const sp = readSrc('engine/shaders/sprites.js');
+  assert.ok(sp.includes('float near = clamp(1.5 / dist, 0.25, 1.0);') && sp.includes('float halo = mix(12.0, 28.0, beam) * near * near;'));
+  assert.ok(readSrc('engine/shaders/composite.js').includes('vec3 led = vec3(0.92, 0.95, 1.0) * 0.6;'), 'a white LED window no brighter than a warm one');
 });

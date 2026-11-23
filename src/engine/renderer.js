@@ -907,6 +907,8 @@
       p.set('uMistWind', state.mistWind);
       p.set('uSunDir', state.sunDir);
       p.set('uMoonDir', state.moonDir);
+      p.set('uMoonShowDir', state.moonShowDir);
+      p.set('uMoonShowSun', state.moonShowSun);
       p.set('uSunE', state.sunE);
       p.set('uMoonE', state.moonE);
       p.set('uKeyIsSun', state.keyIsSun);

@@ -132,6 +132,13 @@
 
   // ---------------------------------------------------------------- veil
   function showVeil(on) {
+    // Started by the Windows app the veil shows a still: the one for the sun now, not the one from the start (a resize at
+    // dusk showed the day's still, which was up when the app started)
+    if (on && cfg.startStill && location) {
+      const still = LE.astronomy.stillFor(LE.clock.now(), location.lat, location.lon);
+      const url = `url("host/stills/${still}.jpg")`;
+      if (veil.style.backgroundImage !== url) veil.style.backgroundImage = url;
+    }
     veil.classList.toggle('hidden', !on);
   }
   // Started by the Windows app: the still for this time of day at once, with a small note at the bottom while the
@@ -249,6 +256,22 @@
     return now - lastFast < 3000 ? 0 : cfg.render.calmSceneMs;
   }
 
+  // Where the moon's disk may be drawn (Environment.setMoonView): the picture, and the info panel's place on it, which
+  // the disk keeps out from under. Looked at once a second, so a resize or the panel moving or growing is followed.
+  const panelEl = document.getElementById('panel');
+  function updateMoonView() {
+    if (!renderer || !renderer.w) return;
+    let keep = null;
+    if (cfg.ui.showPanel) {
+      const c = canvas.getBoundingClientRect();
+      const r = panelEl.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0 && c.width > 0 && c.height > 0) {
+        keep = { x0: (r.left - c.left) / c.width, y0: (r.top - c.top) / c.height, x1: (r.right - c.left) / c.width, y1: (r.bottom - c.top) / c.height };
+      }
+    }
+    env.setMoonView(renderer.viewInfo(), keep);
+  }
+
   function stepLife(state) {
     life.update(Math.min(Math.max(state.time - lifeAt, 0), 120), state, renderer.viewInfo());
     lifeAt = state.time;
@@ -340,6 +363,7 @@
     if (renderer.status === 'running' && !!cfg.demo !== demo.on) setDemo(!!cfg.demo);
     const d = demo.on ? stepDemo(nowReal) : null;
     const now = d ? d.now : LE.clock.now();
+    if (nowReal - lastPanel > 1000 || !env._moonView) updateMoonView();
     const state = env.update(now, dt, timeSec);
     if (d && d.changed) {
       // a new month begins as wet, or with as much fresh snow, as it should (straight into its weather above)
@@ -531,14 +555,20 @@
     if (!paused || !holdMs) return;
     if (pausedByVisibility || !renderer || renderer.status !== 'running' || !lastState || demo.on) return planHold();
     const nowReal = performance.now();
-    // Environment.update makes the weather jump after a gap over 30 s: the same cap as slow mode
-    const dt = Math.min((nowReal - lastReal) / 1000, 25);
+    const gap = Math.max((nowReal - lastReal) / 1000, 0); // real seconds since the last picture: about a minute
+    // Environment.update makes the weather jump after a gap over 30 s: the same cap as slow mode. The clouds' shapes
+    // move on by that much, but the weather itself eases towards the data by the real time gone (up to ten minutes), so
+    // each 15-minute fetch is on the screen at the pace it would be with the desktop in sight
+    const dt = Math.min(gap, 25);
     lastReal = nowReal;
     sceneClock.resume(nowReal);
     env.refreshSky();
-    const state = env.update(LE.clock.now(), dt, sceneClock.t);
+    updateMoonView();
+    const state = env.update(LE.clock.now(), dt, sceneClock.t, Math.min(gap, 600));
     state.weather.flash = 0; // a lightning flash would stay on screen for the minute
     lastState = state;
+    // Aircraft keep real time while everything else in the scene stands still (life.js catchUpAir)
+    if (lifeSeeded) life.catchUpAir(Math.min(gap, 1800), state, renderer.viewInfo());
     renderer.refreshSky();
     renderer.forgetFrame();
     if (!renderer.holdBegin(state, dt)) return planHold();

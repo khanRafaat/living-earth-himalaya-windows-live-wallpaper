@@ -278,7 +278,22 @@
     return names[Math.round((((azDeg % 360) + 360) % 360) / 22.5) % 16];
   }
 
+  /**
+   * Which of the Windows app's stills (host/stills) fits the sun now: the same bands as WindowsBackground.StillFor in
+   * host/LivingEarthHost.cs, on the sun's height without refraction. Morning and evening by its bearing.
+   */
+  function stillFor(date, lat, lng) {
+    const s = sunPosition(date, lat, lng);
+    const alt = s.geometric / rad;
+    const morning = s.azimuthDeg < 180;
+    if (alt < -10) return 'night';
+    if (alt < 1) return morning ? 'dawn' : 'dusk';
+    if (alt < 15) return morning ? 'morning' : 'golden';
+    return 'day';
+  }
+
   LE.astronomy = {
+    stillFor,
     sunPosition,
     moonPosition,
     moonIllumination,

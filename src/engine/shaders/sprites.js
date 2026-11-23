@@ -651,8 +651,10 @@ void main() {
     float haloBy = 0.08 + 0.92 * dark;
     vec2 front = A - U * 0.4;
     if (lamp > 0.003 && lampSeen(vA.xy + front, dist)) {
-      // main beam dazzles: a wider, brighter halo
-      float halo = mix(12.0, 28.0, beam);
+      // main beam dazzles: a wider, brighter halo, when it points at the eye (beam is that glare, Life.headGlow). Far
+      // off the halo is smaller, as it is in life.js: a car on the far slope is a point, not a flare
+      float near = clamp(1.5 / dist, 0.25, 1.0);
+      float halo = mix(12.0, 28.0, beam) * near * near;
       float amt = mix(0.12, 0.3, beam);
       float g = lampGlow(q - front - spread, 0.8, halo, amt);
       if (kind != 2) g = 0.5 * (g + lampGlow(q - front + spread, 0.8, halo, amt)) + 0.5 * max(exp(-dot(q - front - spread, q - front - spread) / 0.8), exp(-dot(q - front + spread, q - front + spread) / 0.8));
