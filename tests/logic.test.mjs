@@ -3966,14 +3966,14 @@ test('an airliner crosses high and far off, straight and level, at an airliner\'
   assert.ok(radials >= 8 && radials <= 26, 'about two in five fly up or down the picture: ' + radials + ' of 40');
   assert.ok(climbing >= 2 && radials - climbing >= 2, 'some up it, some down: ' + climbing + ' up of ' + radials);
   // they come by themselves, one every 5 to 15 minutes by day and a third as many in the small hours; never more
-  // than two
+  // than two in sight, and a few trails of ones gone by at most
   const day = skyLife(12, 0.5);
   seedRandom(day.ctx, 6);
   let seen = 0;
   const known = new Set();
   for (let k = 0; k < 14400; k++) {
     day.life.update(0.5, day.state, day.view);
-    assert.ok(day.life.aircraft.length <= 2);
+    assert.ok(day.life.aircraft.filter((p) => p.t < p.cross).length <= 2 && day.life.aircraft.length <= 4);
     for (const p of day.life.aircraft) if (!known.has(p)) { known.add(p); seen++; }
   }
   assert.ok(seen >= 7 && seen <= 24, 'in two hours of day: ' + seen);
@@ -4019,6 +4019,18 @@ test('held still while you work, aircraft keep real time: a picture a minute lat
   assert.equal(h.life.aircraft.length, 1, 'a new one starts');
   near(h.life.aircraft[0].t, 40, 1e-9, 'forty seconds on');
   assert.ok(h.life._nextPlane >= 300 - 40 && h.life._nextPlane <= 900 - 40, 'and the next is counted from when it set off');
+  // the long trails of two flights gone by do not keep a new one back
+  const gone = () => {
+    const q = h.life._newPlane(h.state, false);
+    q.life = 600;
+    q.t = q.cross + 30;
+    return q;
+  };
+  h.life.aircraft = [gone(), gone()];
+  h.life._nextPlane = 20;
+  h.life.catchUpAir(60, h.state, h.view);
+  assert.equal(h.life.aircraft.length, 3, 'two long trails and a new flight');
+  assert.equal(h.life.aircraft.filter((q) => q.t < q.cross).length, 1, 'one of them in sight');
   // an hour held, one picture a minute, has flights in sight; a long gap is caught up in one go
   for (const seed of [1, 2, 3]) {
     const m = skyLife(12, 0.2);
@@ -4042,27 +4054,32 @@ test('held still while you work, aircraft keep real time: a picture a minute lat
   assert.equal(g.life.heli, null);
 });
 
-test('a contrail is a stub in dry air and long where there is high cloud, grows from the aircraft, widens with age and drifts with the wind up there', () => {
+test('a contrail is a stub or long at random, long more often where there is high cloud, grows from the aircraft, widens with age and drifts with the wind up there', () => {
+  // (2026-11-24, the user: "keep both short and long smoke but should appear randomly": under a clear sky every
+  // trail was a stub)
   const lifeOf = (cirrus) => {
     const h = skyLife(12, cirrus);
     seedRandom(h.ctx, 9);
-    let most = 0;
-    let least = 1e9;
-    for (let k = 0; k < 30; k++) {
+    let short = 0;
+    let long = 0;
+    for (let k = 0; k < 200; k++) {
       const p = h.life._newPlane(h.state, false);
-      most = Math.max(most, p.life);
-      least = Math.min(least, p.life);
+      if (p.life >= 20 && p.life <= 60) short++;
+      else if (p.life >= 240 && p.life <= 660) long++;
+      else assert.fail('a trail neither short nor long: ' + p.life.toFixed(0) + ' s');
     }
-    return [least, most];
+    return long / 200;
   };
   const dry = lifeOf(0);
   const moist = lifeOf(0.7);
-  assert.ok(dry[0] >= 20 && dry[1] <= 60, 'dry air: ' + dry.map((x) => x.toFixed(0)).join(' to ') + ' s');
-  assert.ok(moist[0] >= 240 && moist[1] <= 720, 'moist air: ' + moist.map((x) => x.toFixed(0)).join(' to ') + ' s');
+  assert.ok(dry > 0.35 && dry < 0.65, 'dry air: about half long, ' + (dry * 100).toFixed(0) + ' %');
+  assert.ok(moist > 0.8 && moist < 0.97, 'moist air: most long, some short, ' + (moist * 100).toFixed(0) + ' %');
 
   const h = skyLife(12, 0.7);
   seedRandom(h.ctx, 3);
-  const p = h.life._newPlane(h.state, true);
+  let p;
+  do p = h.life._newPlane(h.state, true);
+  while (p.life < 240); // a long one
   h.life.aircraft = [p];
   p.t = Math.max(p.t, p.life + 5);
   h.life._write(h.state);
@@ -4265,6 +4282,9 @@ function perchLife(over = {}, sites = 1, seed = null) {
   h.life.state = h.state;
   h.life._trafficSeeded = true;
   h.life._nextVehicle = h.life._nextConvoy = h.life._nextAmbulance = h.life._nextPlane = 1e9;
+  // (and no helicopter or kites: one crossing or gliding in by chance asked for frames while the bird sat, and failed
+  // a run in 25 or so)
+  h.life._nextHeli = h.life._nextKite = 1e9;
   h.life._nextPerch = 1e9;
   h.life._nextRaptorCheck = 1e9;
   h.life._nextFlock = h.life._nextGeese = 1e9;
@@ -4337,7 +4357,7 @@ test('a bird of prey comes down to the snag, sits exactly on it while it sways, 
     assert.ok(k >= h.life.nearFrom, 'after the tree, in front of it');
     assert.ok(all[k].f[10] > 8 && all[k].f[10] < 30, 'about ' + all[k].f[10].toFixed(0) + ' px tall on a 3840 px picture');
     assert.ok(Math.abs(all[k].f[8]) === 1, 'facing one way or the other');
-    assert.equal(h.life.movers, 0, 'no more frames for a sitting bird');
+    assert.equal(h.life.movers, 0, 'no more frames for a sitting bird: ' + (h.life.movers ? JSON.stringify({ raptors: h.life.raptors.map((x) => [x.sp.span, x.mode]), flock: !!h.life.flock, geese: !!h.life.geese, heli: !!h.life.heli, sats: h.life.sats.length, meteors: h.life.meteors.length, birds: h.life.birds }) : ''));
   });
   assert.ok(sat > 50 && looks.size >= 2, 'its head turned: ' + looks.size + ' ways in ' + (sat * 0.05).toFixed(0) + ' s');
   // and off: it drops forward, beats its wings, and is a soaring bird again
@@ -5094,6 +5114,23 @@ test('more life: black kites over a near village or the slopes below, herds on t
   wet.life._nextHeli = 0;
   wet.life.update(1, wet.state, wet.view);
   assert.equal(wet.life.heli, null, 'none sets out in rain');
+  // (2026-11-24, the user: "also i dont see any helicopter") one every 15 to 40 minutes by day, under a broken deck
+  // too, and seen in the pictures held still while you work
+  for (const seed of [1, 2, 3]) {
+    const m = skyLife(12, 0);
+    seedRandom(m.ctx, seed);
+    m.life._nextHeli = 600;
+    m.state.weather.coverage = 0.85;
+    const flights = new Set();
+    let shown = 0;
+    for (let k = 0; k < 120; k++) {
+      m.life.catchUpAir(60, m.state, m.view);
+      if (m.life.heli) flights.add(m.life.heli);
+      if (sprites(m.life).some((x) => x.type === 11 && x.f[8] === 2)) shown++;
+    }
+    assert.ok(flights.size >= 3 && flights.size <= 8, `seed ${seed}: ${flights.size} helicopters in two hours held`);
+    assert.ok(shown >= flights.size, `seed ${seed}: in ${shown} pictures`);
+  }
 
   // their places, found in the baked view
   const { LE } = load(RENDER_FILES);

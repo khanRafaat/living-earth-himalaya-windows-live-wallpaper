@@ -21,7 +21,7 @@ You do not need Lively, Wallpaper Engine, Steam, an installer, admin rights or a
 
 ## Download and set your wallpaper
 
-### **[Download LivingEarthHimalaya-2.8.0.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.8.0/LivingEarthHimalaya-2.8.0.exe)**
+### **[Download LivingEarthHimalaya-2.8.1.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.8.1/LivingEarthHimalaya-2.8.1.exe)**
 
 About 2.4 MB. For Windows 11 version 24H2 or later.
 
@@ -142,7 +142,7 @@ While you work in an app, both screens hold still, so the app keeps the graphics
   - Birds shelter in rain, fog, snow and storms, and roost at night.
   - Hill villages have terraced fields, with wood smoke at breakfast and dinner time and lights that come on one by one at dusk, and go off and on again through the night.
   - Shooting stars follow the real meteor-shower calendar, and satellites glide across the sky in twilight.
-  - Airliners cross high above the peaks every 5 to 15 minutes (fewer in the small hours), some across the picture and some up or down it, and they keep flying while the picture holds still as you work. Their trails are short stubs when the air up there is dry and long, spreading lines when it is moist, and they drift with the real wind at that height. A helicopter makes its way along the valley now and then on a fair day.
+  - Airliners cross high above the peaks every 5 to 15 minutes (fewer in the small hours), some across the picture and some up or down it, and they keep flying while the picture holds still as you work. Some leave a short stub of a trail and some a long, spreading line, at random (long ones more often when there is high cloud), and the trails drift with the real wind at that height. A helicopter makes its way along the valley every 15 to 40 minutes on a fair day, also while the picture holds still.
   - Black kites circle low over a near village, or over the slopes just below the viewpoint; goats graze and wander on the rock by the tree by day (3D animals, lit by the same sun and sky as the tree, each with its own coat, horns and shadow); and a lamp burns at a monastery on a ridge at night.
   - On the nights of Tihar and Diwali every house is lit with oil lamps, and fireworks burst in sparks of gold, red, green and violet over the villages. The test panel's Festival night button shows it at any hour (by day it first sets the clock to the evening).
 - **A rainbow when there really is one.** Only with rain still in the air and the sun out and low enough: as a shower clears, or in a sun shower. It stands where the sun puts it, opposite the sun, so with this view it is mostly an afternoon sight; with a high sun only its feet show.
@@ -164,7 +164,7 @@ While you work in an app, both screens hold still, so the app keeps the graphics
 ## Frequently asked questions
 
 ### How do I get a live wallpaper on Windows 11?
-On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.8.0.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
+On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.8.1.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
 
 ### Do I need Lively or Wallpaper Engine?
 No. The exe sets the wallpaper by itself on Windows 11 version 24H2 or later, with nothing else to install. Lively is only for older versions of Windows.

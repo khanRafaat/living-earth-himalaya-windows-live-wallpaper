@@ -394,7 +394,7 @@
             ['Festival night', () => { const R = renderer(); if (R) { const s = env.state.astro; if (!s || s.sunAltDeg > -8) this._clock({ time: '20:30' }); R.festForce = life.festForce = 1; clearTimeout(R._festForceEnd); R._festForceEnd = setTimeout(() => (R.festForce = life.festForce = 0), 180000); life.summon('firework'); } }, 'For three minutes, as on the night of Tihar / Diwali: every house lit with rows of oil lamps, and fireworks over the villages. It shows after dark, so by day it first sets the clock to 20:30 (reset Time of day to go back)'],
             ['Black kite', () => life.summon('kite'), 'Circling low over a village within 1.2 km, or else over the slopes just below the viewpoint. It belongs to the birds'],
             ['Helicopter', () => life.summon('helicopter'), 'Part of the way along the valley, a few km off. It belongs to the aircraft'],
-            ['Aircraft', () => life.summon('plane'), 'An airliner part of the way across the sky. Its trail is long where there is high cloud, short in dry air'],
+            ['Aircraft', () => life.summon('plane'), 'An airliner part of the way across the sky. Its trail is long or short at random, long more often where there is high cloud'],
             ['Bus', () => life.summon('bus'), 'Somewhere on the road in view, going either way'],
             ['Jeep', () => life.summon('jeep'), 'Somewhere on the road in view, going either way'],
             ['Motorcycle', () => life.summon('motorcycle'), 'Somewhere on the road in view, going either way'],

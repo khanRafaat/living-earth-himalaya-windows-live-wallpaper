@@ -213,7 +213,7 @@
       this._goatsAway = 0;
       this._goatStay = 0;
       this.heli = null;
-      this._nextHeli = rand(900, 3600);
+      this._nextHeli = rand(300, 900);
       this.traffic = 'normal'; // light | normal | busy
       this.t = 0;
       this._nextFlock = rand(20, 90);
@@ -687,13 +687,22 @@
       if (!v) return [];
       return [[-0.35, 0.28], [0.15, 0.36], [0.6, 0.32]].map(([f, d]) => {
         const az = (f * v.hfov) / 2;
-        return { x: Math.sin(az) * d, y: v.camY - 0.2, z: Math.cos(az) * d };
+        return { x: Math.sin(az) * d, y: v.camY - 0.2, z: Math.cos(az) * d, slope: true };
       });
     }
 
-    /** Where a kite circles over a village: 50 to 140 m above its roofs. */
+    /**
+     * Where a kite circles over a village: 50 to 140 m above its roofs. Over the slopes, nearer the middle of each, and
+     * (`_kiteRadius`) in smaller circles, so it keeps 0.19 to 0.45 km out: before, a wide circle off the nearest of them
+     * now and then came within 140 m of the eye.
+     */
     _overVillage(home) {
-      return [home.x + rand(-0.05, 0.05), home.y + rand(0.05, 0.14), home.z + rand(-0.05, 0.05)];
+      const s = home.slope ? 0.03 : 0.05;
+      return [home.x + rand(-s, s), home.y + rand(0.05, 0.14), home.z + rand(-s, s)];
+    }
+
+    _kiteRadius(r, wide) {
+      return r.slopeHome ? rand(0.03, 0.05) : rand(0.03, wide);
     }
 
     /** A black kite on its way to a village from out of sight, or (the test panel) already circling over it. */
@@ -701,10 +710,11 @@
       const r = this._newRaptor(shown);
       const c = this._overVillage(home);
       r.sp = SPECIES.kite;
+      r.slopeHome = !!home.slope;
       r.target = c;
       r.center = [c[0], c[2]];
       r.y = c[1];
-      r.R = rand(0.03, 0.07);
+      r.R = this._kiteRadius(r, 0.07);
       r.omega = Math.sign(r.omega) * (0.0125 / r.R);
       r.circleTime = rand(120, 400);
       r.nextFlap = rand(4, 12);
@@ -1004,7 +1014,9 @@
           if (homes.length && Math.random() < 0.7) {
             // a kite moves on to the next village, or round again over this one
             r.mode = 'glide';
-            r.target = this._overVillage(homes[Math.floor(Math.random() * homes.length)]);
+            const home = homes[Math.floor(Math.random() * homes.length)];
+            r.slopeHome = !!home.slope;
+            r.target = this._overVillage(home);
           } else if (r.sp === SPECIES.kite || Math.random() < 0.5) this._leave(r);
           else {
             r.mode = 'glide';
@@ -1034,7 +1046,7 @@
           r.mode = 'circle';
           r.center = [tg[0], tg[2]];
           r.y = r.pos[1];
-          r.R = rand(0.035, 0.09);
+          r.R = r.sp === SPECIES.kite ? this._kiteRadius(r, 0.09) : rand(0.035, 0.09);
           r.theta = Math.atan2(r.pos[2] - tg[2], r.pos[0] - tg[0]);
           r.omega = (Math.random() < 0.5 ? -1 : 1) * (sp / r.R);
           r.circleTime = rand(60, 220);
@@ -2047,8 +2059,8 @@
     /**
      * A flight: straight and level at 10 to 11.5 km above the sea, passing 22 to 55 km from the viewer, mostly across
      * the view. It is followed from where it comes into sight to where it leaves, and its trail for as long as that
-     * lasts: half a minute in dry air aloft, many minutes where there is high cloud (the air up there is moist), and
-     * it drifts with the wind at that height. `shown` puts it part of the way across at once (the test panel).
+     * lasts: half a minute for some, many minutes for others (more of those where there is high cloud), and it
+     * drifts with the wind at that height. `shown` puts it part of the way across at once (the test panel).
      */
     _newPlane(state, shown) {
       const v = this._view;
@@ -2083,8 +2095,12 @@
       let s1 = 0;
       while (!out(s1) && s1 < 400) s1 += 2;
       const w = state.weather;
+      // Some flights leave a long trail and some a short stub, at random: one in two even in dry air, nine in ten
+      // where there is high cloud (the air up there is moist). (Until 2.8.0 only high cloud made it long, so under a
+      // clear sky every trail was a stub; the user, 2026-11-24: "keep both short and long smoke but should appear
+      // randomly".)
       const moist = smooth(0.08, 0.55, w.cirrus || 0);
-      const life = rand(20, 60) + moist * rand(240, 660);
+      const life = Math.random() < 0.5 + 0.4 * moist ? rand(240, 660) : rand(20, 60);
       const h = (state.heading || 0) * D2R;
       const E = w.cirrusE || 0;
       const N = w.cirrusN || 0;
@@ -2112,7 +2128,8 @@
         const late = -this._nextPlane;
         const h = state.now.getHours() + state.now.getMinutes() / 60;
         this._nextPlane += rand(300, 900) * (h < 5 || h >= 23.5 ? 3 : 1);
-        if (this.aircraft.length < 2) {
+        // at most two in sight; the trails of ones gone by may stay a while longer, and do not hold a new one back
+        if (this.aircraft.filter((q) => q.t < q.cross).length < 2 && this.aircraft.length < 4) {
           const p = this._newPlane(state, false);
           p.t = late;
           if (p.t < p.cross + p.life) this.aircraft.push(p);
@@ -2545,9 +2562,11 @@
       if (!this.heli) {
         this._nextHeli -= dt;
         if (this._nextHeli <= 0) {
-          // one every 40 minutes to two hours; they do not fly these valleys in cloud, rain or a gale
-          this._nextHeli = rand(2400, 7200);
-          if (fair > 0.8 && w.windSpeed < 40 && w.coverage < 0.8) this.heli = this._newHeli(false);
+          // one every 15 to 40 minutes by day; they do not fly these valleys in rain, fog, a gale or under a closed
+          // deck. (Every 40 minutes to two hours and only under less than 80 % cloud before 2.8.1: the airport's usual
+          // broken deck at 10,000 ft held them back, and the user, 2026-11-24: "also i dont see any helicopter".)
+          this._nextHeli = rand(900, 2400);
+          if (fair > 0.8 && w.windSpeed < 40 && w.coverage < 0.9) this.heli = this._newHeli(false);
         }
         return;
       }
