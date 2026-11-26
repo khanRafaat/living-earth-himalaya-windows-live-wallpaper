@@ -1309,6 +1309,10 @@
         p = R.prog.treeFlag;
         gl.useProgram(p.p);
         this._common(p, state, box);
+        // the line's two ends and its sag: the shader swings it between them
+        p.set('uRopeFrom', this.flagLine.from);
+        p.set('uRopeTo', this.flagLine.top);
+        p.set('uRopeSag', this.flagLine.sag);
         gl.bindVertexArray(this.flagVAO);
         gl.drawArrays(gl.TRIANGLES, 0, this.flagLine.verts);
       }
@@ -1425,7 +1429,8 @@
     const from = [tie.p[0] + out[0] * tie.r, tie.p[1], tie.p[2] + out[2] * tie.r];
     const span = sub(top, from);
     const L = len(span);
-    const SAG = 0.2;
+    // a real line of flags sags a tenth of its length or so; 0.2 m (5 %) looked straight from the viewpoint
+    const SAG = 0.4;
     const at = (t) => [from[0] + span[0] * t, from[1] + span[1] * t - 4 * SAG * t * (1 - t), from[2] + span[2] * t];
     const v = [];
     const lo = [1e9, 1e9, 1e9];
@@ -1439,13 +1444,17 @@
     };
     const quad = (a, b, c, d) => [a, b, c, a, c, d];
     const NONE = [0, 0, 0];
-    // the line: a thin ribbon on edge, seen from either side
+    // the line: a thin ribbon on edge, seen from either side. Each point carries where it is along the line (aQ.z,
+    // 0 at the tree) and how far above or below its middle (aQ.y): the shader hangs it where the wind has it now
     const side = norm(cross(out, [0, 1, 0]));
     const SEG = 16;
     for (let i = 0; i < SEG; i++) {
-      const a = at(i / SEG);
-      const b = at((i + 1) / SEG);
-      for (const p of quad([a[0], a[1] + 0.006, a[2]], [b[0], b[1] + 0.006, b[2]], [b[0], b[1] - 0.006, b[2]], [a[0], a[1] - 0.006, a[2]])) put(p, [0, 0, 0, 0], NONE, side);
+      const ta = i / SEG;
+      const tb = (i + 1) / SEG;
+      const a = at(ta);
+      const b = at(tb);
+      const pts = [[a, ta, 0.006], [b, tb, 0.006], [b, tb, -0.006], [a, ta, 0.006], [b, tb, -0.006], [a, ta, -0.006]];
+      for (const [p, t, h] of pts) put([p[0], p[1] + h, p[2]], [1, h, t, 0], NONE, side);
     }
     // the stake: four sides, from under the ground to where the line is tied
     const R = 0.028;
@@ -1458,7 +1467,8 @@
       for (const p of quad([c0[0], -0.8, c0[2]], [c1[0], -0.8, c1[2]], [c1[0], top[1] + 0.06, c1[2]], [c0[0], top[1] + 0.06, c0[2]])) put(p, [0, 0, 0, 0], NONE, n);
     }
     // the flags, edge to edge with a finger's gap, clear of the trunk and of the stake
-    const COLS = 3;
+    // five columns, so the top edge bends with the line instead of being a straight bar
+    const COLS = 5;
     const ROWS = 6;
     const pitch = FLAG_W + 0.03;
     const count = Math.floor((L - 0.5) / pitch);
@@ -1474,15 +1484,17 @@
         }
       }
     }
-    // room for the cloth blown out level in any direction
+    // room for the line swung out by the wind, and the cloth on it blown out level in any direction
+    const room = FLAG_L + SAG;
     return {
       data: new Float32Array(v),
       verts: v.length / FLAG_FLOATS,
       count,
-      lo: [lo[0] - FLAG_L, lo[1] - FLAG_L, lo[2] - FLAG_L],
-      hi: [hi[0] + FLAG_L, hi[1] + 0.05, hi[2] + FLAG_L],
+      lo: [lo[0] - room, lo[1] - room, lo[2] - room],
+      hi: [hi[0] + room, hi[1] + 0.05, hi[2] + room],
       from,
       top,
+      sag: SAG,
     };
   }
   LE.buildFlags = buildFlags; // for tests

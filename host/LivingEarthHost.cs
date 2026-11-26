@@ -51,8 +51,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Khan Rafaat Abtahe")]
 [assembly: AssemblyCopyright("© 2026 Khan Rafaat Abtahe. MIT licence")]
 [assembly: AssemblyDescription("Living Earth Himalaya live wallpaper. Author: Khan Rafaat Abtahe")]
-[assembly: AssemblyVersion("2.8.1.0")]
-[assembly: AssemblyFileVersion("2.8.1.0")]
+[assembly: AssemblyVersion("2.9.0.0")]
+[assembly: AssemblyFileVersion("2.9.0.0")]
 
 namespace LivingEarth
 {
@@ -68,6 +68,7 @@ namespace LivingEarth
     {
         public const string ProjectUrl = "https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper";
         internal const string ShowEventName = @"Local\LivingEarthHostShow";
+        internal const string ExitEventName = @"Local\LivingEarthHostExit";
 
         [STAThread]
         private static void Main(string[] args)
@@ -77,6 +78,15 @@ namespace LivingEarth
             {
                 Directory.CreateDirectory(args[1]);
                 Host.UnpackPage(args[1]);
+                return;
+            }
+            // Asks the copy that runs to exit, as its tray's Exit does, and starts nothing (for scripts and tests: the
+            // wallpaper then closes Edge properly, where ending the app's process ends Edge with it)
+            if (args.Length == 1 && args[0] == "--exit")
+            {
+                EventWaitHandle h;
+                if (EventWaitHandle.TryOpenExisting(ExitEventName, out h))
+                    using (h) h.Set();
                 return;
             }
             bool first;
@@ -1275,8 +1285,9 @@ namespace LivingEarth
         private readonly NotifyIcon tray;
         private readonly ToolStripMenuItem statusItem, desktopItem, maximizedItem, pausedItem, startupItem, demoItem;
         private readonly Control invoker;
-        private readonly EventWaitHandle showEvent;
-        private readonly RegisteredWaitHandle showWait;
+        private readonly EventWaitHandle showEvent, exitEvent;
+        private readonly RegisteredWaitHandle showWait, exitWait;
+        private string pageTitle; // what Edge's window said last: the page puts its news there ("LE ready …")
         private readonly int ownPid = Process.GetCurrentProcess().Id;
         private SetupForm setup;
         private bool running, quitting, detecting, toldUnsupported;
@@ -1461,6 +1472,13 @@ namespace LivingEarth
                 try { invoker.BeginInvoke(new MethodInvoker(ShowSetup)); }
                 catch (InvalidOperationException) { }
             }, null, -1, false);
+            // and "LivingEarthHost.exe --exit" asks it to exit
+            exitEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ExitEventName);
+            exitWait = ThreadPool.RegisterWaitForSingleObject(exitEvent, delegate
+            {
+                try { invoker.BeginInvoke(new MethodInvoker(delegate { Log("asked to exit (--exit)"); Quit(); })); }
+                catch (InvalidOperationException) { }
+            }, null, -1, false);
 
             // An older entry without --startup would open the window at every sign-in
             if (StartsWithWindows() && !RunCommand().Contains("--startup")) SetStartup(true);
@@ -1547,7 +1565,7 @@ namespace LivingEarth
             {
                 // Edge is told what to draw with when it starts, so it starts again
                 Log("drawing with something else now: Edge starts again");
-                StopEdge();
+                StopEdge(true, CleanCloseMs);
                 nextLaunch = DateTime.MinValue;
                 return;
             }
@@ -1616,7 +1634,7 @@ namespace LivingEarth
             if (toldUnsupported) return;
             toldUnsupported = true;
             Log("desktop layout not recognized: this app needs Windows 11 24H2 or later");
-            StopEdge();
+            StopEdge(false, 0);
             MessageBox.Show(
                 "Living Earth Himalaya can only put itself behind the desktop icons on Windows 11 version 24H2 or later.\n\n" +
                 "On this version of Windows, use the free Lively Wallpaper app with the Lively download instead. " +
@@ -1633,6 +1651,7 @@ namespace LivingEarth
                 DateTime now = DateTime.UtcNow;
                 KeepEdgeRunning(now);
                 if (quitting) return;
+                WatchPageTitle();
                 UpdateBusy(now);
                 ApplyPace(now);
                 if (now >= nextBackground) UpdateBackground(now);
@@ -2128,7 +2147,7 @@ namespace LivingEarth
             quickDeaths = !attached || (now - startedAt).TotalSeconds < QuickDeathSeconds ? quickDeaths + 1 : 0;
             bool giveUp = quickDeaths >= MaxQuickDeaths;
             Log(what + (giveUp ? "" : ", restarting in " + backoff.TotalSeconds + " s"));
-            StopEdge();
+            StopEdge(false, 0);
             nextLaunch = now + backoff;
             backoff = TimeSpan.FromSeconds(Math.Min(backoff.TotalSeconds * 2, 300));
             if (!giveUp) return false;
@@ -2166,11 +2185,19 @@ namespace LivingEarth
             drawWith = GraphicsChip.Choose(settings.Device);
             if (was == null || was.Describe() != drawWith.Describe()) Log("draw with: " + drawWith.Describe());
             string url = new Uri(pagePath).AbsoluteUri + "?host=1&" + PageQuery();
+            // A new version (or a first start on this PC) starts with a fresh shader cache, and its page says so while it
+            // compiles. Not in tests started with --mode or --query: they leave everything of the real one as it is.
+            string firstStart = saveSettings ? PrepareShaderCache(dataDir, AboutForm.VersionText, Log) : null;
+            if (firstStart != null) url += "&firststart=" + firstStart;
+            pageTitle = null;
             Rectangle vs = SystemInformation.VirtualScreen;
             var cmd = new StringBuilder();
             cmd.Append('"').Append(edge).Append('"');
-            // Kiosk mode, because an --app window keeps a title bar that Edge draws inside the window itself.
-            cmd.Append(" --kiosk \"").Append(url).Append("\" --edge-kiosk-type=fullscreen");
+            // Kiosk mode, because an --app window keeps a title bar that Edge draws inside the window itself. Plain
+            // --kiosk, not Edge's own kiosk (--edge-kiosk-type=fullscreen, up to 2.8.1): that one is InPrivate, so
+            // nothing it compiled or stored outlived it, and every start compiled every shader again (~13 min on a UHD
+            // 730). This one keeps its profile, and with it the compiled shaders (see PrepareShaderCache).
+            cmd.Append(" --kiosk \"").Append(url).Append('"');
             cmd.Append(" --user-data-dir=\"").Append(Path.Combine(dataDir, "edge-profile")).Append('"');
             cmd.Append(" --window-position=").Append(vs.X).Append(',').Append(vs.Y);
             cmd.Append(" --window-size=").Append(vs.Width).Append(',').Append(vs.Height);
@@ -2298,10 +2325,31 @@ namespace LivingEarth
             return s.ToString();
         }
 
-        private void StopEdge()
+        // How long Edge gets to close by itself before it is ended. Closed properly it writes what it still holds and
+        // marks its profile as closed; ended, it leaves the profile as if it had crashed.
+        internal const int CleanCloseMs = 5000;
+
+        /**
+         * clean: first ask Edge to close its window and wait up to waitMs for all of it to go; whatever is still there
+         * then is ended, as it always is when not clean (Edge failed or hung: no point waiting).
+         */
+        private void StopEdge(bool clean, int waitMs)
         {
             if (job != IntPtr.Zero)
             {
+                if (clean && wallpaper != IntPtr.Zero && Native.IsWindow(wallpaper))
+                {
+                    var sw = Stopwatch.StartNew();
+                    Native.PostMessage(wallpaper, Native.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+                    int started, active, overLimit;
+                    bool gone = false;
+                    while (sw.ElapsedMilliseconds < waitMs)
+                    {
+                        if (JobCounts(out started, out active, out overLimit) && active == 0) { gone = true; break; }
+                        Thread.Sleep(50);
+                    }
+                    Log(gone ? "Edge closed properly in " + sw.ElapsedMilliseconds + " ms" : "Edge did not close in " + (waitMs / 1000.0) + " s: ended");
+                }
                 Native.TerminateJobObject(job, 0);
                 Native.CloseHandle(job);
                 job = IntPtr.Zero;
@@ -2313,6 +2361,90 @@ namespace LivingEarth
             }
             attached = false;
             wallpaper = IntPtr.Zero;
+        }
+
+        // The compiled shaders Edge keeps in its profile. A new version starts them afresh: its shaders changed, and the
+        // old ones would only fill the cache. The version they belong to is in shader-cache.version.
+        internal static readonly string[] ShaderCacheDirs = { @"Default\GPUCache", "ShaderCache", "GrShaderCache", "GPUPersistentCache" };
+
+        /**
+         * Before Edge starts. Null when the shader cache is this version's. Otherwise it clears the cache (nothing else in
+         * the profile), notes the version, and says "update" (an older version ran here) or "fresh" (a first start on this
+         * PC). The note is written at once, not when the page is up, so a page that never says so can't clear it every time.
+         */
+        internal static string PrepareShaderCache(string dataDir, string version, Action<string> log)
+        {
+            string marker = Path.Combine(dataDir, "shader-cache.version");
+            string profile = Path.Combine(dataDir, "edge-profile");
+            string had = null;
+            try { if (File.Exists(marker)) had = File.ReadAllText(marker).Trim(); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            if (had == version) return null;
+            bool older = had != null || Directory.Exists(profile);
+            int cleared = 0;
+            foreach (string d in ShaderCacheDirs)
+            {
+                string p = Path.Combine(profile, d);
+                if (!Directory.Exists(p)) continue;
+                try { Directory.Delete(p, true); cleared++; }
+                catch (IOException ex) { log("shader cache: could not clear " + d + ": " + ex.Message); }
+                catch (UnauthorizedAccessException ex) { log("shader cache: could not clear " + d + ": " + ex.Message); }
+            }
+            try { File.WriteAllText(marker, version); }
+            catch (IOException ex) { log("shader cache: could not note the version: " + ex.Message); }
+            catch (UnauthorizedAccessException ex) { log("shader cache: could not note the version: " + ex.Message); }
+            log((older ? "new version " + version + (had != null ? " (was " + had + ")" : "") + ": shader cache cleared (" + cleared + " folders)" : "first start on this PC") +
+                ", so this start compiles every shader");
+            return older ? "update" : "fresh";
+        }
+
+        // The page's news in the title of Edge's window: "LE compiled 21 in 652.0 s; slowest: …" and "LE ready 2.9.0; …".
+        // Logged once each, with how much processor time Edge has used: what a slow start is judged by.
+        private void WatchPageTitle()
+        {
+            if (wallpaper == IntPtr.Zero || !attached) return;
+            string t = Native.WindowText(wallpaper);
+            if (t == pageTitle) return;
+            pageTitle = t;
+            string news = PageNews(t);
+            if (news == null) return;
+            long user, kernel;
+            Log("page: " + news + (JobTimes(out user, out kernel) ? " (Edge so far: " + ((user + kernel) / 10000000) + " s of processor time)" : ""));
+        }
+
+        /**
+         * What the page says in its title, or null when it is only a title. Edge adds its own after it, such as
+         * " - Profile 1 - Microsoft Edge"; the page's note never holds " - ".
+         */
+        internal static string PageNews(string title)
+        {
+            if (title == null || !title.StartsWith("LE ", StringComparison.Ordinal)) return null;
+            string s = title.Substring(3);
+            int e = s.IndexOf(" - ", StringComparison.Ordinal);
+            if (e >= 0) s = s.Substring(0, e);
+            return s.StartsWith("compiled ", StringComparison.Ordinal) || s.StartsWith("ready ", StringComparison.Ordinal) ? s : null;
+        }
+
+        /** The processor time of everything that ran in Edge's job, in 100 ns. */
+        private bool JobTimes(out long user, out long kernel)
+        {
+            user = kernel = 0;
+            if (job == IntPtr.Zero) return false;
+            const int Size = 48; // JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+            IntPtr mem = Marshal.AllocHGlobal(Size);
+            try
+            {
+                uint got;
+                if (!Native.QueryInformationJobObject(job, Native.JobObjectBasicAccountingInformation, mem, Size, out got)) return false;
+                user = Marshal.ReadInt64(mem, 0);
+                kernel = Marshal.ReadInt64(mem, 8);
+                return true;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(mem);
+            }
         }
 
         /** cpuShare: the most of the processor Edge may use, in percent of all of it (0: no limit). */
@@ -2895,12 +3027,14 @@ namespace LivingEarth
             HookForeground(false);
             if (background != null && !handover) background.Restore();
             showWait.Unregister(null);
+            exitWait.Unregister(null);
             SystemEvents.SessionSwitch -= OnSessionSwitch;
             SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
             SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
             if (placeBurst != null) placeBurst.Dispose();
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
-            StopEdge();
+            // a new version waiting to take over gets a shorter wait
+            StopEdge(true, handover ? 2000 : CleanCloseMs);
             tray.Visible = false;
             tray.Dispose();
             try { File.Delete(statePath); }
@@ -3996,6 +4130,16 @@ namespace LivingEarth
         [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
         [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr h, ref POINT p);
         [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+        [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+        public const uint WM_CLOSE = 0x0010;
+        // the text the window keeps for itself (its title), read without asking the window: Edge can't hold this up
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int InternalGetWindowText(IntPtr h, StringBuilder s, int n);
+        public static string WindowText(IntPtr h)
+        {
+            var s = new StringBuilder(512);
+            InternalGetWindowText(h, s, s.Capacity);
+            return s.ToString();
+        }
         [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
         [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
         [DllImport("user32.dll")] public static extern bool GetLayeredWindowAttributes(IntPtr h, out uint key, out byte alpha, out uint flags);

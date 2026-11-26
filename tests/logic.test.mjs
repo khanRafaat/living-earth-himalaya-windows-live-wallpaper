@@ -1304,7 +1304,7 @@ test('prayer flags hang on a line from the trunk to a stake, in the five colours
   for (let i = 0; i < F.verts; i++) rows.push(Array.from(F.data.subarray(i * V, i * V + V)));
   const cloth = rows.filter((r) => r[6] === 5);
   const wood = rows.filter((r) => r[6] === 0);
-  assert.equal(cloth.length, F.count * 3 * 6 * 6, 'each flag 3 by 6 squares, so waves can run down it');
+  assert.equal(cloth.length, F.count * 5 * 6 * 6, 'each flag 5 by 6 squares, so waves can run down it and its top edge bends with the line');
   // blue, white, red, green, yellow, and round again
   const colourOf = (r) => r.slice(7, 10).map((x) => x.toFixed(2)).join(',');
   const order = [];
@@ -1326,7 +1326,7 @@ test('prayer flags hang on a line from the trunk to a stake, in the five colours
     const t = along(r);
     assert.ok(t > 0.03 && t < 0.97, 'between the two');
     const straight = F.from[1] + (F.top[1] - F.from[1]) * t;
-    assert.ok(r[1] <= straight + 1e-6 && r[1] > straight - 0.21, 'on the sagging line');
+    assert.ok(r[1] <= straight + 1e-6 && r[1] > straight - 0.41, 'on the sagging line');
     assert.ok(r[1] - 0.36 > 0.9, 'clear of the ground');
     assert.ok(Math.abs(r[3]) <= 0.135 + 1e-6 && r[4] >= 0 && r[4] <= 0.36 + 1e-6);
   }
@@ -1336,8 +1336,12 @@ test('prayer flags hang on a line from the trunk to a stake, in the five colours
   const sh = readSrc('engine/shaders/tree.js');
   assert.ok(sh.includes('float lift = blow * abs(across);') && sh.includes('float run = x * along + d * sqrt(max(1.0 - along * along, 0.0));') &&
     sh.includes('float wave = sin(uFlutter * 9.0 + phase - run * 14.0) * 0.6 + sin(uFlutter * 15.0 + phase * 1.7 - run * 23.0) * 0.3;') &&
-    sh.includes('float a = lift + wave * 0.45 * min(uWindStr * 2.0, 1.0) * (d / 0.36);') &&
-    sh.includes('return T * x + (out1 * sin(a) - vec3(0.0, 1.0, 0.0) * cos(a) + T * (along * 0.35 * min(blow, 1.0))) * d;'));
+    sh.includes('float rock = 0.22 * min(uWindStr, 1.5) * abs(along) * osc(1.3, phase);') &&
+    sh.includes('float a = lift + ropeSwing * sign(across) + rock + wave * 0.45 * min(uWindStr * 2.0, 1.0) * (1.0 + 0.6 * abs(along)) * (d / 0.36);') &&
+    sh.includes('return (out1 * sin(a) - vec3(0.0, 1.0, 0.0) * cos(a) + T * (along * 0.35 * min(blow, 1.0))) * d;') &&
+    sh.includes('return rope(t) + cloth(T, x, d, phase, gust);'));
+  // the shader's clock: whole cycles in 2400 s (tree.js osc)
+  const osc = (w, ph, clock) => Math.sin(Math.floor((w * 2400) / (2 * Math.PI) + 0.5) * ((2 * Math.PI) / 2400) * clock + ph);
   // [along the line, level across it, up]; the wind blows at the angle dir to the line (0 = along it)
   const waveAt = (x, d, clock, dir) => {
     const along = Math.cos(dir);
@@ -1348,7 +1352,8 @@ test('prayer flags hang on a line from the trunk to a stake, in the five colours
     const along = Math.cos(dir);
     const across = Math.sin(dir);
     const blow = Math.min(Math.max(str * (0.55 + 0.35 * gust), 0), 1.35);
-    const a = blow * Math.abs(across) + waveAt(x, d, clock, dir) * 0.45 * Math.min(str * 2, 1) * (d / 0.36);
+    const rock = 0.22 * Math.min(str, 1.5) * Math.abs(along) * osc(1.3, 0, clock);
+    const a = blow * Math.abs(across) + rock + waveAt(x, d, clock, dir) * 0.45 * Math.min(str * 2, 1) * (1 + 0.6 * Math.abs(along)) * (d / 0.36);
     return [x + along * 0.35 * Math.min(blow, 1) * d, (across < 0 ? -1 : 1) * Math.sin(a) * d, -Math.cos(a) * d];
   };
   const Q = Math.PI / 2;
@@ -1373,6 +1378,89 @@ test('prayer flags hang on a line from the trunk to a stake, in the five colours
   }
   assert.ok(Math.abs(waveAt(0.1, 0.2, 0.4, 0) - waveAt(-0.1, 0.2, 0.4, 0)) > 0.05, 'in a wind along the line the waves cross the flag');
   near(waveAt(0.1, 0.2, 0.4, Q), waveAt(-0.1, 0.2, 0.4, Q), 1e-9, 'in a wind across it they run down it');
+  // 2026-11-24 the user: "prayer flag rope is not moving based on wind direction its looks like flags are bindings on
+  // rod or stick". The line, worked out as the shader does (tree.js rope()): it hangs between its two ends and the
+  // wind across it swings it over downwind like a skipping rope
+  assert.ok(sh.includes('float tilt = atan(0.55 * pow(uWindStr, 1.3) * (1.0 + 0.35 * gR) * acrossR);') &&
+    sh.includes('ropeSwing = (osc(3.45, 0.0) * 0.7 + osc(5.65, 1.7) * 0.3) * 0.12 * min(uWindStr, 1.5) * abs(acrossR) * (1.0 + 0.4 * gR);') &&
+    sh.includes('float ph = tilt + ropeSwing;') && sh.includes('ropeHang = vec3(0.0, -cos(ph), 0.0) + ropeC * sin(ph);') &&
+    sh.includes('float ripple = 0.02 * min(uWindStr, 1.5) * osc(4.4, -9.4 * t);') &&
+    sh.includes('return mix(uRopeFrom, uRopeTo, t) + ropeHang * (uRopeSag * b + ripple * b) + ropeTie * (1.0 - t);'), 'the line in the shader');
+  const fg = readSrc('engine/foreground.js');
+  assert.ok(fg.includes("p.set('uRopeFrom', this.flagLine.from);") && fg.includes("p.set('uRopeTo', this.flagLine.top);") && fg.includes("p.set('uRopeSag', this.flagLine.sag);"));
+  const chord = [F.top[0] - F.from[0], F.top[1] - F.from[1], F.top[2] - F.from[2]];
+  const cLen = Math.hypot(chord[0], chord[2]);
+  const C = [-chord[2] / cLen, 0, chord[0] / cLen]; // level, across the line
+  const A = [chord[0] / cLen, 0, chord[2] / cLen]; // level, along it
+  const ropeAt = (t, W, str, gust, clock) => {
+    const across = W[0] * C[0] + W[2] * C[2];
+    const tilt = Math.atan(0.55 * Math.pow(str, 1.3) * (1 + 0.35 * gust) * across);
+    const swing = (osc(3.45, 0, clock) * 0.7 + osc(5.65, 1.7, clock) * 0.3) * 0.12 * Math.min(str, 1.5) * Math.abs(across) * (1 + 0.4 * gust);
+    const ph = tilt + swing;
+    const hang = [C[0] * Math.sin(ph), -Math.cos(ph), C[2] * Math.sin(ph)];
+    const b = 4 * t * (1 - t);
+    const ripple = 0.02 * Math.min(str, 1.5) * osc(4.4, -9.4 * t, clock);
+    return [0, 1, 2].map((k) => F.from[k] + chord[k] * t + hang[k] * (F.sag * b + ripple * b));
+  };
+  const offAt = (p, t) => [0, 1, 2].map((k) => p[k] - (F.from[k] + chord[k] * t)); // from the straight line
+  const sideOf = (p, t) => { const o = offAt(p, t); return o[0] * C[0] + o[2] * C[2]; };
+  const lengthOf = (W, str, gust, clock) => {
+    let l = 0;
+    for (let i = 0; i < 64; i++) { const a = ropeAt(i / 64, W, str, gust, clock); const b = ropeAt((i + 1) / 64, W, str, gust, clock); l += Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]); }
+    return l;
+  };
+  const still = lengthOf(C, 0, 0, 0);
+  near(F.sag, 0.4, 1e-9, 'a sag of about a tenth of the line');
+  // the line as built is the line in still air, whatever the clock
+  const line = rows.filter((r) => r[6] === 0 && r[3] === 1);
+  assert.equal(line.length, 16 * 6, 'the line: 16 pieces, each knowing where it is along the line');
+  for (const clock of [0, 3.3, 517]) {
+    for (const r of line) {
+      const p = ropeAt(r[5], C, 0, 0, clock);
+      near(Math.hypot(p[0] - r[0], p[1] + r[4] - r[1], p[2] - r[2]), 0, 1e-5, 'still air: where it was built');
+      near(sideOf(p, r[5]), 0, 1e-9, 'still air: in the upright plane through its ends');
+    }
+  }
+  // the wind across the line pushes its middle over downwind, further in a gale, and the other way round when the
+  // wind turns; it swings about that
+  const tiltAt = (W, str, gust, clock) => { const o = offAt(ropeAt(0.5, W, str, gust, clock), 0.5); return Math.atan2(o[0] * C[0] + o[2] * C[2], -o[1]) / (Math.PI / 180); };
+  for (const clock of [0, 1.1, 2.6, 40]) {
+    const breeze = tiltAt(C, 1, 0, clock);
+    const gale = tiltAt(C, 2.4, 0.5, clock);
+    assert.ok(breeze > 15 && breeze < 42, `a strong breeze across it: ${breeze.toFixed(0)}° over`);
+    assert.ok(gale > 45 && gale < 78 && gale > breeze, `a storm: ${gale.toFixed(0)}° over`);
+    const back = [-C[0], 0, -C[2]];
+    assert.ok(tiltAt(back, 1, 0, clock) < -15 && tiltAt(back, 2.4, 0.5, clock) < -45, 'and over the other way when the wind turns round');
+  }
+  assert.ok(Math.abs(tiltAt(C, 1, 0, 0.4) - tiltAt(C, 1, 0, 1.3)) > 2, 'it swings');
+  // a wind along the line can't swing it, from either end
+  for (const W of [A, [-A[0], 0, -A[2]]]) for (const clock of [0, 0.7, 9]) for (let t = 0; t <= 1; t += 0.125) near(sideOf(ropeAt(t, W, 2.4, 1, clock), t), 0, 1e-9, 'a wind along the line');
+  // the ends stay tied (the shader's tree end moves only with the trunk), and the line hardly stretches
+  for (const [W, str] of [[C, 1], [C, 2.4], [A, 2.4], [[0.6, 0, 0.8], 1.7]]) {
+    for (const clock of [0, 2.2]) {
+      near(Math.hypot(...offAt(ropeAt(0, W, str, 1, clock), 0)), 0, 1e-12, 'tied at the tree');
+      near(Math.hypot(...offAt(ropeAt(1, W, str, 1, clock), 1)), 0, 1e-12, 'tied at the stake');
+      near(lengthOf(W, str, 1, clock) / still, 1, 0.03, 'its length');
+    }
+  }
+  assert.ok(sh.includes('ropeTie = windOffset(uRopeFrom, vec4(0.0), gustAt(uRopeFrom));'), 'the tree end goes with the trunk');
+  // every flag knows its place on the line from where it was built, so its top edge is on the line where it is now
+  for (const r of cloth) {
+    const t0 = ((r[0] - F.from[0]) * chord[0] + (r[2] - F.from[2]) * chord[2]) / (chord[0] ** 2 + chord[2] ** 2);
+    const rest = ropeAt(t0, C, 0, 0, 0);
+    near(Math.hypot(rest[0] - r[0], rest[1] - r[1], rest[2] - r[2]), 0, 1e-5, 'a flag on the line');
+  }
+  // the tree's picture has room for the line swung out in a storm with its flags blown out level from it
+  const SWAY_ROOM = 1.2; // foreground.js: room above the tree's box for the crown, the line and the flags blown up
+  for (const W of [C, [-C[0], 0, -C[2]]]) {
+    for (const clock of [0, 0.5, 1.1, 2.9]) {
+      for (let t = 0; t <= 1; t += 0.05) {
+        const p = ropeAt(t, W, 2.4, 1, clock);
+        for (const k of [0, 2]) assert.ok(p[k] - 0.36 >= F.lo[k] - 1e-6 && p[k] + 0.36 <= F.hi[k] + 1e-6, 'room across');
+        assert.ok(p[1] - 0.36 >= F.lo[1] - 1e-6 && p[1] + 0.36 <= F.hi[1] + SWAY_ROOM, 'room up and down');
+      }
+    }
+  }
   assert.ok(sh.includes('} else if (kind == 5) {') && sh.includes('alb = vSide * (0.82 + 0.18 * smoothstep(1.0, 0.75, vUV.y)) * (0.9 + 0.2 * vr);'), 'drawn as cloth in its colour');
   // the switch: on unless turned off, from the address, the app and Lively; the foreground follows it
   assert.equal(load(['config.js']).LE.config.flags, true);
@@ -2639,6 +2727,83 @@ test("birds fly over the valley fog an airport's mist makes, and stay in when it
   const foggy = testLife(12, { fog: 0.9 });
   for (let i = 0; i < 30; i++) foggy.life.update(2, foggy.state, foggy.view);
   assert.ok(!foggy.life.raptors.length && !foggy.life.flock && !foggy.life.geese, 'fog: none');
+});
+
+// 2026-11-24 the user: "this birds coming from same direction everything needs to fix". The season fixed the
+// skein's compass course, so with the view facing NE every autumn skein came straight at the viewer from the same place.
+test('geese come from either side, change sides more often than not, and never appear or vanish in open sky', () => {
+  const h = testLife(12, {}, 2911);
+  const { life, state, view } = h;
+  life._view = view;
+  life.state = state;
+  const shows = (g) => g.birds.some((b) => (b.alpha ?? 1) > 0.01 && life._birdShows(b));
+  for (const [doy, season] of [[300, 'autumn'], [90, 'spring'], [190, 'summer']]) {
+    for (const heading of [50, 180, 90, 270, 0]) {
+      state.astro.dayOfYear = doy;
+      state.heading = heading;
+      life._lastGeeseSide = undefined;
+      life._geeseRun = 0;
+      const sides = [];
+      const kinds = {};
+      for (let n = 0; n < 200; n++) {
+        const g = life._newGeese(state, false);
+        sides.push(g.side);
+        kinds[g.kind] = (kinds[g.kind] || 0) + 1;
+        const what = `${season}, heading ${heading}, skein ${n} (${g.kind})`;
+        assert.ok(!shows(g), 'comes in out of sight: ' + what);
+        // the leader flies in front of the V
+        for (const b of g.birds) {
+          if (b.idx === 0) continue;
+          const back = (g.lead[0] - b.pos[0]) * g.dir[0] + (g.lead[2] - b.pos[2]) * g.dir[2];
+          assert.ok(back > 0.005, 'the leader in front: ' + what);
+        }
+        if (n % 10 === 0) {
+          // flown to the end: it was seen on the way, and every bird is out of sight when it goes
+          let seenAt = -1;
+          let wasShowing = false;
+          while (!g.dead) {
+            wasShowing = shows(g);
+            life._stepGeese(g, 0.5);
+            if (g.seen && seenAt < 0) seenAt = g.age;
+          }
+          assert.ok(seenAt > 0 && g.age < g.maxAge, `seen on its way and gone by itself: ${what}, age ${g.age.toFixed(0)} of ${g.maxAge.toFixed(0)}`);
+          assert.ok(!wasShowing && !shows(g), 'out of sight when it goes: ' + what);
+        }
+      }
+      const right = sides.filter((s) => s > 0).length / sides.length;
+      assert.ok(right >= 0.35 && right <= 0.65, `both sides, ${season}, heading ${heading}: ${(right * 100).toFixed(0)} % from the right`);
+      for (let i = 2; i < sides.length; i++) assert.ok(!(sides[i] === sides[i - 1] && sides[i] === sides[i - 2]), `never three in a row from one side: ${season}, heading ${heading}`);
+      const changes = sides.filter((s, i) => i && s !== sides[i - 1]).length / (sides.length - 1);
+      assert.ok(changes > 0.55, `the next one often from the other side: ${(changes * 100).toFixed(0)} %`);
+      assert.ok(kinds.cross > 130 && (kinds.toward || 0) > 5 && (kinds.away || 0) > 5, 'mostly across, some out of the peaks or into them: ' + JSON.stringify(kinds));
+    }
+  }
+  // the test panel and the demo call one up in view: it shows at once
+  for (let n = 0; n < 20; n++) {
+    const g = life._newGeese(state, true);
+    assert.ok(shows(g), 'summoned: in sight at once');
+    life._stepGeese(g, 1);
+    assert.ok(!g.dead, 'and stays');
+  }
+  // the season still says how often, not which way
+  assert.ok(readSrc('engine/life.js').includes('this._nextGeese = season ? rand(900, 2400) : rand(5400, 14400);'));
+  assert.ok(!readSrc('engine/life.js').includes('rand(195, 240)'), 'no fixed autumn course');
+});
+
+test('choughs and birds of prey come in from either side too', () => {
+  const { life, state, view } = testLife(12, {}, 77);
+  life._view = view;
+  life.state = state;
+  let flockRight = 0;
+  let raptorRight = 0;
+  for (let n = 0; n < 200; n++) {
+    const f = life._newFlock(false);
+    if (Math.atan2(f.birds[0].pos[0], f.birds[0].pos[2]) > 0) flockRight++;
+    const r = life._newRaptor(false);
+    if (Math.atan2(r.pos[0], r.pos[2]) > 0) raptorRight++;
+  }
+  assert.ok(flockRight >= 70 && flockRight <= 130, `choughs: ${flockRight} of 200 from the right`);
+  assert.ok(raptorRight >= 70 && raptorRight <= 130, `raptors: ${raptorRight} of 200 from the right`);
 });
 
 test('flying leaves off clears the air at once and keeps the tree, in autumn wind and spring blossom alike', () => {
@@ -3969,6 +4134,9 @@ test('an airliner crosses high and far off, straight and level, at an airliner\'
   // than two in sight, and a few trails of ones gone by at most
   const day = skyLife(12, 0.5);
   seedRandom(day.ctx, 6);
+  // airliners only: the helicopter (every 15-40 min by day since 2.8.1) or a kite in sight at the last step asked
+  // for frames now and then (2026-11-26, 1 run in 2), as in the perch test
+  day.life._nextHeli = day.life._nextKite = 1e9;
   let seen = 0;
   const known = new Set();
   for (let k = 0; k < 14400; k++) {
@@ -5651,4 +5819,64 @@ test('a far car is a small point of light, not a flare: the glow and its patch s
   const sp = readSrc('engine/shaders/sprites.js');
   assert.ok(sp.includes('float near = clamp(1.5 / dist, 0.25, 1.0);') && sp.includes('float halo = mix(12.0, 28.0, beam) * near * near;'));
   assert.ok(readSrc('engine/shaders/composite.js').includes('vec3 led = vec3(0.92, 0.95, 1.0) * 0.6;'), 'a white LED window no brighter than a warm one');
+});
+
+// ---------------------------------------------------------------- a quick start: the shaders from the cache
+// 2026-11-24 the user waited ~13 minutes on "Preparing the renderer" at every start: "if same version cache should
+// stay for next start faster if new version then cache should be new and also mention in making wallpaper live new
+// version found it will take much time than before"
+test('while the shaders compile the start screen counts them, and the times of each are kept', () => {
+  const h = load(RENDER_FILES);
+  const r = new h.LE.Renderer({}, h.LE.config);
+  let left = { bake: 3, volume: 2, sky: 0, fade: 1 }; // polls until each one is done
+  r.prog = {};
+  const finalized = [];
+  for (const k of Object.keys(left)) r.prog[k] = { ready: () => left[k] <= 0, finalize: () => finalized.push(k) };
+  r._makeNoise = () => {};
+  r._compileT0 = Date.now();
+  r.status = 'compiling';
+  const seen = [];
+  r.onStatus = (s, p) => seen.push([s, p]);
+  let compiled = null;
+  r.onCompiled = (times, ms) => (compiled = { times, ms });
+  for (let i = 0; i < 6 && !r._pollCompile(); i++) for (const k in left) left[k]--;
+  assert.ok(r._compiled && compiled, 'done');
+  assert.deepEqual(seen.map(([s]) => s), seen.map(() => 'compiling'));
+  const ps = seen.map(([, p]) => p);
+  assert.ok(ps.length >= 2 && ps.every((p, i) => !i || p > ps[i - 1]) && ps[ps.length - 1] < 1, 'a count that keeps moving: ' + ps);
+  assert.equal(r.compileDone, 4);
+  assert.equal(r.compileTotal, 4);
+  assert.deepEqual(Object.keys(compiled.times).sort(), ['bake', 'fade', 'sky', 'volume']);
+  assert.ok(compiled.times.sky <= compiled.times.fade && compiled.times.fade <= compiled.times.volume && compiled.times.volume <= compiled.times.bake, 'in the order they were done');
+  assert.deepEqual(finalized.sort(), ['bake', 'fade', 'sky', 'volume'], 'all checked once every one is done');
+  assert.ok(r._pollCompile(), 'and stays done');
+});
+
+test('the first start of a new version says it takes longer; a start of the same version just counts', () => {
+  const main = readSrc('main.js');
+  const src = main.slice(main.indexOf('  function compileText('), main.indexOf('  LE.compileText = compileText;'));
+  const compileText = vm.runInNewContext(src + '; compileText', {});
+  const upd = compileText(7, 21, 'update', 5000, '2.9.0');
+  assert.equal(upd, 'New version 2.9.0 found: this first start takes longer, up to 15 min. Later starts are much quicker. 7 of 21');
+  assert.equal(compileText(7, 21, 'fresh', 5000, '2.9.0'), 'First start: preparing it for this PC, up to 15 min. Later starts are much quicker. 7 of 21');
+  assert.equal(compileText(7, 21, null, 5000, '2.9.0'), 'Preparing the renderer… 7 of 21');
+  assert.equal(compileText(7, 21, null, 61000, '2.9.0'), 'Preparing the renderer… 7 of 21, this can take a few minutes', 'a slow start of the same version never says "new version"');
+  assert.ok(upd.length <= 110, 'one line on the small panel: ' + upd.length);
+  // the Windows app says which start it is; Lively and a browser compare with the version that last went live
+  for (const [q, want] of [['?host=1&firststart=update', 'update'], ['?host=1&firststart=fresh', 'fresh'], ['?host=1', null], ['?firststart=nonsense', null]]) {
+    const c = load(['config.js'], { search: q }).LE.config;
+    assert.equal(c.firstStart, want, q);
+    assert.equal(c.hosted, q.includes('host=1'), q);
+  }
+  assert.ok(main.includes("const firstStart = cfg.firstStart || (!cfg.hosted && LE.storage.get(LIVE_KEY, cfg.version) !== cfg.version ? 'update' : null);"));
+  assert.ok(main.includes("if (!cfg.hosted) LE.storage.set(LIVE_KEY, cfg.version);"), 'noted when it goes live');
+  // the page tells the Windows app, through its title, how long the shaders took and when it is live (host.log)
+  assert.ok(main.includes("if (cfg.hosted) document.title = 'LE ' + compiledNote;") && main.includes("if (cfg.hosted) document.title = 'LE ready ' + cfg.version + (compiledNote ? '; ' + compiledNote : '');"), 'only for the Windows app');
+  const host = readFileSync(new URL('../host/LivingEarthHost.cs', import.meta.url), 'utf8');
+  assert.ok(host.includes('string firstStart = saveSettings ? PrepareShaderCache(dataDir, AboutForm.VersionText, Log) : null;') && host.includes('if (firstStart != null) url += "&firststart=" + firstStart;'));
+  assert.ok(host.includes('internal static readonly string[] ShaderCacheDirs = { @"Default\\GPUCache", "ShaderCache", "GrShaderCache", "GPUPersistentCache" };'));
+  assert.ok(host.includes('StopEdge(true, handover ? 2000 : CleanCloseMs);') && host.includes('Native.PostMessage(wallpaper, Native.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);'), 'Edge is asked to close before it is ended');
+  // the cause: Edge's own kiosk (--edge-kiosk-type=fullscreen) is InPrivate and kept nothing; plain --kiosk keeps the
+  // profile (start-probe.mjs, 2026-11-26: what the page stored was gone at the next start only with the kiosk type)
+  assert.ok(host.includes(`cmd.Append(" --kiosk \\"").Append(url).Append('"');`) && !/cmd\.Append\([^)]*--edge-kiosk-type/.test(host), 'not InPrivate');
 });

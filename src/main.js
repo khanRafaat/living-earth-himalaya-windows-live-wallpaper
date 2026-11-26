@@ -75,6 +75,8 @@
     if (cfg.startStill) setTimeout(() => showVeil(false), 3000);
     else showVeil(false);
     window.__leReady = true;
+    // the Windows app logs what the page puts in its title (host.log): how long the shaders took, and that it is live
+    if (cfg.hosted) document.title = 'LE ready ' + cfg.version + (compiledNote ? '; ' + compiledNote : '');
   }
 
   function statusText() {
@@ -163,12 +165,46 @@
   function setVeilText(text) {
     veil.querySelectorAll('.veil-sub').forEach((n) => (n.textContent = text));
   }
+  // A new version: the Windows app says so (it clears the shader cache then), Lively and a browser keep the version
+  // that last went live
+  const LIVE_KEY = 'le3840.liveVersion';
+  const firstStart = cfg.firstStart || (!cfg.hosted && LE.storage.get(LIVE_KEY, cfg.version) !== cfg.version ? 'update' : null);
+  let compileFrom = 0;
+  let compileTimer = 0;
+  let compiledNote = '';
+  /**
+   * The start-up screen while the shaders compile, with a count that keeps moving. The first start of a new version,
+   * or on a new PC, compiles every one of them from nothing, which can take many minutes on a slow graphics chip;
+   * later starts take them from the cache in seconds.
+   */
+  function compileText(done, all, firstKind, waitedMs, version) {
+    const n = all ? ` ${done} of ${all}` : '';
+    if (firstKind === 'update') return `New version ${version} found: this first start takes longer, up to 15 min. Later starts are much quicker.${n}`;
+    if (firstKind === 'fresh') return `First start: preparing it for this PC, up to 15 min. Later starts are much quicker.${n}`;
+    return `Preparing the renderer…${n}` + (waitedMs > 60000 ? ', this can take a few minutes' : '');
+  }
+  LE.compileText = compileText; // for tests
+  function showCompiling() {
+    const r = renderer;
+    setVeilText(compileText(r ? r.compileDone : 0, r ? r.compileTotal : 0, firstStart, Date.now() - compileFrom, cfg.version));
+  }
+  function onCompiled(times, ms) {
+    const slow = Object.keys(times).sort((a, b) => times[b] - times[a]).slice(0, 3).map((k) => `${k} ${(times[k] / 1000).toFixed(1)}`);
+    compiledNote = `compiled ${Object.keys(times).length} in ${(ms / 1000).toFixed(1)} s${firstStart ? ' (' + firstStart + ')' : ''}; slowest: ${slow.join(', ')}`;
+    if (cfg.hosted) document.title = 'LE ' + compiledNote;
+  }
   function onRendererStatus(status, progress) {
     const pct = Math.round(progress * 100);
     veil.querySelectorAll('.veil-bar i').forEach((n) => (n.style.width = `${pct}%`));
+    if (status !== 'compiling' && compileTimer) {
+      clearInterval(compileTimer);
+      compileTimer = 0;
+    }
     // A number that keeps moving tells a slow first start from a stuck one
     if (status === 'compiling') {
-      setVeilText('Preparing the renderer… the first start can take a few minutes');
+      if (!compileFrom) compileFrom = Date.now();
+      if (!compileTimer) compileTimer = setInterval(showCompiling, 5000); // for "this can take a few minutes"
+      showCompiling();
       showVeil(true);
     } else if (status === 'baking') {
       setVeilText(`Shaping the mountains… ${pct}%`);
@@ -177,6 +213,7 @@
     else if (status === 'shadow') setVeilText(`Casting the first light… ${pct}%`);
     else if (status === 'running') {
       sceneReady = true;
+      if (!cfg.hosted) LE.storage.set(LIVE_KEY, cfg.version);
       if (revealed) {
         showVeil(false); // back from a resize or a graphics reset
       } else {
@@ -781,6 +818,7 @@
   function startRenderer() {
     renderer = new LE.Renderer(canvas, cfg);
     renderer.onStatus = onRendererStatus;
+    renderer.onCompiled = onCompiled;
     renderer.onError = fatal; // shader errors surface once background compilation finishes
     renderer.init();
     renderer.life = life;

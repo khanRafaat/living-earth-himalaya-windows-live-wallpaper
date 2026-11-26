@@ -8,7 +8,7 @@
   const LE = (window.LE = window.LE || {});
 
   LE.config = {
-    version: '2.8.1',
+    version: '2.9.0',
 
     location: {
       name: 'Dhaka',
@@ -144,4 +144,9 @@
   // screen instead of black, so the scene fades in over the same picture
   const still = q.get('still');
   c.startStill = ['night', 'dawn', 'morning', 'day', 'golden', 'dusk'].includes(still) ? still : null;
+  // Started by the Windows app, and whether this is the first start of a new version ('update') or on a new PC
+  // ('fresh'): then the shaders compile from nothing, which can take many minutes, and the start-up screen says so
+  c.hosted = q.get('host') === '1';
+  const first = q.get('firststart');
+  c.firstStart = first === 'update' || first === 'fresh' ? first : null;
 })();

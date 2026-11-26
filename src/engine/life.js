@@ -509,24 +509,83 @@
       return { birds, target: tgt, retarget: rand(3, 7), life: rand(70, 200), leaving: false };
     }
 
+    /**
+     * A skein of geese. Most cross the view from one side to the other on a straight course that passes 0.3-0.7 km
+     * off, so they come in low over the peaks at one edge, rise across the sky and go down to the other edge; some
+     * come out of the distance over the peaks and leave past a side, or come in at a side and go off into the peaks.
+     * They come in past an edge or too far off to see, and leave the same way: none appears or vanishes in open sky.
+     * The side they come from changes more often than not, and never three times running; in the migration seasons
+     * the side whose course heads the season's way (towards SW in autumn, NE in spring) comes up a little more often.
+     * Before 2.9.0 the season fixed the compass course itself, so with the view facing NE every autumn skein came
+     * from the same place, straight at the viewer.
+     */
     _newGeese(state, inView) {
       const v = this._view;
       const doy = state.astro.dayOfYear;
-      // autumn: Tibet → India (towards SW); spring: back towards NE; otherwise random waterfowl
       const autumn = doy >= 255 && doy <= 340;
       const spring = doy >= 55 && doy <= 125;
-      const compass = autumn ? rand(195, 240) : spring ? rand(15, 60) : rand(0, 360);
-      const rel = (compass - state.heading) * D2R;
-      const dir = [Math.sin(rel), 0, Math.cos(rel)];
-      const mid = this._pointInView(rand(-0.5, 0.5), rand(0.3, 0.6), rand(6, 16));
-      const L = inView ? 0.0 : 1.6;
-      const lead = [mid[0] - dir[0] * L, mid[1], mid[2] - dir[2] * L];
+      // which side it comes in at: +1 on the right, flying to the left (a course of about heading - 90°)
+      const last = this._lastGeeseSide || (Math.random() < 0.5 ? -1 : 1);
+      let pOther = 0.65;
+      if (autumn || spring) {
+        const want = autumn ? 217 : 37;
+        const off = (c) => Math.abs((((c - want) % 360) + 540) % 360 - 180);
+        const fav = off((state.heading || 0) - 90) < off((state.heading || 0) + 90) ? 1 : -1;
+        pOther += last === fav ? -0.05 : 0.05;
+      }
+      let side = Math.random() < pOther ? -last : last;
+      if ((this._geeseRun || 0) >= 2 && side === last) side = -last;
+      this._geeseRun = side === this._lastGeeseSide ? (this._geeseRun || 0) + 1 : 1;
+      this._lastGeeseSide = side;
+
+      const kind = inView ? 'cross' : Math.random() < 0.8 ? 'cross' : Math.random() < 0.5 ? 'toward' : 'away';
+      const edge = v.hfov / 2 + 6 * D2R; // just out of the frame (it ends 30 px past the edge)
+      const at = (az, d) => [Math.sin(az) * d, 0, Math.cos(az) * d];
+      const closest = (a, b) => {
+        // how near the course from a to b passes the viewer (km, on the ground)
+        const dx = b[0] - a[0];
+        const dz = b[2] - a[2];
+        const s = clamp(-(a[0] * dx + a[2] * dz) / (dx * dx + dz * dz), 0, 1);
+        return Math.hypot(a[0] + dx * s, a[2] + dz * s);
+      };
+      let a;
+      let b;
+      let near;
+      for (let k = 0; k < 8; k++) {
+        if (kind === 'cross') {
+          const r = rand(0.3, 0.7) / Math.cos(edge);
+          a = at(side * edge, r * rand(0.75, 1.3));
+          b = at(-side * edge, r * rand(0.75, 1.3));
+        } else {
+          // one end far off over the peaks, too far to see a goose; the other just past a side
+          const far = at(rand(-0.35, 0.35) * v.hfov * 0.5, rand(4, 5));
+          const by = at((kind === 'toward' ? -side : side) * edge, rand(0.5, 1.0));
+          [a, b] = kind === 'toward' ? [far, by] : [by, far];
+        }
+        near = closest(a, b);
+        if (near > 0.3) break;
+      }
+      // a level course, 6-16° up where it passes nearest
+      const y = v.camY + Math.max(near, 0.3) * Math.tan(rand(6, 16) * D2R);
+      a[1] = b[1] = y;
+      const len = Math.hypot(b[0] - a[0], b[2] - a[2]);
+      const dir = [(b[0] - a[0]) / len, 0, (b[2] - a[2]) / len];
+      const speed = 0.017;
+      const lead = inView ? [a[0] + (b[0] - a[0]) * 0.45, y, a[2] + (b[2] - a[2]) * 0.45] : a.slice();
       const n = 2 * Math.floor(rand(3, 9)) + 1;
       const birds = [];
       for (let i = 0; i < n; i++) {
         birds.push({ sp: SPECIES.goose, pos: lead.slice(), vel: [0, 0, 0], phase: rand(0, 0.4), bank: 0, alpha: 1, idx: i });
       }
-      return { birds, lead, dir, speed: 0.017, age: 0, maxAge: (2 * 1.6 + 0.6) / 0.017 };
+      const g = {
+        birds, lead, dir, speed, kind, side, age: 0, seen: false, hidden: 0,
+        // the far end fades as well as shrinking: in from it over 5 s, or out over the last 5 s before it
+        fadeIn: kind === 'toward' ? 5 : 0,
+        fadeOutAt: kind === 'away' ? len / speed : 0,
+        maxAge: len / speed + 60, // only a safety cap: it ends when every bird has been out of sight for 3 s
+      };
+      this._stepGeese(g, 0); // the V in its places at once
+      return g;
     }
 
     /**
@@ -1154,6 +1213,10 @@
       g.age += dt;
       g.lead = [g.lead[0] + g.dir[0] * g.speed * dt, g.lead[1] + 0.0001 * Math.sin(g.age * 0.3) * dt, g.lead[2] + g.dir[2] * g.speed * dt];
       const perp = [g.dir[2], 0, -g.dir[0]];
+      let alpha = 1;
+      if (g.fadeIn) alpha = Math.min(alpha, smooth(0, g.fadeIn, g.age));
+      if (g.fadeOutAt) alpha = Math.min(alpha, 1 - smooth(g.fadeOutAt - 5, g.fadeOutAt, g.age));
+      let shows = false;
       for (const b of g.birds) {
         const i = b.idx;
         const rank = Math.ceil(i / 2);
@@ -1168,8 +1231,24 @@
         b.phase += TAU * b.sp.flapHz * dt * (1 + 0.04 * Math.sin(i));
         b.amp = 0.85;
         b.dihedral = 0.02;
+        b.alpha = alpha;
+        if (!shows && alpha > 0.01 && this._birdShows(b)) shows = true;
       }
-      if (g.age > g.maxAge) g.dead = true;
+      // it goes once it has been seen and then every bird has been out of sight for a few seconds
+      if (shows) {
+        g.seen = true;
+        g.hidden = 0;
+      } else g.hidden += dt;
+      if ((g.seen && g.hidden > 3) || g.age > g.maxAge) g.dead = true;
+    }
+
+    /** Whether a bird is drawn where it is now: in the frame and big enough to show (the size fade in _pushBird). */
+    _birdShows(b) {
+      const v = this._view;
+      const p = b.pos;
+      if (!this._inView(this._project(p[0], p[1], p[2]), 30)) return false;
+      const dist = Math.hypot(p[0], p[1] - v.camY, p[2]);
+      return smooth(0.3, 1.1, b.sp.span / 2 / dist / v.pxAng) > 0.01;
     }
 
     // ------------------------------------------------------------ the road

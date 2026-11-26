@@ -251,15 +251,22 @@ void main() {
 }`;
 
   // Prayer flags (foreground.js buildFlags): squares of thin cotton hanging from a line, and the line and its stake.
-  // A flag hangs from its top edge. The wind lifts it away from hanging straight down, further in a gust, and waves
-  // run through it downwind, larger the harder it blows; in still air it hangs still.
+  // The line hangs in a curve between the trunk and the stake, and the wind swings that curve about the straight
+  // line between its ends, like a skipping rope: the part of the wind that blows across the line pushes it over
+  // downwind, further the harder it blows, and it swings and ripples about that; a wind along the line can't swing
+  // it. The tree end moves with the trunk. Each flag hangs from the line all along its top edge, so the edge bends
+  // with it. The wind lifts a flag away from hanging straight down, further in a gust, and waves run through it
+  // downwind, larger the harder it blows; in still air it all hangs still.
   S.treeFlagVertex = () => `#version 300 es
 precision highp float;
-layout(location = 0) in vec3 aP;   // a flag: the middle of its top edge on the line; the line and the stake: the point itself
-layout(location = 1) in vec4 aQ;   // a flag: along the line from there (m), down the cloth (m), its own phase, 5; else 0
+layout(location = 0) in vec3 aP;   // a flag: the middle of its top edge on the line at rest; the line and the stake: the point at rest
+layout(location = 1) in vec4 aQ;   // a flag: along the line from there (m), down the cloth (m), its own phase, 5; the line: 1, above its middle (m), along it (0 tree, 1 stake), 0; the stake: 0
 layout(location = 2) in vec3 aCol; // a flag's colour
-layout(location = 3) in vec3 aT;   // a flag: the way the line runs; the line and the stake: the surface normal
+layout(location = 3) in vec3 aT;   // a flag: the way the line runs at rest; the line and the stake: the surface normal
 ${treeVS}
+uniform vec3 uRopeFrom; // the line: where it is tied to the trunk (tree-local m)
+uniform vec3 uRopeTo;   // and to the top of the stake
+uniform float uRopeSag; // how far its middle hangs below the straight line between them in still air (m)
 out vec3 vPos;
 out vec3 vN;
 out vec4 vInfo;
@@ -267,10 +274,23 @@ out vec2 vUV;
 out vec2 vBark;
 out vec3 vClumpN;
 out vec3 vSide;
-// Where a point of the cloth is, from the middle of its top edge: x m along the line, d m down the cloth.
-// The flag is held all along its top edge, so only the part of the wind that blows across the line can lift it;
-// the part along the line drags its hem that way. The waves run through the cloth the way the wind blows: down it
-// in a wind across the line, from one side of the flag to the other in a wind along the line.
+// the way the line hangs now (down in still air, tilted downwind across it), its swing about that (rad, towards
+// ropeC) and how far the trunk has moved the tree end: the same for the whole line, worked out once in main()
+vec3 ropeHang;
+vec3 ropeC;
+float ropeSwing;
+vec3 ropeTie;
+// Where the line is at t (0 at the tree, 1 at the stake)
+vec3 rope(float t) {
+  float b = 4.0 * t * (1.0 - t);
+  float ripple = 0.02 * min(uWindStr, 1.5) * osc(4.4, -9.4 * t);
+  return mix(uRopeFrom, uRopeTo, t) + ropeHang * (uRopeSag * b + ripple * b) + ropeTie * (1.0 - t);
+}
+// Where a point of the cloth is, from its place on its top edge: T the way the line runs there, x m along the line
+// from the middle of the edge, d m down the cloth. The flag is held all along its top edge, so only the part of the
+// wind that blows across the line can lift it; the part along the line drags its hem that way and rocks the flag
+// about the line. The waves run through the cloth the way the wind blows: down it in a wind across the line, from
+// one side of the flag to the other in a wind along the line, larger towards the hem then.
 vec3 cloth(vec3 T, float x, float d, float phase, float gust) {
   vec3 c = normalize(cross(T, vec3(0.0, 1.0, 0.0)));
   float across = dot(uWindDir, c);
@@ -279,28 +299,53 @@ vec3 cloth(vec3 T, float x, float d, float phase, float gust) {
   float lift = blow * abs(across);
   float run = x * along + d * sqrt(max(1.0 - along * along, 0.0));
   float wave = sin(uFlutter * 9.0 + phase - run * 14.0) * 0.6 + sin(uFlutter * 15.0 + phase * 1.7 - run * 23.0) * 0.3;
-  float a = lift + wave * 0.45 * min(uWindStr * 2.0, 1.0) * (d / 0.36);
+  float rock = 0.22 * min(uWindStr, 1.5) * abs(along) * osc(1.3, phase);
+  float a = lift + ropeSwing * sign(across) + rock + wave * 0.45 * min(uWindStr * 2.0, 1.0) * (1.0 + 0.6 * abs(along)) * (d / 0.36);
   vec3 out1 = c * (across < 0.0 ? -1.0 : 1.0);
-  return T * x + (out1 * sin(a) - vec3(0.0, 1.0, 0.0) * cos(a) + T * (along * 0.35 * min(blow, 1.0))) * d;
+  return (out1 * sin(a) - vec3(0.0, 1.0, 0.0) * cos(a) + T * (along * 0.35 * min(blow, 1.0))) * d;
+}
+// A point of a flag: its top edge on the line where the line is now, the cloth hanging from there
+vec3 flagAt(float t0, float x, float d, float phase, float gust, float L) {
+  float t = clamp(t0 + x / L, 0.0, 1.0);
+  vec3 T = normalize(rope(min(t + 0.01, 1.0)) - rope(max(t - 0.01, 0.0)));
+  return rope(t) + cloth(T, x, d, phase, gust);
 }
 void main() {
   vClumpN = vec3(0.0);
   vBark = vec2(0.0);
+  // the line: the wind across it tilts it over downwind (about 29° in a strong breeze, 60° in a storm) and swings it
+  vec3 chord = uRopeTo - uRopeFrom;
+  float L = length(chord);
+  ropeC = normalize(vec3(-chord.z, 0.0, chord.x));
+  vec3 midR = mix(uRopeFrom, uRopeTo, 0.5);
+  float gR = gustAt(midR);
+  float acrossR = dot(uWindDir, ropeC);
+  float tilt = atan(0.55 * pow(uWindStr, 1.3) * (1.0 + 0.35 * gR) * acrossR);
+  ropeSwing = (osc(3.45, 0.0) * 0.7 + osc(5.65, 1.7) * 0.3) * 0.12 * min(uWindStr, 1.5) * abs(acrossR) * (1.0 + 0.4 * gR);
+  float ph = tilt + ropeSwing; // (a swing towards ropeC: a flag on the line takes it the way it is blown, cloth())
+  ropeHang = vec3(0.0, -cos(ph), 0.0) + ropeC * sin(ph);
+  ropeTie = windOffset(uRopeFrom, vec4(0.0), gustAt(uRopeFrom));
   vec3 P = aP;
   vec3 N = aT;
   float key = terrainLight(aP.y) * crownLight(aP);
   if (aQ.w > 2.5) {
     float g = gustAt(aP);
-    P = aP + cloth(aT, aQ.x, aQ.y, aQ.z, g);
-    vec3 down = cloth(aT, aQ.x, aQ.y + 0.02, aQ.z, g) - cloth(aT, aQ.x, max(aQ.y - 0.02, 0.0), aQ.z, g);
-    vec3 side = cloth(aT, aQ.x + 0.02, aQ.y, aQ.z, g) - cloth(aT, aQ.x - 0.02, aQ.y, aQ.z, g);
+    // where this flag sits along the line: its rest point on the line, measured along the line on the level
+    float t0 = dot(aP.xz - uRopeFrom.xz, chord.xz) / dot(chord.xz, chord.xz);
+    P = flagAt(t0, aQ.x, aQ.y, aQ.z, g, L);
+    vec3 down = flagAt(t0, aQ.x, aQ.y + 0.02, aQ.z, g, L) - flagAt(t0, aQ.x, max(aQ.y - 0.02, 0.0), aQ.z, g, L);
+    vec3 side = flagAt(t0, aQ.x + 0.02, aQ.y, aQ.z, g, L) - flagAt(t0, aQ.x - 0.02, aQ.y, aQ.z, g, L);
     N = normalize(cross(side, down));
     vUV = vec2(aQ.x / 0.27 + 0.5, aQ.y / 0.36);
-  } else vUV = vec2(0.0);
+  } else {
+    // the line where the wind has it; the stake stays where it stands
+    if (aQ.x > 0.5) P = rope(aQ.z) + vec3(0.0, aQ.y, 0.0);
+    vUV = vec2(0.0);
+  }
   vSide = aCol;
   vPos = uSite + P;
   vN = N;
-  vInfo = vec4(aQ.w, fract(aQ.z * 0.37), 1.0, key);
+  vInfo = vec4(aQ.w, aQ.w > 2.5 ? fract(aQ.z * 0.37) : 0.0, 1.0, key);
   gl_Position = projectEye(vPos);
 }`;
 

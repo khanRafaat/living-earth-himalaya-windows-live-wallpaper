@@ -30,6 +30,7 @@
   const TREE = { u: -0.672, r: 28, y: -3.6, patch: 1.4 }; // near the tip of the rock, below the eye and well off, so the view stays open
 
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+  const nowMs = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
 
   /**
    * Paces heavy one-off GPU work (terrain bake, shadow passes). It keeps only one chunk in
@@ -139,7 +140,12 @@
       this.quality = LE.QUALITY_LEVELS[1];
       this.onStatus = null;
       this.onError = null;
+      this.onCompiled = null; // (times, ms): every program has compiled; times = ms from the start of compiling, by name
       this._compiled = false;
+      this.compileTimes = {};
+      this.compileDone = 0;
+      this.compileTotal = 0;
+      this.compileMs = 0;
       this._lutAt = -1e9;
       this._shadow = null; // progressive shadow job
       this._shadowMix = 0;
@@ -222,6 +228,8 @@
 
       const V = S.vertex;
       const X = this.parallelExt;
+      this._compileT0 = nowMs();
+      this.compileTimes = {};
       this.prog = {
         bake: new Program(gl, V, S.bake(), 'bake', X),
         shadow: new Program(gl, V, S.shadow(), 'shadow', X),
@@ -284,13 +292,35 @@
       this._setStatus('compiling');
     }
 
-    /** True once every program has compiled, been checked, and the noise textures exist. */
+    /**
+     * True once every program has compiled, been checked, and the noise textures exist. Until then it counts the
+     * programs done (progress = done / all, for the start screen: a count that keeps moving tells a slow first start
+     * from a stuck one) and notes when each one was done, in ms from the start of compiling.
+     */
     _pollCompile() {
       if (this._compiled) return true;
-      for (const k in this.prog) if (!this.prog[k].ready()) return false;
+      const names = Object.keys(this.prog);
+      const t = nowMs() - this._compileT0;
+      let done = 0;
+      for (const k of names) {
+        if (!(k in this.compileTimes) && this.prog[k].ready()) this.compileTimes[k] = Math.round(t);
+        if (k in this.compileTimes) done++;
+      }
+      this.compileTotal = names.length;
+      this.compileDone = done;
+      if (done < names.length) {
+        const p = done / names.length;
+        if (p !== this.progress) {
+          this.progress = p;
+          if (this.onStatus) this.onStatus(this.status, p);
+        }
+        return false;
+      }
       for (const k in this.prog) this.prog[k].finalize(); // throws with the compile log on error
       this._makeNoise();
       this._compiled = true;
+      this.compileMs = Math.round(t);
+      if (this.onCompiled) this.onCompiled(this.compileTimes, this.compileMs);
       return true;
     }
 
