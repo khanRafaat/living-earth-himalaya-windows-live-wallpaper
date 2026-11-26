@@ -275,16 +275,19 @@ out vec2 vBark;
 out vec3 vClumpN;
 out vec3 vSide;
 // the way the line hangs now (down in still air, tilted downwind across it), its swing about that (rad, towards
-// ropeC) and how far the trunk has moved the tree end: the same for the whole line, worked out once in main()
+// ropeC), how much deeper or shallower it sags as the flags tug at it, the waves along it (m), and how far the trunk
+// has moved the tree end: the same for the whole line, worked out once in main()
 vec3 ropeHang;
 vec3 ropeC;
 float ropeSwing;
+float ropeBounce;
+float ropeRipple;
 vec3 ropeTie;
 // Where the line is at t (0 at the tree, 1 at the stake)
 vec3 rope(float t) {
   float b = 4.0 * t * (1.0 - t);
-  float ripple = 0.02 * min(uWindStr, 1.5) * osc(4.4, -9.4 * t);
-  return mix(uRopeFrom, uRopeTo, t) + ropeHang * (uRopeSag * b + ripple * b) + ropeTie * (1.0 - t);
+  float ripple = ropeRipple * (osc(6.3, -12.6 * t) * 0.7 + osc(9.4, 2.0 - 18.8 * t) * 0.3);
+  return mix(uRopeFrom, uRopeTo, t) + ropeHang * (uRopeSag * ropeBounce * b + ripple * b) + ropeTie * (1.0 - t);
 }
 // Where a point of the cloth is, from its place on its top edge: T the way the line runs there, x m along the line
 // from the middle of the edge, d m down the cloth. The flag is held all along its top edge, so only the part of the
@@ -321,8 +324,16 @@ void main() {
   float gR = gustAt(midR);
   float acrossR = dot(uWindDir, ropeC);
   float tilt = atan(0.55 * pow(uWindStr, 1.3) * (1.0 + 0.35 * gR) * acrossR);
-  ropeSwing = (osc(3.45, 0.0) * 0.7 + osc(5.65, 1.7) * 0.3) * 0.12 * min(uWindStr, 1.5) * abs(acrossR) * (1.0 + 0.4 * gR);
+  // The flags catch the wind like sails, so even a light breeze (5-10 km/h: uWindStr 0.2-0.4) swings the line some
+  // 7 degrees each way and bounces it; a strong one about 14. (2026-11-26 the user, of 2.9.0: "prayer flag rope not
+  // waving when wind": it swung 0.12 * uWindStr, 2 degrees or 2 cm in their usual breeze, not a pixel.)
+  float stir = pow(min(uWindStr, 1.5) / 1.5, 0.6);
+  ropeSwing = (osc(3.45, 0.0) * 0.7 + osc(5.65, 1.7) * 0.3) * 0.32 * stir * abs(acrossR) * (1.0 + 0.4 * gR);
+  ropeBounce = 1.0 + 0.16 * stir * (osc(4.7, 0.6) * 0.6 + osc(7.3, 2.1) * 0.4) * (1.0 + 0.5 * gR);
+  ropeRipple = 0.045 * stir;
   float ph = tilt + ropeSwing; // (a swing towards ropeC: a flag on the line takes it the way it is blown, cloth())
+  // however hard it blows, never over the top of its ends: from 69 degrees on it comes ever slower to 86
+  ph = sign(ph) * min(abs(ph), 1.2 + 0.3 * tanh(max(abs(ph) - 1.2, 0.0) / 0.3));
   ropeHang = vec3(0.0, -cos(ph), 0.0) + ropeC * sin(ph);
   ropeTie = windOffset(uRopeFrom, vec4(0.0), gustAt(uRopeFrom));
   vec3 P = aP;

@@ -172,6 +172,7 @@
       this.pace = 1; // how much faster than real smoke and mist come and go (the demo, a year in two minutes, raises it)
       this._hearthsLit = false; // the villages' smoke already going when the scene first shows
       this._nextFire = rand(300, 2400); // the first one can come early
+      this._recentFires = []; // where the last two fires burned: the next one is somewhere else
       this.road = null;
       this.vehicles = [];
       this._nextVehicle = 0;
@@ -2005,13 +2006,25 @@
         // the valley mist takes over, and a patch of it on its own looks like a cloud that has lost its way.
         const camY = this._view.camY;
         const dist = (s) => Math.hypot(s.x, s.y - camY, s.z);
-        const [lo, hi] = kind === SMOKE.fire ? [3, 8] : [1.2, 7];
-        const near = free.filter((s) => dist(s) > lo && dist(s) < hi);
-        if (near.length) free = near;
-        else if (kind === SMOKE.fire) free = [free.reduce((a, b) => (Math.abs(dist(a) - 5) < Math.abs(dist(b) - 5) ? a : b))];
-        else return null;
+        if (kind === SMOKE.fire) {
+          // A fire somewhere else each time (2026-11-26 the user: "forest fire looks like start from same place
+          // everyday it should be random"). With no forest 3 to 8 km off, it always took the one place nearest 5 km,
+          // and with only one or two there it came back to them. Now: the places 2.5 to 9 km off when there are at
+          // least four, else the four nearest 5 km; never where either of the last two fires burned.
+          const band = free.filter((s) => dist(s) > 2.5 && dist(s) < 9);
+          const off5 = (s) => Math.abs(Math.log(dist(s) / 5)); // (2.5 km is as far from 5 as 10 km)
+          const pick = band.length >= 4 ? band : free.slice().sort((a, b) => off5(a) - off5(b)).slice(0, 4);
+          const fresh = pick.filter((s) => !this._recentFires.includes(s));
+          const notLast = pick.filter((s) => s !== this._recentFires[0]); // (with two places only, they take turns)
+          free = fresh.length ? fresh : notLast.length ? notLast : pick;
+        } else {
+          const near = free.filter((s) => dist(s) > 1.2 && dist(s) < 7);
+          if (!near.length) return null;
+          free = near;
+        }
       }
       const src = free[Math.floor(Math.random() * free.length)];
+      if (kind === SMOKE.fire) this._recentFires = [src, ...this._recentFires].slice(0, 2);
       const base = { src, kind, alpha: 0, seed: Math.random(), age: 0, fire: 0, fading: false };
       // mist: a low patch, wider than it is tall, a few hundred metres across
       if (kind === SMOKE.mist) return Object.assign(base, { target: rand(0.55, 0.85), rise: rand(0.12, 0.32), width: rand(0.3, 0.7), life: rand(240, 720), ease: 30 });

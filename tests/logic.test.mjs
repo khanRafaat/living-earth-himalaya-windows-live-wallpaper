@@ -1382,10 +1382,14 @@ test('prayer flags hang on a line from the trunk to a stake, in the five colours
   // rod or stick". The line, worked out as the shader does (tree.js rope()): it hangs between its two ends and the
   // wind across it swings it over downwind like a skipping rope
   assert.ok(sh.includes('float tilt = atan(0.55 * pow(uWindStr, 1.3) * (1.0 + 0.35 * gR) * acrossR);') &&
-    sh.includes('ropeSwing = (osc(3.45, 0.0) * 0.7 + osc(5.65, 1.7) * 0.3) * 0.12 * min(uWindStr, 1.5) * abs(acrossR) * (1.0 + 0.4 * gR);') &&
-    sh.includes('float ph = tilt + ropeSwing;') && sh.includes('ropeHang = vec3(0.0, -cos(ph), 0.0) + ropeC * sin(ph);') &&
-    sh.includes('float ripple = 0.02 * min(uWindStr, 1.5) * osc(4.4, -9.4 * t);') &&
-    sh.includes('return mix(uRopeFrom, uRopeTo, t) + ropeHang * (uRopeSag * b + ripple * b) + ropeTie * (1.0 - t);'), 'the line in the shader');
+    sh.includes('float stir = pow(min(uWindStr, 1.5) / 1.5, 0.6);') &&
+    sh.includes('ropeSwing = (osc(3.45, 0.0) * 0.7 + osc(5.65, 1.7) * 0.3) * 0.32 * stir * abs(acrossR) * (1.0 + 0.4 * gR);') &&
+    sh.includes('ropeBounce = 1.0 + 0.16 * stir * (osc(4.7, 0.6) * 0.6 + osc(7.3, 2.1) * 0.4) * (1.0 + 0.5 * gR);') &&
+    sh.includes('ropeRipple = 0.045 * stir;') &&
+    sh.includes('float ph = tilt + ropeSwing;') && sh.includes('ph = sign(ph) * min(abs(ph), 1.2 + 0.3 * tanh(max(abs(ph) - 1.2, 0.0) / 0.3));') &&
+    sh.includes('ropeHang = vec3(0.0, -cos(ph), 0.0) + ropeC * sin(ph);') &&
+    sh.includes('float ripple = ropeRipple * (osc(6.3, -12.6 * t) * 0.7 + osc(9.4, 2.0 - 18.8 * t) * 0.3);') &&
+    sh.includes('return mix(uRopeFrom, uRopeTo, t) + ropeHang * (uRopeSag * ropeBounce * b + ripple * b) + ropeTie * (1.0 - t);'), 'the line in the shader');
   const fg = readSrc('engine/foreground.js');
   assert.ok(fg.includes("p.set('uRopeFrom', this.flagLine.from);") && fg.includes("p.set('uRopeTo', this.flagLine.top);") && fg.includes("p.set('uRopeSag', this.flagLine.sag);"));
   const chord = [F.top[0] - F.from[0], F.top[1] - F.from[1], F.top[2] - F.from[2]];
@@ -1395,12 +1399,15 @@ test('prayer flags hang on a line from the trunk to a stake, in the five colours
   const ropeAt = (t, W, str, gust, clock) => {
     const across = W[0] * C[0] + W[2] * C[2];
     const tilt = Math.atan(0.55 * Math.pow(str, 1.3) * (1 + 0.35 * gust) * across);
-    const swing = (osc(3.45, 0, clock) * 0.7 + osc(5.65, 1.7, clock) * 0.3) * 0.12 * Math.min(str, 1.5) * Math.abs(across) * (1 + 0.4 * gust);
-    const ph = tilt + swing;
+    const stir = Math.pow(Math.min(str, 1.5) / 1.5, 0.6);
+    const swing = (osc(3.45, 0, clock) * 0.7 + osc(5.65, 1.7, clock) * 0.3) * 0.32 * stir * Math.abs(across) * (1 + 0.4 * gust);
+    const bounce = 1 + 0.16 * stir * (osc(4.7, 0.6, clock) * 0.6 + osc(7.3, 2.1, clock) * 0.4) * (1 + 0.5 * gust);
+    let ph = tilt + swing;
+    ph = Math.sign(ph) * Math.min(Math.abs(ph), 1.2 + 0.3 * Math.tanh(Math.max(Math.abs(ph) - 1.2, 0) / 0.3));
     const hang = [C[0] * Math.sin(ph), -Math.cos(ph), C[2] * Math.sin(ph)];
     const b = 4 * t * (1 - t);
-    const ripple = 0.02 * Math.min(str, 1.5) * osc(4.4, -9.4 * t, clock);
-    return [0, 1, 2].map((k) => F.from[k] + chord[k] * t + hang[k] * (F.sag * b + ripple * b));
+    const ripple = 0.045 * stir * (osc(6.3, -12.6 * t, clock) * 0.7 + osc(9.4, 2 - 18.8 * t, clock) * 0.3);
+    return [0, 1, 2].map((k) => F.from[k] + chord[k] * t + hang[k] * (F.sag * bounce * b + ripple * b));
   };
   const offAt = (p, t) => [0, 1, 2].map((k) => p[k] - (F.from[k] + chord[k] * t)); // from the straight line
   const sideOf = (p, t) => { const o = offAt(p, t); return o[0] * C[0] + o[2] * C[2]; };
@@ -1424,14 +1431,30 @@ test('prayer flags hang on a line from the trunk to a stake, in the five colours
   // the wind across the line pushes its middle over downwind, further in a gale, and the other way round when the
   // wind turns; it swings about that
   const tiltAt = (W, str, gust, clock) => { const o = offAt(ropeAt(0.5, W, str, gust, clock), 0.5); return Math.atan2(o[0] * C[0] + o[2] * C[2], -o[1]) / (Math.PI / 180); };
-  for (const clock of [0, 1.1, 2.6, 40]) {
-    const breeze = tiltAt(C, 1, 0, clock);
-    const gale = tiltAt(C, 2.4, 0.5, clock);
-    assert.ok(breeze > 15 && breeze < 42, `a strong breeze across it: ${breeze.toFixed(0)}° over`);
-    assert.ok(gale > 45 && gale < 78 && gale > breeze, `a storm: ${gale.toFixed(0)}° over`);
-    const back = [-C[0], 0, -C[2]];
-    assert.ok(tiltAt(back, 1, 0, clock) < -15 && tiltAt(back, 2.4, 0.5, clock) < -45, 'and over the other way when the wind turns round');
-  }
+  // (over a minute of the clock: the swing goes either way about the lean)
+  const clocks = Array.from({ length: 240 }, (_, i) => i * 0.25);
+  const span = (fn) => { const v = clocks.map(fn); return { lo: Math.min(...v), hi: Math.max(...v), mean: v.reduce((a, x) => a + x, 0) / v.length }; };
+  const back = [-C[0], 0, -C[2]];
+  const breeze = span((c) => tiltAt(C, 1, 0, c));
+  const gale = span((c) => tiltAt(C, 2.4, 0.5, c));
+  assert.ok(breeze.mean > 22 && breeze.mean < 36, `a strong breeze across it: ${breeze.mean.toFixed(0)}° over on average`);
+  assert.ok(gale.mean > 50 && gale.mean < 80 && gale.lo > breeze.mean, `a storm: ${gale.mean.toFixed(0)}° over, never less than ${gale.lo.toFixed(0)}°`);
+  assert.ok(gale.hi < 87, `never over the top of its ends: at most ${gale.hi.toFixed(0)}°`);
+  assert.ok(span((c) => tiltAt(back, 1, 0, c)).mean < -22 && span((c) => tiltAt(back, 2.4, 0.5, c)).hi < -30, 'and over the other way when the wind turns round');
+  // 2026-11-26 the user, of 2.9.0: "prayer flag rope not waving when wind". It swung 0.12 * uWindStr: in their
+  // usual breeze (5-10 km/h, uWindStr about 0.35) 2 degrees, its middle 1-2 cm, under a pixel on their screens
+  // (where a pixel is about 3 cm at the flags). Now it swings and bounces enough to see.
+  const light = (5 / 30) ** 0.8; // 5 km/h at the tree, as foreground.js _wind
+  const mid = (W, str, k) => span((c) => ropeAt(0.5, W, str, 0, c)[k]);
+  const sideRange = (W, str) => span((c) => sideOf(ropeAt(0.5, W, str, 0, c), 0.5));
+  const swingLight = sideRange(C, light), swingUsual = sideRange(C, (8 / 30) ** 0.8), swingStrong = sideRange(C, 1);
+  assert.ok(swingLight.hi - swingLight.lo > 0.05, `at 5 km/h across it, its middle swings ${((swingLight.hi - swingLight.lo) * 100).toFixed(0)} cm`);
+  assert.ok(swingUsual.hi - swingUsual.lo > 0.07, `at 8 km/h ${((swingUsual.hi - swingUsual.lo) * 100).toFixed(0)} cm`);
+  assert.ok(swingStrong.hi - swingStrong.lo > 0.12 && swingStrong.hi - swingStrong.lo > swingUsual.hi - swingUsual.lo, `in a strong breeze ${((swingStrong.hi - swingStrong.lo) * 100).toFixed(0)} cm`);
+  const upAlong = mid(A, (8 / 30) ** 0.8, 1);
+  assert.ok(upAlong.hi - upAlong.lo > 0.02, `a wind along it bounces it up and down: ${((upAlong.hi - upAlong.lo) * 100).toFixed(1)} cm`);
+  const calm = mid(C, 0, 1);
+  near(calm.hi - calm.lo, 0, 1e-12, 'still air: it hangs still');
   assert.ok(Math.abs(tiltAt(C, 1, 0, 0.4) - tiltAt(C, 1, 0, 1.3)) > 2, 'it swings');
   // a wind along the line can't swing it, from either end
   for (const W of [A, [-A[0], 0, -A[2]]]) for (const clock of [0, 0.7, 9]) for (let t = 0; t <= 1; t += 0.125) near(sideOf(ropeAt(t, W, 2.4, 1, clock), t), 0, 1e-9, 'a wind along the line');
@@ -3205,19 +3228,71 @@ test('smoke is drawn in 3D and leans the way the weather blows, and a field fire
     assert.ok(smoke >= 2, 'houses and the field: ' + smoke);
     assert.ok(!sprites(L).some((x) => x.type === 5 && x.f[2] > 30), 'no flat pictures of smoke');
   }
-  // the fire: on a slope 3 to 8 km off whenever there is forest there
+  // the fire: on a slope 2.5 to 9 km off whenever there are a few places there
   for (let i = 0; i < 20; i++) {
     const h = hills(13, { mist: 0.1, wet: 0 });
-    const near = h.life.forestSources.some((s) => {
+    const near = h.life.forestSources.filter((s) => {
       const d = Math.hypot(s.x, s.y - h.view.camY, s.z);
-      return d > 3 && d < 8;
-    });
+      return d > 2.5 && d < 9;
+    }).length;
     h.life.summon('fire');
     const f = h.life.smoke.find((s) => s.kind === 2);
     assert.ok(f, 'a fire');
     const d = Math.hypot(f.src.x, f.src.y - h.view.camY, f.src.z);
-    if (near) assert.ok(d > 3 && d < 8, 'a few km off: ' + d);
+    if (near >= 4) assert.ok(d > 2.5 && d < 9, 'a few km off: ' + d);
   }
+});
+
+// 2026-11-26 the user, of 2.9.0: "forest fire looks like start from same place everyday it should be random". With no
+// forest 3 to 8 km off, every fire took the one place nearest 5 km; with one or two there, it came back to them.
+test('a field fire is somewhere else each time: never where either of the last two burned, and never one fixed place', () => {
+  const kmOf = (h, s) => Math.hypot(s.x, s.y - h.view.camY, s.z);
+  const fires = (h, n) => {
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      h.life.smoke = h.life.smoke.filter((s) => s.kind !== 2); // the last one has burned out
+      h.life.summon('fire');
+      const f = h.life.smoke.find((s) => s.kind === 2);
+      assert.ok(f, 'a fire');
+      out.push(f.src);
+    }
+    return out;
+  };
+  // the usual case: plenty of forest a few km off
+  const h = hills(13, { mist: 0.1, wet: 0 });
+  h.life._nextFire = 1e9;
+  seedRandom(h.ctx, 11);
+  const many = fires(h, 60);
+  for (let i = 2; i < many.length; i++) assert.ok(many[i] !== many[i - 1] && many[i] !== many[i - 2], 'not where either of the last two burned: fire ' + i);
+  const places = new Set(many);
+  assert.ok(places.size >= 6, 'all over the slopes: ' + places.size + ' places in 60 fires');
+  for (const p of places) assert.ok(kmOf(h, p) > 2.5 && kmOf(h, p) < 9, 'each a few km off: ' + kmOf(h, p).toFixed(1));
+  const counts = [...places].map((p) => many.filter((q) => q === p).length);
+  assert.ok(Math.max(...counts) <= 20, 'none of them every other time: ' + counts);
+  // the case that always gave the same place: no forest 3 to 8 km off at all
+  const far = hills(13, { mist: 0.1, wet: 0 });
+  far.life._nextFire = 1e9;
+  seedRandom(far.ctx, 5);
+  const at = (azDeg, km) => ({ x: Math.sin((azDeg * Math.PI) / 180) * km, y: far.view.camY - 0.4, z: Math.cos((azDeg * Math.PI) / 180) * km });
+  far.life.setForestSources([at(-40, 1.2), at(-10, 1.6), at(20, 2.2), at(50, 11), at(-55, 13), at(35, 16), at(0, 19)]);
+  const sparse = fires(far, 20);
+  assert.ok(new Set(sparse).size >= 3, 'not one fixed place: ' + new Set(sparse).size);
+  for (let i = 1; i < sparse.length; i++) assert.ok(sparse[i] !== sparse[i - 1], 'never twice running in the same place');
+  const nearest4 = far.life.forestSources.slice().sort((a, b) => Math.abs(Math.log(kmOf(far, a) / 5)) - Math.abs(Math.log(kmOf(far, b) / 5))).slice(0, 4);
+  assert.ok(sparse.every((p) => nearest4.includes(p)), 'and only the four nearest a good distance');
+  // two places only: it takes turns, and one place alone still burns
+  const two = hills(13, { mist: 0.1, wet: 0 });
+  two.life._nextFire = 1e9;
+  two.life.setForestSources([two.life.forestSources[5], two.life.forestSources[6]]);
+  const turns = fires(two, 6);
+  for (let i = 1; i < turns.length; i++) assert.ok(turns[i] !== turns[i - 1], 'two places take turns');
+  const lone = hills(13, { mist: 0.1, wet: 0 });
+  lone.life._nextFire = 1e9;
+  lone.life.setForestSources([lone.life.forestSources[5]]);
+  assert.equal(new Set(fires(lone, 3)).size, 1, 'one place alone still burns');
+  // a fire lit by the clock is chosen the same way as one called up
+  const life = readSrc('engine/life.js');
+  assert.ok(life.includes('if (kind === SMOKE.fire) this._recentFires = [src, ...this._recentFires].slice(0, 2);'));
 });
 
 test('mist, smoke and a fire put up from the debug panel stay in dry air for their time, then go', () => {

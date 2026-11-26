@@ -21,7 +21,7 @@ You do not need Lively, Wallpaper Engine, Steam, an installer, admin rights or a
 
 ## Download and set your wallpaper
 
-### **[Download LivingEarthHimalaya-2.9.0.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.9.0/LivingEarthHimalaya-2.9.0.exe)**
+### **[Download LivingEarthHimalaya-2.9.1.exe](https://github.com/khanRafaat/living-earth-himalaya-windows-live-wallpaper/releases/download/v2.9.1/LivingEarthHimalaya-2.9.1.exe)**
 
 About 2.4 MB. For Windows 11 version 24H2 or later.
 
@@ -134,7 +134,7 @@ While you work in an app, both screens hold still, so the app keeps the graphics
 - **Weather changes play out naturally.** Clouds build first and then the rain starts. Rain stops before the sky clears. A change arrives from the side the wind is coming from.
 - **Wind in the trees.** Gusts travel across the forest and meadows in the real wind direction, at the real gust speed, and the outlines of the nearer trees move with them. A tree rhododendron on the cliff edge moves with the live wind speed and direction, gets wet in rain, turns white in snow, changes colour with the season and flowers red in spring. Its fallen leaves drift past on the wind. A line of prayer flags runs from its trunk to a stake on the rock. The wind swings the sagging line over to its lee side and back, like a skipping rope, lifts the flags further and runs waves through the cloth downwind. A wind along the line can't swing it, so the flags stream to the side and rock on it. Now and then by day a falcon comes in from any side, sits for a while on the top of the tree or on one of its upper branches, and flies off again in any direction. Where it really snows, snow settles on the tree, the rock and the hills within a quarter of an hour. Snow only falls when the weather at your location says so: in a warm country such as Bangladesh it never does, while the highest summits keep their snow all year, as the real Himalaya does.
 - **A mountain road with traffic.** Buses, jeeps and motorcycles wind along a road through the forest. They slow for hairpins, overtake when the road ahead is clear, and stop for passengers. At night their dipped headlights light the road ahead, with red tail lights that brighten when they brake. Lorries grind up the hill, now and then an army column passes with its hazard lights on, and when an ambulance comes with its roof light flashing, everyone pulls to the edge to let it by. After rain the road is dark and glints towards the sun.
-- **Mist and smoke in 3D.** After rain or on humid mornings, mist lifts off the forest in soft patches and drifts with the real wind. Wood smoke rises from villages all across the valley, near and far, and drifts downwind as a thin blue-grey haze. Each village keeps its own hours: fires are lit one after another around breakfast and supper, die down slowly, and some keep a fire in all day. On a calm morning the smoke lies in flat layers; in the afternoon sun it climbs and thins out. Now and then, in dry weather, a field burns on a hill, its smoke glowing from below at night; rain or drizzle puts it out.
+- **Mist and smoke in 3D.** After rain or on humid mornings, mist lifts off the forest in soft patches and drifts with the real wind. Wood smoke rises from villages all across the valley, near and far, and drifts downwind as a thin blue-grey haze. Each village keeps its own hours: fires are lit one after another around breakfast and supper, die down slowly, and some keep a fire in all day. On a calm morning the smoke lies in flat layers; in the afternoon sun it climbs and thins out. Now and then, in dry weather, a field burns on a hill, each time on a different slope a few kilometres off, its smoke glowing from below at night; rain or drizzle puts it out.
 - **Wildlife and village life,** following the real clock, season and weather:
   - Vultures and eagles circle in thermals on sunny, calm middays.
   - Flocks of mountain choughs swoop past the ridge after sunrise and before sunset.
@@ -164,7 +164,7 @@ While you work in an app, both screens hold still, so the app keeps the graphics
 ## Frequently asked questions
 
 ### How do I get a live wallpaper on Windows 11?
-On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.9.0.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
+On Windows 11 version 24H2 or later, download `LivingEarthHimalaya-2.9.1.exe`, double-click it and click **Set wallpaper**. It sits behind your desktop icons like a normal wallpaper.
 
 ### Do I need Lively or Wallpaper Engine?
 No. The exe sets the wallpaper by itself on Windows 11 version 24H2 or later, with nothing else to install. Lively is only for older versions of Windows.

@@ -1484,8 +1484,9 @@
         }
       }
     }
-    // room for the line swung out by the wind, and the cloth on it blown out level in any direction
-    const room = FLAG_L + SAG;
+    // room for the line swung out by the wind, sagging deeper as it bounces in a gust, and the cloth on it blown
+    // out level in any direction
+    const room = FLAG_L + 1.5 * SAG;
     return {
       data: new Float32Array(v),
       verts: v.length / FLAG_FLOATS,
